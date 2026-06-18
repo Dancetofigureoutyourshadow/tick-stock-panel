@@ -1,0 +1,46 @@
+# tf-stocks-panel —— TickFlow 推荐套餐能力对照表(§5.2)
+#
+# 仅用途:
+#   1. 启动期能力探测决定试探顺序
+#   2. UI Tier Label 反查("≈ Pro" 等友好标签)
+#   3. 加购建议时的价格预估
+#
+# 业务代码永远不读这张表,只读运行时探测出的 CapabilitySet。
+# 来源:https://tickflow.org/pricing/ (2026-05-21 抓取)
+# 频率单位:次/分钟。batch 单位:标的/次。
+
+free:
+  quote.by_symbol:       { rpm: 10, batch: 5 }
+  kline.daily.by_symbol: { rpm: 10, batch: 1 }
+
+starter:
+  quote.by_symbol:       { rpm: 60, batch: 50 }
+  quote.pool:            { rpm: 20 }
+  kline.daily.batch:     { rpm: 30, batch: 100 }
+  kline.daily.by_symbol: { rpm: 60, batch: 1 }
+  adj_factor:            { rpm: 30, batch: 50 }
+
+pro:
+  quote.by_symbol:        { rpm: 120, batch: 100 }
+  quote.pool:             { rpm: 60 }
+  kline.daily.batch:      { rpm: 60,  batch: 100 }
+  kline.daily.by_symbol:  { rpm: 120, batch: 1 }
+  kline.minute.batch:     { rpm: 30,  batch: 100 }
+  kline.minute.by_symbol: { rpm: 60,  batch: 1 }
+  intraday:               { rpm: 30,  batch: 1 }
+  depth5:                 { rpm: 60,  batch: 1 }
+  adj_factor:             { rpm: 60,  batch: 100 }
+
+expert:
+  quote.by_symbol:        { rpm: 300, batch: 500 }
+  quote.pool:             { rpm: 120 }
+  kline.daily.batch:      { rpm: 120, batch: 200 }
+  kline.daily.by_symbol:  { rpm: 300, batch: 1 }
+  kline.minute.batch:     { rpm: 60,  batch: 200 }
+  kline.minute.by_symbol: { rpm: 120, batch: 1 }
+  intraday:               { rpm: 120, batch: 1 }
+  intraday.batch:         { rpm: 60,  batch: 200 }
+  depth5:                 { rpm: 120, batch: 1 }
+  adj_factor:             { rpm: 120, batch: 200 }
+  websocket:              { subscribe: 100 }
+  financial:              { rpm: 120, batch: 100 }

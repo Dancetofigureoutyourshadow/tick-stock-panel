@@ -1,0 +1,312 @@
+from __future__ import annotations
+
+from datetime import date, timedelta
+
+import polars as pl
+
+from app.backtest.engine import BacktestEngine, MatcherConfig
+
+
+def _panel(symbols: list[str], days: int = 4, price: float = 10.0, overrides: dict[tuple[str, int], dict] | None = None) -> pl.DataFrame:
+    overrides = overrides or {}
+    start = date(2024, 1, 1)
+    rows = []
+    for sym in symbols:
+        for i in range(days):
+            patch = overrides.get((sym, i), {})
+            rows.append({
+                "symbol": sym,
+                "name": sym,
+                "date": start + timedelta(days=i),
+                "open": patch.get("open", price),
+                "high": patch.get("high", price),
+                "low": patch.get("low", price),
+                "close": patch.get("close", price),
+                "volume": patch.get("volume", 100_000),
+                "score": patch.get("score", {"A": 4, "B": 3, "C": 2, "D": 1}.get(sym, 0)),
+                "signal_limit_up": patch.get("signal_limit_up", False),
+                "signal_limit_down": patch.get("signal_limit_down", False),
+            })
+    return pl.DataFrame(rows).sort(["symbol", "date"])
+
+
+def _mask(panel: pl.DataFrame, marks: set[tuple[str, int]]) -> pl.Series:
+    values = []
+    base = date(2024, 1, 1)
+    for row in panel.select(["symbol", "date"]).iter_rows(named=True):
+        day = (row["date"] - base).days
+        values.append((row["symbol"], day) in marks)
+    return pl.Series(values, dtype=pl.Boolean)
+
+
+def _engine() -> BacktestEngine:
+    return BacktestEngine(repo=None)  # simulate_portfolio 不访问 repo
+
+
+def test_max_exposure_sets_target_position_and_caps_count():
+    panel = _panel(["A", "B", "C", "D"], days=3)
+    entries = _mask(panel, {("A", 0), ("B", 0), ("C", 0), ("D", 0)})
+    exits = _mask(panel, set())
+
+    result = _engine().simulate_portfolio(
+        panel,
+        entries,
+        exits,
+        MatcherConfig(
+            matching="open_t+1",
+            fees_pct=0,
+            slippage_bps=0,
+            max_positions=3,
+            max_exposure_pct=0.6,
+            initial_capital=100_000,
+        ),
+    )
+
+    assert len(result.trades) == 3
+    assert {t.symbol for t in result.trades} == {"A", "B", "C"}
+    assert all(abs(t.position_pct - 0.2) < 0.001 for t in result.trades)
+    assert result.stats["max_exposure"] <= 0.61
+
+
+def test_one_price_limit_up_blocks_buy():
+    panel = _panel(
+        ["A"],
+        days=3,
+        overrides={
+            ("A", 1): {"open": 11, "high": 11, "low": 11, "close": 11, "signal_limit_up": True},
+        },
+    )
+    entries = _mask(panel, {("A", 0)})
+    exits = _mask(panel, set())
+
+    result = _engine().simulate_portfolio(
+        panel,
+        entries,
+        exits,
+        MatcherConfig(matching="open_t+1", fees_pct=0, slippage_bps=0, max_positions=1, initial_capital=100_000),
+    )
+
+    assert result.trades == []
+    assert result.stats["execution"]["buy_limit_up"] == 1
+
+
+def test_failed_open_exit_keeps_slot_and_blocks_replacement_buy():
+    panel = _panel(
+        ["A", "B", "C", "D"],
+        days=4,
+        overrides={
+            ("A", 2): {"open": 9, "high": 9, "low": 9, "close": 9, "signal_limit_down": True},
+        },
+    )
+    entries = _mask(panel, {
+        ("A", 0), ("B", 0), ("C", 0),
+        ("D", 1),
+    })
+    exits = _mask(panel, {("A", 1)})
+
+    result = _engine().simulate_portfolio(
+        panel,
+        entries,
+        exits,
+        MatcherConfig(
+            matching="open_t+1",
+            fees_pct=0,
+            slippage_bps=0,
+            max_positions=3,
+            max_exposure_pct=0.6,
+            initial_capital=100_000,
+        ),
+    )
+
+    assert "D" not in {t.symbol for t in result.trades}
+    assert result.stats["execution"]["sell_limit_down"] == 1
+    assert result.stats["execution"]["pending_exit"] == 1
+    assert result.stats["execution"]["buy_no_slot"] >= 1
+    a_trade = next(t for t in result.trades if t.symbol == "A")
+    assert a_trade.blocked_exit_days == 1
+    assert a_trade.exit_reason == "signal"
+
+
+def test_trailing_stop_uses_high_water_mark():
+    panel = _panel(
+        ["A"],
+        days=5,
+        overrides={
+            ("A", 2): {"open": 10, "high": 12, "low": 11.8, "close": 12},
+            ("A", 3): {"open": 12, "high": 12, "low": 11.3, "close": 11.3},
+        },
+    )
+    entries = _mask(panel, {("A", 0)})
+    exits = _mask(panel, set())
+
+    result = _engine().simulate_portfolio(
+        panel,
+        entries,
+        exits,
+        MatcherConfig(
+            matching="open_t+1",
+            fees_pct=0,
+            slippage_bps=0,
+            max_positions=1,
+            initial_capital=100_000,
+            trailing_stop_pct=0.05,
+        ),
+    )
+
+    assert len(result.trades) == 1
+    trade = result.trades[0]
+    assert trade.exit_reason == "trailing_stop"
+    assert trade.exit_price == 11.4
+
+
+def test_trailing_take_profit_requires_activation():
+    panel = _panel(
+        ["A"],
+        days=5,
+        overrides={
+            ("A", 2): {"open": 10, "high": 10.8, "low": 10.4, "close": 10.8},
+            ("A", 3): {"open": 10.8, "high": 10.8, "low": 10.4, "close": 10.4},
+        },
+    )
+    entries = _mask(panel, {("A", 0)})
+    exits = _mask(panel, set())
+
+    result = _engine().simulate_portfolio(
+        panel,
+        entries,
+        exits,
+        MatcherConfig(
+            matching="open_t+1",
+            fees_pct=0,
+            slippage_bps=0,
+            max_positions=1,
+            initial_capital=100_000,
+            trailing_take_profit_activate_pct=0.10,
+            trailing_take_profit_drawdown_pct=0.03,
+        ),
+    )
+
+    assert result.trades[0].exit_reason == "end"
+
+
+def test_trailing_take_profit_exits_after_activation():
+    panel = _panel(
+        ["A"],
+        days=5,
+        overrides={
+            ("A", 2): {"open": 10, "high": 12, "low": 11.8, "close": 12},
+            ("A", 3): {"open": 12, "high": 12, "low": 11.5, "close": 11.5},
+        },
+    )
+    entries = _mask(panel, {("A", 0)})
+    exits = _mask(panel, set())
+
+    result = _engine().simulate_portfolio(
+        panel,
+        entries,
+        exits,
+        MatcherConfig(
+            matching="open_t+1",
+            fees_pct=0,
+            slippage_bps=0,
+            max_positions=1,
+            initial_capital=100_000,
+            trailing_take_profit_activate_pct=0.10,
+            trailing_take_profit_drawdown_pct=0.03,
+        ),
+    )
+
+    assert len(result.trades) == 1
+    trade = result.trades[0]
+    assert trade.exit_reason == "trailing_take_profit"
+    assert trade.exit_price == 11.7
+
+
+def test_score_filter_uses_signal_day_score_range():
+    panel = _panel(
+        ["A", "B", "C"],
+        days=3,
+        overrides={
+            ("A", 0): {"score": 70},
+            ("B", 0): {"score": 80},
+            ("C", 0): {"score": 90},
+            ("A", 1): {"score": 100},
+            ("B", 1): {"score": 1},
+            ("C", 1): {"score": 1},
+        },
+    )
+    entries = _mask(panel, {("A", 0), ("B", 0), ("C", 0)})
+    exits = _mask(panel, set())
+
+    result = _engine().simulate_portfolio(
+        panel,
+        entries,
+        exits,
+        MatcherConfig(
+            matching="open_t+1",
+            fees_pct=0,
+            slippage_bps=0,
+            max_positions=3,
+            initial_capital=100_000,
+            score_min=71,
+            score_max=85,
+        ),
+    )
+
+    assert {t.symbol for t in result.trades} == {"B"}
+    assert result.trades[0].entry_score == 80
+    assert result.stats["execution"]["buy_score_filter"] == 2
+
+
+def test_independent_candidates_allow_overlapping_same_symbol_trades():
+    panel = _panel(
+        ["A"],
+        days=5,
+        overrides={
+            ("A", 0): {"close": 10},
+            ("A", 1): {"close": 11},
+            ("A", 2): {"close": 12},
+            ("A", 3): {"close": 13},
+            ("A", 4): {"close": 14},
+        },
+    )
+    entries = _mask(panel, {("A", 0), ("A", 1)})
+    exits = _mask(panel, set())
+
+    result = _engine().simulate_independent_candidates(
+        panel,
+        entries,
+        exits,
+        MatcherConfig(matching="close_t", fees_pct=0, slippage_bps=0, max_hold_days=2),
+    )
+
+    assert result.stats["full_kind"] == "candidate_execution"
+    assert result.stats["n_candidates"] == 2
+    assert len(result.trades) == 2
+    assert [t.entry_date for t in result.trades] == ["2024-01-01", "2024-01-02"]
+    assert [t.exit_date for t in result.trades] == ["2024-01-03", "2024-01-04"]
+    assert all(t.exit_reason == "max_hold" for t in result.trades)
+
+
+def test_independent_candidates_apply_stop_loss():
+    panel = _panel(
+        ["A"],
+        days=4,
+        overrides={
+            ("A", 0): {"close": 10, "low": 10},
+            ("A", 1): {"open": 10, "high": 10, "low": 8.9, "close": 9},
+        },
+    )
+    entries = _mask(panel, {("A", 0)})
+    exits = _mask(panel, set())
+
+    result = _engine().simulate_independent_candidates(
+        panel,
+        entries,
+        exits,
+        MatcherConfig(matching="close_t", fees_pct=0, slippage_bps=0, stop_loss_pct=0.1),
+    )
+
+    assert len(result.trades) == 1
+    assert result.trades[0].exit_reason == "stop_loss"
+    assert result.trades[0].exit_price == 9.0

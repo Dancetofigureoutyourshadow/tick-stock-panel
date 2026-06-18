@@ -1,0 +1,86 @@
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+.python-version
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# ===== uv =====
+.uv/
+
+# ===== Node / pnpm =====
+node_modules/
+.pnpm-store/
+.pnpm-debug.log*
+.npm/
+*.log
+
+# ===== Vite =====
+frontend/dist/
+frontend/.vite/
+backend/static/
+backend/app/static/
+
+# ===== IDE =====
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# ===== Project data (Parquet/DuckDB) =====
+backend/data/**
+!backend/data/.gitkeep
+data/**
+!data/.gitkeep
+
+# ===== Secrets =====
+.env
+.env.local
+.env.*.local
+backend/.env
+
+# ===== User-derived prompts =====
+backend/user_prompts/
+
+# ===== Browser automation =====
+.playwright-mcp/
+
+# ===== AI IDE =====
+.trae/
+
+# ===== TypeScript build cache =====
+frontend/tsconfig*.tsbuildinfo
+
+# ===== Data files =====
+*.xlsx
+
+# ===== Private deploy / 服务器私有信息(不开源) =====
+DEPLOY.md
+deploy.sh
+
+# ===== 内部设计文档(不开源) =====
+DESIGN.md
+DESIGN-proposal.md
+CLAUDE.md
+
+# ===== 私人脚本(不开源) =====
+docs/zhihu/
+
+# ===== 用户自定义策略(私有,不开源) =====
+data/strategies/custom/
+
+# ===== 临时 / 调试产物 =====
+backend._recheck*.py

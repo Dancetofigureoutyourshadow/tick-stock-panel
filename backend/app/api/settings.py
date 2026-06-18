@@ -1,0 +1,667 @@
+"""设置 API — Key 配置 / 模式切换。
+
+提供面向非开发者的 UI 配置入口,避免逼用户改 .env。
+"""
+from __future__ import annotations
+
+import logging
+import time
+
+from fastapi import APIRouter, Request
+from pydantic import BaseModel
+
+from app import secrets_store
+from app.tickflow import client as tf_client
+from app.tickflow.policy import (
+    detect_capabilities,
+    extras_caps,
+    missing_caps,
+    probe_log,
+    tier_label,
+)
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/api/settings", tags=["settings"])
+
+# 默认端点 —— endpoints.json 列表第一项,UI"当前使用"始终对齐此项。
+# 注意:Free 模式 SDK 实际走 free-api(免费数据通道),但 UI 显示统一用默认节点。
+DEFAULT_PAID_ENDPOINT = "https://api.tickflow.org"
+
+
+class TickflowKeyIn(BaseModel):
+    api_key: str
+
+
+@router.get("")
+def get_settings() -> dict:
+    """返回当前配置概况(Key 脱敏)。"""
+    from app.config import settings
+
+    key = secrets_store.get_tickflow_key()
+    return {
+        "mode": tf_client.current_mode(),
+        "tickflow_api_key_masked": secrets_store.mask(key),
+        "has_tickflow_key": bool(key),
+        "tier_label": tier_label(),
+        "current_endpoint": tf_client.current_endpoint(),
+        "probe_log": probe_log(),
+        "missing_caps": missing_caps(),
+        "extras_caps": extras_caps(),
+        # AI 配置
+        "ai_provider": secrets_store.get_ai_config("ai_provider", settings.ai_provider),
+        "ai_base_url": secrets_store.get_ai_config("ai_base_url", settings.ai_base_url),
+        "ai_api_key_masked": secrets_store.mask(secrets_store.get_ai_key()),
+        "has_ai_key": bool(secrets_store.get_ai_key()),
+        "ai_model": secrets_store.get_ai_config("ai_model", settings.ai_model),
+        "ai_daily_token_budget": int(secrets_store.get_ai_config("ai_daily_token_budget", str(settings.ai_daily_token_budget)) or settings.ai_daily_token_budget),
+    }
+
+
+class SwitchEndpointIn(BaseModel):
+    url: str
+
+
+@router.post("/switch_endpoint")
+def switch_endpoint(req: SwitchEndpointIn, request: Request) -> dict:
+    """切换 TickFlow 端点并立即生效。
+
+    endpoints.json 里的端点都是 Starter+ 付费端点,Free 模式无 key
+    无法使用,故 Free 模式下禁止切换。
+    """
+    # Free 模式没有付费端点权限,禁止切换
+    if tf_client.current_mode() == "free":
+        return {"ok": False, "error": "Free 模式无法切换端点，请先配置 API Key"}
+
+    url = req.url.strip().rstrip("/")
+    if not url.startswith("https://"):
+        return {"ok": False, "error": "仅支持 HTTPS 端点"}
+
+    # 持久化到 secrets.json
+    secrets_store.save({"tickflow_base_url": url})
+    # 重置客户端，下次调用自动用新端点
+    tf_client.reset_clients()
+
+    return {
+        "ok": True,
+        "current_endpoint": tf_client.current_endpoint(),
+    }
+
+
+@router.post("/tickflow-key")
+def save_tickflow_key(req: TickflowKeyIn, request: Request) -> dict:
+    """保存 TickFlow API Key 并立即重新探测能力。
+
+    端点联动:Free → Starter+ 时,Free 模式残留的 free-api 端点不可用于
+    付费 Key,故自动切到默认付费端点(api.tickflow.org)。
+    """
+    key = req.api_key.strip()
+    if not key:
+        return {"ok": False, "error": "key empty"}
+
+    # 判断是否 Free → Starter+ 转换(此前无 key)
+    was_free = tf_client.current_mode() == "free"
+    updates: dict = {"tickflow_api_key": key}
+    if was_free:
+        # 自动切到默认端点;之前的残留自定义 URL 不再适用
+        updates["tickflow_base_url"] = DEFAULT_PAID_ENDPOINT
+
+    secrets_store.save(updates)
+    tf_client.reset_clients()
+
+    # 立即重新探测
+    capset = detect_capabilities(force=True)
+    request.app.state.capabilities = capset
+
+    return {
+        "ok": True,
+        "tickflow_api_key_masked": secrets_store.mask(key),
+        "mode": "api_key",
+        "tier_label": tier_label(),
+        "current_endpoint": tf_client.current_endpoint(),
+        "probe_log": probe_log(),
+        "capabilities_count": len(capset.all()),
+    }
+
+
+@router.delete("/tickflow-key")
+def clear_tickflow_key(request: Request) -> dict:
+    """清除 Key,退回 Free 模式。
+
+    同时清除 tickflow_base_url(测速切换的自定义端点),使"当前使用"
+    回到默认节点 api.tickflow.org;SDK 则自动用 free() 取免费数据。
+    """
+    secrets_store.clear("tickflow_api_key", "tickflow_base_url")
+    tf_client.reset_clients()
+
+    capset = detect_capabilities(force=True)
+    request.app.state.capabilities = capset
+
+    return {
+        "ok": True,
+        "mode": "free",
+        "tier_label": tier_label(),
+        "current_endpoint": tf_client.current_endpoint(),
+        "capabilities_count": len(capset.all()),
+    }
+
+
+class AiSettingsIn(BaseModel):
+    provider: str = "openai_compat"
+    base_url: str = ""
+    api_key: str | None = None
+    model: str = ""
+    daily_token_budget: int = 500_000
+
+
+@router.post("/ai")
+def save_ai_settings(req: AiSettingsIn) -> dict:
+    """保存 AI 配置（全部持久化到 secrets.json）"""
+    from app.config import settings
+
+    updates: dict = {}
+    if req.provider:
+        updates["ai_provider"] = req.provider
+        settings.ai_provider = req.provider
+    if req.base_url:
+        updates["ai_base_url"] = req.base_url
+        settings.ai_base_url = req.base_url
+    if req.api_key is not None:
+        if req.api_key:
+            updates["ai_api_key"] = req.api_key
+            settings.ai_api_key = req.api_key
+        else:
+            secrets_store.clear("ai_api_key")
+            settings.ai_api_key = ""
+    if req.model:
+        updates["ai_model"] = req.model
+        settings.ai_model = req.model
+    updates["ai_daily_token_budget"] = req.daily_token_budget
+    settings.ai_daily_token_budget = req.daily_token_budget
+
+    if updates:
+        secrets_store.save(updates)
+
+    return {"ok": True}
+
+
+# ===== 偏好设置 =====
+
+class MinuteSyncPrefs(BaseModel):
+    minute_sync_enabled: bool
+    minute_sync_days: int = 5
+
+
+@router.get("/preferences")
+def get_preferences() -> dict:
+    """返回用户偏好设置。"""
+    from app.services import preferences
+    return {
+        "realtime_quotes_enabled": preferences.get_realtime_quotes_enabled(),
+        "indices_nav_pinned": preferences.get_indices_nav_pinned(),
+        "minute_sync_enabled": preferences.get_minute_sync_enabled(),
+        "minute_sync_days": preferences.get_minute_sync_days(),
+        "pipeline_schedule": preferences.get_pipeline_schedule(),
+        "instruments_schedule": preferences.get_instruments_schedule(),
+        "enriched_batch_size": preferences.get_enriched_batch_size(),
+        "index_daily_batch_size": preferences.get_index_daily_batch_size(),
+        "watchlist_columns": preferences.get_watchlist_columns(),
+        "screener_result_columns": preferences.get_screener_result_columns(),
+        "sse_refresh_pages": preferences.get_sse_refresh_pages(),
+        "strategy_monitor_enabled": preferences.get_strategy_monitor_enabled(),
+        "strategy_monitor_ids": preferences.get_strategy_monitor_ids(),
+        "sidebar_index_symbols": preferences.get_sidebar_index_symbols(),
+        "nav_order": preferences.get_nav_order(),
+        "nav_hidden": preferences.get_nav_hidden(),
+        "screener_auto_run": preferences.get_screener_auto_run(),
+    }
+
+
+@router.get("/preferences/watchlist-columns")
+def get_watchlist_columns() -> dict:
+    """返回自选列表列配置。"""
+    from app.services import preferences
+    cols = preferences.get_watchlist_columns()
+    return {"columns": cols}
+
+
+class NavOrderIn(BaseModel):
+    nav_order: list[str]
+
+
+class NavHiddenIn(BaseModel):
+    nav_hidden: list[str]
+
+
+@router.put("/preferences/nav-order")
+def update_nav_order(req: NavOrderIn) -> dict:
+    """保存左侧菜单排序（内置页面 path + 扩展分析菜单 id 的有序列表）。"""
+    from app.services import preferences
+    saved = preferences.set_nav_order(req.nav_order)
+    return {"nav_order": saved}
+
+
+@router.put("/preferences/nav-hidden")
+def update_nav_hidden(req: NavHiddenIn) -> dict:
+    """保存左侧菜单隐藏项。"""
+    from app.services import preferences
+    saved = preferences.set_nav_hidden(req.nav_hidden)
+    return {"nav_hidden": saved}
+
+
+@router.put("/preferences/watchlist-columns")
+def update_watchlist_columns(req: dict) -> dict:
+    """保存自选列表列配置。"""
+    from app.services import preferences
+    columns = req.get("columns", [])
+    saved = preferences.set_watchlist_columns(columns)
+    return {"columns": saved}
+
+
+@router.get("/preferences/screener-result-columns")
+def get_screener_result_columns() -> dict:
+    """返回策略结果列表列配置。"""
+    from app.services import preferences
+    cols = preferences.get_screener_result_columns()
+    return {"columns": cols}
+
+
+@router.put("/preferences/screener-result-columns")
+def update_screener_result_columns(req: dict) -> dict:
+    """保存策略结果列表列配置。"""
+    from app.services import preferences
+    columns = req.get("columns", [])
+    saved = preferences.set_screener_result_columns(columns)
+    return {"columns": saved}
+
+
+@router.put("/preferences/minute-sync")
+def update_minute_sync(req: MinuteSyncPrefs) -> dict:
+    """保存分钟 K 同步偏好。"""
+    from app.services import preferences
+    days = max(1, min(30, req.minute_sync_days))
+    preferences.save({
+        "minute_sync_enabled": req.minute_sync_enabled,
+        "minute_sync_days": days,
+    })
+    return {
+        "minute_sync_enabled": req.minute_sync_enabled,
+        "minute_sync_days": days,
+    }
+
+
+class RealtimeQuotesPrefs(BaseModel):
+    realtime_quotes_enabled: bool
+
+
+@router.put("/preferences/realtime-quotes")
+def update_realtime_quotes(req: RealtimeQuotesPrefs, request: Request) -> dict:
+    """保存全局实时行情开关。"""
+    from app.services import preferences
+    preferences.save({"realtime_quotes_enabled": req.realtime_quotes_enabled})
+
+    # 动态启停行情服务
+    qs = getattr(request.app.state, "quote_service", None)
+    if qs:
+        if req.realtime_quotes_enabled:
+            qs.enable()
+        else:
+            qs.disable()
+
+    return {"realtime_quotes_enabled": req.realtime_quotes_enabled}
+
+
+class IndicesNavPinnedPrefs(BaseModel):
+    indices_nav_pinned: bool
+
+
+@router.put("/preferences/indices-nav-pinned")
+def update_indices_nav_pinned(req: IndicesNavPinnedPrefs) -> dict:
+    """保存侧栏指数报价卡片固定显示开关。
+    ON=常驻显示；OFF=跟随实时行情开关（仅实时开时显示）。"""
+    from app.services import preferences
+    preferences.save({"indices_nav_pinned": req.indices_nav_pinned})
+    return {"indices_nav_pinned": req.indices_nav_pinned}
+
+
+class RealtimeMonitorConfigIn(BaseModel):
+    sse_refresh_pages: dict[str, bool] | None = None
+    strategy_monitor_enabled: bool | None = None
+    strategy_monitor_ids: list[str] | None = None
+    sidebar_index_symbols: list[str] | None = None
+    screener_auto_run: bool | None = None
+
+
+@router.put("/preferences/realtime-monitor")
+def update_realtime_monitor_config(req: RealtimeMonitorConfigIn, request: Request) -> dict:
+    """更新实时监控配置。"""
+    from app.services import preferences
+
+    cfg = req.model_dump(exclude_none=True)
+    result = preferences.set_realtime_monitor_config(cfg)
+
+    # 如果策略监控开关变化，更新 StrategyMonitorService 的监控池
+    if req.strategy_monitor_ids is not None or req.strategy_monitor_enabled is not None:
+        monitor = getattr(request.app.state, "strategy_monitor", None)
+        if monitor:
+            if preferences.get_strategy_monitor_enabled():
+                # 从策略引擎加载监控配置
+                engine = getattr(request.app.state, "strategy_engine", None)
+                ids = preferences.get_strategy_monitor_ids()
+                if engine and ids:
+                    monitor.stop_all()
+                    for sid in ids:
+                        try:
+                            s = engine.get(sid)
+                            monitor.start(sid, {
+                                "entry_signals": s.entry_signals,
+                                "exit_signals": s.exit_signals,
+                                "alerts": s.alerts,
+                            })
+                        except ValueError:
+                            pass
+            else:
+                monitor.stop_all()
+
+    return result
+
+
+class QuoteIntervalIn(BaseModel):
+    interval: float
+
+
+@router.put("/preferences/quote-interval")
+def update_quote_interval(req: QuoteIntervalIn, request: Request) -> dict:
+    """更新行情轮询间隔。按档位自动 clamp。"""
+    qs = getattr(request.app.state, "quote_service", None)
+    if not qs:
+        return {"interval": req.interval, "min_interval": qs.get_min_interval(), "max_interval": 60.0}
+    clamped = qs.set_interval(req.interval)
+    return {
+        "interval": clamped,
+        "min_interval": qs.get_min_interval(),
+        "max_interval": qs.MAX_INTERVAL,
+    }
+
+
+@router.get("/preferences/quote-interval")
+def get_quote_interval(request: Request) -> dict:
+    """获取当前行情轮询间隔和档位限制。"""
+    qs = getattr(request.app.state, "quote_service", None)
+    if not qs:
+        return {"interval": 10.0, "min_interval": 5.0, "max_interval": 60.0}
+    return {
+        "interval": qs._interval,
+        "min_interval": qs.get_min_interval(),
+        "max_interval": qs.MAX_INTERVAL,
+    }
+
+
+class TestEndpointIn(BaseModel):
+    url: str
+    # 测试轮数;不传时取 endpoints.json 的 testRounds(默认 5)
+    rounds: int | None = None
+
+
+# 官方端点发现清单 —— 前端浏览器无法直接跨域拉取 tickflow.org/endpoints.json
+# (无 CORS 头),因此由后端代理。缓存 5 分钟,失败时回退到内置列表。
+ENDPOINTS_URL = "https://tickflow.org/endpoints.json"
+ENDPOINTS_TTL = 300.0  # 秒
+
+# 回退列表 —— 与官方 endpoints.json 的 endpoints[] 字段对齐。
+# 当远程拉取失败时使用,保证 UI 永远有内容可显示。
+_FALLBACK_ENDPOINTS: list[dict] = [
+    {
+        "id": "default",
+        "url": "https://api.tickflow.org",
+        "label": "默认端点",
+        "region": "auto",
+        "description": "默认端点",
+        "premium": False,
+    },
+    {
+        "id": "hk",
+        "url": "https://hk-api.tickflow.org",
+        "label": "香港端点",
+        "region": "ap-east-1",
+        "description": "备用端点，部分地区访问更稳定",
+        "premium": False,
+    },
+    {
+        "id": "sg",
+        "url": "https://sg-api.tickflow.org",
+        "label": "新加坡端点",
+        "region": "ap-southeast-1",
+        "description": "备用端点，亚太地区访问更稳定",
+        "premium": False,
+    },
+    {
+        "id": "us",
+        "url": "https://us-api.tickflow.org",
+        "label": "美国端点",
+        "region": "us-east-1",
+        "description": "备用端点，欧美地区访问更稳定",
+        "premium": False,
+    },
+    {
+        "id": "cn",
+        "url": "https://139.196.55.234:50443",
+        "label": "中国大陆端点（Beta）",
+        "region": "cn-east-1",
+        "description": "备用端点，中国大陆地区访问更稳定，目前处于测试阶段，谨慎使用",
+        "premium": False,
+    },
+    {
+        "id": "cn-premium",
+        "url": "https://106.15.238.72:50443",
+        "label": "中国大陆专线端点",
+        "region": "cn-east-1",
+        "description": "专线加速端点，需要专线加速权限（该权限包含在 Expert 及以上套餐中，也可通过自定义组合单独开通）",
+        "premium": True,
+    },
+]
+
+# 进程内缓存:{ "ts": float, "data": dict }
+_endpoints_cache: dict = {"ts": 0.0, "data": None}
+
+
+@router.get("/endpoints")
+def list_endpoints() -> dict:
+    """代理拉取 tickflow.org/endpoints.json 并返回规范化端点列表。
+
+    前端无法跨域直连该 URL(无 CORS 头),故由本接口代理。带 8s 超时、
+    5 分钟内存缓存,远程失败时回退到内置列表,保证 UI 始终有内容。
+    返回结构与原始 endpoints.json 一致(透传 schema/version 等元信息)。
+    """
+    import httpx
+
+    now = time.monotonic()
+    cached = _endpoints_cache.get("data")
+    if cached is not None and (now - _endpoints_cache["ts"]) < ENDPOINTS_TTL:
+        return cached
+
+    source = "remote"
+    data: dict | None = None
+    try:
+        resp = httpx.get(ENDPOINTS_URL, timeout=8.0, follow_redirects=True)
+        if resp.status_code == 200:
+            parsed = resp.json()
+            eps = parsed.get("endpoints")
+            # 校验:必须是列表且每项含必要字段,否则视为无效
+            if isinstance(eps, list) and all(
+                isinstance(e, dict) and "url" in e for e in eps
+            ):
+                data = {
+                    "version": parsed.get("version", 1),
+                    "description": parsed.get(
+                        "description", "TickFlow API 端点配置"
+                    ),
+                    "healthPath": parsed.get("healthPath", "/health"),
+                    "testRounds": parsed.get("testRounds", 5),
+                    "endpoints": eps,
+                }
+    except (httpx.HTTPError, ValueError):
+        logger.warning("拉取 endpoints.json 失败，使用内置回退列表", exc_info=True)
+
+    if data is None:
+        source = "fallback"
+        data = {
+            "version": 1,
+            "description": "TickFlow API 端点配置",
+            "healthPath": "/health",
+            "testRounds": 5,
+            "endpoints": _FALLBACK_ENDPOINTS,
+        }
+
+    # 标记数据来源,便于前端提示(回退时显示"内置列表")。
+    data["source"] = source
+    _endpoints_cache["ts"] = now
+    _endpoints_cache["data"] = data
+    return data
+
+
+async def _http_ping(url: str, timeout: float = 10.0) -> float | None:
+    """单次异步 GET 请求并返回延迟(ms),失败返回 None。
+
+    对齐官方 latency_test.py:用 /health 轻量端点测真实网络延迟,
+    不携带 API Key(/health 公开)。异步实现,保证多端点并行测速不阻塞。
+    """
+    import httpx
+
+    t0 = time.perf_counter()
+    try:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+            resp = await client.get(url)
+            dt = (time.perf_counter() - t0) * 1000
+            # 只把 <400 视为成功;4xx/5xx 也算"不可达"
+            if resp.status_code < 400:
+                return round(dt, 2)
+            return None
+    except (httpx.TimeoutException, httpx.ConnectError, httpx.HTTPError, OSError):
+        return None
+
+
+@router.post("/test_endpoint")
+async def test_endpoint(req: TestEndpointIn) -> dict:
+    """测试端点网络延迟:对 /health 多轮探测取中位数。
+
+    参考 TickFlow 官方 latency_test.py:
+    - 路径用 /health(公开、轻量),反映真实网络延迟而非业务接口耗时
+    - 多轮探测(默认 5 轮,取自 endpoints.json 的 testRounds),间隔 0.3s
+    - 返回 median/min/max/success,前端显示中位数
+    - 异步实现,保证"全部测速"时多端点真正并行
+    """
+    import asyncio
+    import statistics
+
+    base = req.url.rstrip("/")
+    rounds = max(1, min(10, req.rounds or _endpoints_cache.get("data", {}).get("testRounds", 5)))
+    health_url = base + "/health"
+
+    latencies: list[float] = []
+    for _ in range(rounds):
+        ms = await _http_ping(health_url)
+        if ms is not None:
+            latencies.append(ms)
+        # 官方脚本间隔 0.3s;末轮无需等待
+        await asyncio.sleep(0.3)
+
+    success = len(latencies)
+    if success == 0:
+        return {
+            "ok": False,
+            "error": "不可达",
+            "url": req.url,
+            "rounds": rounds,
+            "success": 0,
+            "median_ms": None,
+            "min_ms": None,
+            "max_ms": None,
+        }
+
+    median = round(statistics.median(latencies), 2)
+    return {
+        "ok": True,
+        "url": req.url,
+        "rounds": rounds,
+        "success": success,
+        "median_ms": median,
+        "min_ms": round(min(latencies), 2),
+        "max_ms": round(max(latencies), 2),
+        # 兼容旧字段:取中位数作为代表延迟
+        "latency_ms": median,
+    }
+
+
+class PipelineScheduleIn(BaseModel):
+    hour: int
+    minute: int
+
+
+@router.put("/preferences/pipeline-schedule")
+def update_pipeline_schedule(req: PipelineScheduleIn, request: Request) -> dict:
+    """保存盘后管道调度时间并立即 reschedule。"""
+    from app.services import preferences
+    sched = preferences.set_pipeline_schedule(req.hour, req.minute)
+
+    # 动态 reschedule
+    from apscheduler.triggers.cron import CronTrigger
+    scheduler = getattr(request.app.state, "scheduler", None)
+    if scheduler:
+        scheduler.reschedule_job(
+            "daily_pipeline",
+            trigger=CronTrigger(
+                day_of_week="mon-fri",
+                hour=sched["hour"],
+                minute=sched["minute"],
+                timezone="Asia/Shanghai",
+            ),
+        )
+        logger.info("pipeline rescheduled to %02d:%02d mon-fri", sched["hour"], sched["minute"])
+
+    return sched
+
+
+@router.put("/preferences/instruments-schedule")
+def update_instruments_schedule(req: PipelineScheduleIn, request: Request) -> dict:
+    """保存盘前标的维表调度时间并立即 reschedule。"""
+    from app.services import preferences
+    sched = preferences.set_instruments_schedule(req.hour, req.minute)
+
+    from apscheduler.triggers.cron import CronTrigger
+    scheduler = getattr(request.app.state, "scheduler", None)
+    if scheduler:
+        scheduler.reschedule_job(
+            "pre_market_instruments",
+            trigger=CronTrigger(
+                day_of_week="mon-fri",
+                hour=sched["hour"],
+                minute=sched["minute"],
+                timezone="Asia/Shanghai",
+            ),
+        )
+        return sched
+
+
+class EnrichedBatchSizeIn(BaseModel):
+    size: int
+
+
+@router.put("/preferences/enriched-batch-size")
+def update_enriched_batch_size(req: EnrichedBatchSizeIn) -> dict:
+    """保存 enriched 全量计算批次大小。"""
+    from app.services import preferences
+    size = preferences.set_enriched_batch_size(req.size)
+    return {"enriched_batch_size": size}
+
+
+class IndexDailyBatchSizeIn(BaseModel):
+    size: int
+
+
+@router.put("/preferences/index-daily-batch-size")
+def update_index_daily_batch_size(req: IndexDailyBatchSizeIn) -> dict:
+    """保存指数日 K 同步批次大小。"""
+    from app.services import preferences
+    size = preferences.set_index_daily_batch_size(req.size)
+    return {"index_daily_batch_size": size}

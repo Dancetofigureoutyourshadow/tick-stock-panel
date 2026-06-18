@@ -1,0 +1,16 @@
+# Phase 0 单 service:FastAPI 启动后既跑 API 又托管前端 dist。
+# 见 ADR-17 / §8.1。
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: TF-Stocks-Panel
+    ports:
+      - "${PORT:-3018}:3018"
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+      - ./tiers.yaml:/app/tiers.yaml:ro
+    restart: unless-stopped

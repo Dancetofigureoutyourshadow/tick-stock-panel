@@ -1,0 +1,273 @@
+"""财务数据独立同步服务。
+
+解耦于 K-line 管道, 自有调度 + 自有存储。
+能力门控: Cap.FINANCIAL (Expert 套餐)
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+import threading
+from datetime import date, datetime, timezone
+from pathlib import Path
+from typing import Any
+
+import polars as pl
+
+from app.tickflow.capabilities import Cap, CapabilitySet
+
+logger = logging.getLogger(__name__)
+
+# 每个 API 请求最多 100 个标的
+_BATCH_SIZE = 100
+
+# 4 张财务表
+FINANCIAL_TABLES = ("metrics", "income", "balance_sheet", "cash_flow")
+
+
+# ================================================================
+# 同步函数
+# ================================================================
+
+def _get_symbols(data_dir: Path) -> list[str]:
+    """从 instruments 表获取标的列表。"""
+    inst_path = data_dir / "instruments" / "instruments.parquet"
+    if not inst_path.exists():
+        return []
+    try:
+        df = pl.read_parquet(inst_path, columns=["symbol"])
+        return df["symbol"].to_list()
+    except Exception as e:
+        logger.warning("读取 instruments 失败: %s", e)
+        return []
+
+
+def _sync_table(
+    table: str,
+    symbols: list[str],
+    data_dir: Path,
+    capset: CapabilitySet,
+    latest_only: bool = True,
+) -> int:
+    """同步单张财务表。返回写入的行数。"""
+    if not capset.has(Cap.FINANCIAL):
+        logger.info("sync_%s skipped: no FINANCIAL capability", table)
+        return 0
+    if not symbols:
+        logger.warning("sync_%s skipped: no symbols", table)
+        return 0
+
+    from app.tickflow.client import get_client
+    tf = get_client()
+
+    # 分批拉取
+    api_method = {
+        "metrics": tf.financials.metrics,
+        "income": tf.financials.income,
+        "balance_sheet": tf.financials.balance_sheet,
+        "cash_flow": tf.financials.cash_flow,
+    }[table]
+
+    all_records: list[dict] = []
+    total_batches = (len(symbols) + _BATCH_SIZE - 1) // _BATCH_SIZE
+
+    for i in range(0, len(symbols), _BATCH_SIZE):
+        chunk = symbols[i : i + _BATCH_SIZE]
+        batch_num = i // _BATCH_SIZE + 1
+        try:
+            data = api_method(chunk, latest=latest_only)
+            # data 格式: { "600519.SH": [record, ...], ... }
+            if isinstance(data, dict):
+                for sym, records in data.items():
+                    if isinstance(records, list):
+                        for rec in records:
+                            if isinstance(rec, dict):
+                                rec["symbol"] = sym
+                                all_records.append(rec)
+            logger.debug("sync_%s batch %d/%d: %d records", table, batch_num, total_batches, len(data) if isinstance(data, dict) else 0)
+        except Exception as e:
+            logger.warning("sync_%s batch %d/%d failed: %s", table, batch_num, total_batches, e)
+
+    if not all_records:
+        return 0
+
+    df = pl.DataFrame(all_records)
+    if df.is_empty():
+        return 0
+
+    # 确保 symbol 列存在
+    if "symbol" not in df.columns:
+        return 0
+
+    # 写入 Parquet (全量覆盖)
+    out_dir = data_dir / "financials" / table
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_file = out_dir / "part.parquet"
+    df.write_parquet(out_file)
+
+    logger.info("sync_%s done: %d records written", table, len(df))
+    return len(df)
+
+
+def sync_metrics(data_dir: Path, capset: CapabilitySet) -> int:
+    """同步核心财务指标 (metrics)。"""
+    symbols = _get_symbols(data_dir)
+    return _sync_table("metrics", symbols, data_dir, capset, latest_only=True)
+
+
+def sync_income(data_dir: Path, capset: CapabilitySet) -> int:
+    """同步利润表。"""
+    symbols = _get_symbols(data_dir)
+    return _sync_table("income", symbols, data_dir, capset, latest_only=True)
+
+
+def sync_balance_sheet(data_dir: Path, capset: CapabilitySet) -> int:
+    """同步资产负债表。"""
+    symbols = _get_symbols(data_dir)
+    return _sync_table("balance_sheet", symbols, data_dir, capset, latest_only=True)
+
+
+def sync_cash_flow(data_dir: Path, capset: CapabilitySet) -> int:
+    """同步现金流量表。"""
+    symbols = _get_symbols(data_dir)
+    return _sync_table("cash_flow", symbols, data_dir, capset, latest_only=True)
+
+
+def sync_all(data_dir: Path, capset: CapabilitySet) -> dict[str, int]:
+    """同步所有财务表。返回 {table: rows}。"""
+    if not capset.has(Cap.FINANCIAL):
+        logger.info("sync_all financials skipped: no FINANCIAL capability")
+        return {}
+
+    symbols = _get_symbols(data_dir)
+    results: dict[str, int] = {}
+    for table in FINANCIAL_TABLES:
+        results[table] = _sync_table(table, symbols, data_dir, capset, latest_only=True)
+
+    # 同步完成后注册 DuckDB 视图
+    _refresh_financials_views(data_dir)
+
+    return results
+
+
+# ================================================================
+# DuckDB 视图
+# ================================================================
+
+def _refresh_financials_views(data_dir: Path) -> None:
+    """刷新财务表 DuckDB 视图 (在 DataStore.db 上注册)。"""
+    d = data_dir.as_posix()
+    views = {
+        "financials_metrics": f"{d}/financials/metrics/*.parquet",
+        "financials_income": f"{d}/financials/income/*.parquet",
+        "financials_balance_sheet": f"{d}/financials/balance_sheet/*.parquet",
+        "financials_cash_flow": f"{d}/financials/cash_flow/*.parquet",
+    }
+    for name, path in views.items():
+        out = data_dir / "financials" / name.replace("financials_", "") / "part.parquet"
+        if not out.exists():
+            continue
+        # 视图注册需要由 DataStore 完成,这里只做日志
+        logger.debug("financial parquet ready: %s (%d rows)", name, out.stat().st_size)
+
+
+def get_financial_df(data_dir: Path, table: str) -> pl.DataFrame:
+    """读取本地财务 Parquet。"""
+    path = data_dir / "financials" / table / "part.parquet"
+    if not path.exists():
+        return pl.DataFrame()
+    try:
+        return pl.read_parquet(path)
+    except Exception as e:
+        logger.warning("读取 financials/%s 失败: %s", table, e)
+        return pl.DataFrame()
+
+
+# ================================================================
+# 调度器
+# ================================================================
+
+class FinancialScheduler:
+    """独立调度器: 每周同步 metrics, 每季度同步三张报表。"""
+
+    def __init__(self) -> None:
+        self._task: asyncio.Task | None = None
+        self._running = False
+        self._data_dir: Path | None = None
+        self._capset: CapabilitySet | None = None
+        self._lock = threading.Lock()
+        self._last_sync: dict[str, str] = {}  # {table: iso_timestamp}
+
+    def start(self, data_dir: Path, capset: CapabilitySet) -> None:
+        if not capset.has(Cap.FINANCIAL):
+            logger.info("FinancialScheduler skipped: no FINANCIAL capability")
+            return
+        self._data_dir = data_dir
+        self._capset = capset
+        self._running = True
+        self._task = asyncio.create_task(self._run_loop())
+        logger.info("FinancialScheduler started")
+
+    def stop(self) -> None:
+        self._running = False
+        if self._task:
+            self._task.cancel()
+            self._task = None
+        logger.info("FinancialScheduler stopped")
+
+    async def _run_loop(self) -> None:
+        """每周执行一次 metrics 同步。"""
+        try:
+            while self._running:
+                # 首次启动等 60s, 之后每 7 天执行一次
+                await asyncio.sleep(60)
+                if not self._running:
+                    break
+
+                # 每周: 只同步 metrics
+                try:
+                    rows = sync_metrics(self._data_dir, self._capset)
+                    self._last_sync["metrics"] = datetime.now(timezone.utc).isoformat()
+                    logger.info("FinancialScheduler: metrics synced, %d rows", rows)
+                except Exception as e:
+                    logger.warning("FinancialScheduler: metrics sync failed: %s", e)
+
+                # 等待下一次 (7天)
+                for _ in range(7 * 24 * 60):  # 每分钟检查一次 _running
+                    if not self._running:
+                        break
+                    await asyncio.sleep(60)
+
+        except asyncio.CancelledError:
+            pass
+
+    def run_now(self, table: str | None = None) -> dict[str, int]:
+        """手动触发同步。table=None 同步全部。"""
+        if not self._capset or not self._capset.has(Cap.FINANCIAL):
+            return {}
+        if table:
+            fn = {
+                "metrics": sync_metrics,
+                "income": sync_income,
+                "balance_sheet": sync_balance_sheet,
+                "cash_flow": sync_cash_flow,
+            }.get(table)
+            if not fn:
+                return {}
+            rows = fn(self._data_dir, self._capset)
+            self._last_sync[table] = datetime.now(timezone.utc).isoformat()
+            return {table: rows}
+        else:
+            result = sync_all(self._data_dir, self._capset)
+            now = datetime.now(timezone.utc).isoformat()
+            for t in result:
+                self._last_sync[t] = now
+            return result
+
+    @property
+    def last_sync(self) -> dict[str, str]:
+        return dict(self._last_sync)
+
+
+# 全局单例
+financial_scheduler = FinancialScheduler()

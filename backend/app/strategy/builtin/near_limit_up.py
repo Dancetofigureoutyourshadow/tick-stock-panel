@@ -1,0 +1,55 @@
+"""逼近涨停 — 涨幅 > 7% 且距涨停 < 3%, 盘后选股"""
+import polars as pl
+
+
+def _limit_pct() -> pl.Expr:
+    """根据板块和 ST 动态计算涨跌幅限制 (小数)。
+    创业板(300/301)/科创板(688): 20%
+    北交所(.BJ): 30%
+    ST: 5%
+    主板: 10%
+    """
+    is_st = pl.col("name").str.contains("(?i)ST").fill_null(False)
+    is_cyb = pl.col("symbol").str.starts_with("300") | pl.col("symbol").str.starts_with("301")
+    is_kcb = pl.col("symbol").str.starts_with("688")
+    is_bj = pl.col("symbol").str.contains(r"\.BJ$")
+    return (
+        pl.when(is_st).then(0.05)
+        .when(is_cyb | is_kcb).then(0.20)
+        .when(is_bj).then(0.30)
+        .otherwise(0.10)
+    )
+
+
+META = {
+    "id": "near_limit_up",
+    "name": "逼近涨停",
+    "description": "涨幅 > 7% 且距涨停 < 3%, 追涨信号",
+    "tags": ["涨停", "追涨"],
+    "params": [
+        {"id": "min_change", "label": "最低涨幅%", "type": "float",
+         "default": 7.0, "min": 3.0, "max": 15.0, "step": 1.0},
+        {"id": "limit_gap", "label": "距涨停空间%", "type": "float",
+         "default": 3.0, "min": 1.0, "max": 10.0, "step": 0.5},
+    ],
+    "scoring": {"change_pct": 0.5, "amount": 0.3, "momentum_5d": 0.2},
+    "order_by": "score",
+    "descending": True,
+    "limit": 50,
+}
+
+ENTRY_SIGNALS = []
+EXIT_SIGNALS = ["signal_ma20_breakdown"]
+STOP_LOSS = -0.05
+MAX_HOLD_DAYS = 5
+ALERTS = []
+
+
+def filter(df: pl.DataFrame, params: dict) -> pl.Expr:
+    min_chg = params.get("min_change", 7.0) / 100.0
+    gap = params.get("limit_gap", 3.0) / 100.0
+    lp = _limit_pct()
+    return (
+        (pl.col("change_pct") > min_chg)
+        & (pl.col("change_pct") < lp - gap)
+    )

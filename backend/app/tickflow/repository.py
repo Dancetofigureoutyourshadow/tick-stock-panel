@@ -50,6 +50,7 @@ class DataStore:
             "screener_results",
             "ai_cache",
             "user_data",
+            "depth5",
         ):
             (self.data_dir / sub).mkdir(parents=True, exist_ok=True)
 
@@ -94,6 +95,9 @@ class DataStore:
                 SELECT * FROM read_parquet('{d}/financials/balance_sheet/*.parquet', union_by_name=true)""",
             f"""CREATE OR REPLACE VIEW financials_cash_flow AS
                 SELECT * FROM read_parquet('{d}/financials/cash_flow/*.parquet', union_by_name=true)""",
+            # 五档盘口 sealed 真假涨停(独立旁路存储,不进 enriched)
+            f"""CREATE OR REPLACE VIEW depth5 AS
+                SELECT * FROM read_parquet('{d}/depth5/**/*.parquet', union_by_name=true)""",
         ]
         for sql in statements:
             try:

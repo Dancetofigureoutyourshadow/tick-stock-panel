@@ -60,13 +60,28 @@ async def lifespan(app: FastAPI):
     app.state.strategy_monitor = strategy_monitor
     qs.set_app_state(app.state)
 
+    # 五档盘口 sealed 服务(真假涨停/跌停, 独立旁路线)
+    from app.services.depth_service import DepthService
+    depth_service = DepthService()
+    depth_service.set_repo(repo)
+    depth_service.set_app_state(app.state)
+    app.state.depth_service = depth_service
+
     # 启动调度器(若 enriched 数据为空,首次启动可手动 POST /api/pipeline/run)
     try:
+        daily_pipeline.set_app_state(app.state)  # 供 depth_finalize job 访问 depth_service
         scheduler = daily_pipeline.start_scheduler(repo, capset)
         app.state.scheduler = scheduler
     except Exception as e:  # noqa: BLE001
         logger.warning("scheduler not started: %s", e)
         app.state.scheduler = None
+
+    # depth sealed: 启动补跑(当天文件不存在) + 盘中轮询(有能力时)
+    try:
+        depth_service.boot_check()
+        depth_service.start_polling()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("depth_service init failed: %s", e)
 
     # 扩展数据定时拉取
     from app.services.ext_pull import pull_scheduler
@@ -111,6 +126,9 @@ async def lifespan(app: FastAPI):
     qs = getattr(app.state, "quote_service", None)
     if qs:
         qs.stop()
+    dsvc = getattr(app.state, "depth_service", None)
+    if dsvc:
+        dsvc.stop_polling()
     logger.info("shutdown")
 
 

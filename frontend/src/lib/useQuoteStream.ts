@@ -25,16 +25,25 @@ export function useQuoteStream(
   pagesRef.current = sseRefreshPages
 
   const handleAlerts = useCallback((alerts: StrategyAlertEvent[]) => {
-    if (onAlert) {
-      onAlert(alerts)
-    } else {
+    // depth 系统接管通知: 单独处理, 不走 strategy 回调
+    const depthAlerts = alerts.filter(a => a.source === 'depth')
+    const strategyAlerts = alerts.filter(a => a.source !== 'depth')
+
+    // depth 通知直接 toast(防刷屏: 后端已在状态切换时才推)
+    for (const a of depthAlerts.slice(0, 1)) {
+      toast(a.message, 'success')
+    }
+
+    if (onAlert && strategyAlerts.length > 0) {
+      onAlert(strategyAlerts)
+    } else if (strategyAlerts.length > 0) {
       // 默认: 弹 toast
-      for (const a of alerts.slice(0, 3)) {
+      for (const a of strategyAlerts.slice(0, 3)) {
         const label = a.name ? `${a.symbol} ${a.name}` : a.symbol
         toast(`[${a.strategy_id}] ${label} — ${a.message}`, 'success')
       }
-      if (alerts.length > 3) {
-        toast(`...以及另外 ${alerts.length - 3} 条告警`, 'success')
+      if (strategyAlerts.length > 3) {
+        toast(`...以及另外 ${strategyAlerts.length - 3} 条告警`, 'success')
       }
     }
   }, [onAlert])

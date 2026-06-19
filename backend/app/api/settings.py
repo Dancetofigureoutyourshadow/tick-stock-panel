@@ -37,6 +37,7 @@ class TickflowKeyIn(BaseModel):
 def get_settings() -> dict:
     """返回当前配置概况(Key 脱敏)。"""
     from app.config import settings
+    from app.services import preferences
 
     key = secrets_store.get_tickflow_key()
     return {
@@ -48,6 +49,8 @@ def get_settings() -> dict:
         "probe_log": probe_log(),
         "missing_caps": missing_caps(),
         "extras_caps": extras_caps(),
+        # 首次使用引导
+        "onboarding_completed": preferences.get_onboarding_completed(),
         # AI 配置
         "ai_provider": secrets_store.get_ai_config("ai_provider", settings.ai_provider),
         "ai_base_url": secrets_store.get_ai_config("ai_base_url", settings.ai_base_url),
@@ -146,6 +149,18 @@ def clear_tickflow_key(request: Request) -> dict:
     }
 
 
+@router.post("/onboarding/complete")
+def complete_onboarding() -> dict:
+    """标记首次使用向导完成。
+
+    写入 preferences.json,前端守卫据此判断是否需要再次展示向导。
+    跨设备/清缓存安全 —— 状态落在后端文件,不依赖浏览器本地存储。
+    """
+    from app.services import preferences
+    done = preferences.set_onboarding_completed(True)
+    return {"ok": True, "onboarding_completed": done}
+
+
 class AiSettingsIn(BaseModel):
     provider: str = "openai_compat"
     base_url: str = ""
@@ -214,6 +229,9 @@ def get_preferences() -> dict:
         "nav_order": preferences.get_nav_order(),
         "nav_hidden": preferences.get_nav_hidden(),
         "screener_auto_run": preferences.get_screener_auto_run(),
+        "limit_ladder_monitor_enabled": preferences.get_limit_ladder_monitor_enabled(),
+        "depth_polling_interval": preferences.get_depth_polling_interval(),
+        "depth_finalize_time": preferences.get_depth_finalize_time(),
     }
 
 
@@ -665,3 +683,83 @@ def update_index_daily_batch_size(req: IndexDailyBatchSizeIn) -> dict:
     from app.services import preferences
     size = preferences.set_index_daily_batch_size(req.size)
     return {"index_daily_batch_size": size}
+
+
+# ── 五档盘口 sealed 配置 ──────────────────────────────
+
+class LimitLadderMonitorIn(BaseModel):
+    enabled: bool
+
+
+@router.put("/preferences/limit-ladder-monitor")
+def update_limit_ladder_monitor(req: LimitLadderMonitorIn, request: Request) -> dict:
+    """连板梯队 5 档监控开关。开启→启动 depth 轮询, 关闭→停止。"""
+    from app.services import preferences
+    preferences.save({"limit_ladder_monitor_enabled": req.enabled})
+
+    # 立即应用: 启停 depth 轮询线程
+    depth_svc = getattr(request.app.state, "depth_service", None)
+    if depth_svc:
+        depth_svc.apply_monitor_toggle(req.enabled)
+
+    return {"limit_ladder_monitor_enabled": req.enabled}
+
+
+@router.post("/preferences/limit-ladder-monitor/run")
+def run_limit_ladder_fix(request: Request) -> dict:
+    """立即手动修正一次真假板(拉取五档盘口 + 更新缓存)。需 Pro+。"""
+    from app.tickflow.capabilities import Cap
+    capset = request.app.state.capabilities
+    capset.require(Cap.DEPTH5_BATCH)  # 无能力抛 CapabilityDenied(403)
+
+    depth_svc = getattr(request.app.state, "depth_service", None)
+    if not depth_svc:
+        raise HTTPException(status_code=503, detail="depth 服务未初始化")
+    return depth_svc.run_once()
+
+
+class DepthPollingIntervalIn(BaseModel):
+    interval: float
+
+
+@router.put("/preferences/depth-polling-interval")
+def update_depth_polling_interval(req: DepthPollingIntervalIn, request: Request) -> dict:
+    """保存五档盘口盘中轮询间隔(秒)。需 Pro+。"""
+    from app.tickflow.capabilities import Cap
+    request.app.state.capabilities.require(Cap.DEPTH5_BATCH)
+
+    from app.services import preferences
+    interval = preferences.set_depth_polling_interval(req.interval)
+    return {"depth_polling_interval": interval}
+
+
+class DepthFinalizeTimeIn(BaseModel):
+    hour: int
+    minute: int
+
+
+@router.put("/preferences/depth-finalize-time")
+def update_depth_finalize_time(req: DepthFinalizeTimeIn, request: Request) -> dict:
+    """保存盘后 sealed 定版时间(范围15:01~18:00)并立即 reschedule。需 Pro+。"""
+    from app.tickflow.capabilities import Cap
+    request.app.state.capabilities.require(Cap.DEPTH5_BATCH)
+
+    from app.services import preferences
+    sched = preferences.set_depth_finalize_time(req.hour, req.minute)
+
+    from apscheduler.triggers.cron import CronTrigger
+    scheduler = getattr(request.app.state, "scheduler", None)
+    if scheduler:
+        scheduler.reschedule_job(
+            "depth_finalize",
+            trigger=CronTrigger(
+                day_of_week="mon-fri",
+                hour=sched["hour"],
+                minute=sched["minute"],
+                timezone="Asia/Shanghai",
+            ),
+        )
+        logger.info("depth_finalize rescheduled to %02d:%02d mon-fri", sched["hour"], sched["minute"])
+
+    return sched
+

@@ -493,7 +493,40 @@ def start_scheduler(repo: KlineRepository, capset: CapabilitySet) -> AsyncIOSche
         replace_existing=True,
     )
 
+    # 盘后: 五档盘口 sealed 定版(时间由偏好决定, 默认15:02, 范围15:01~18:00)
+    depth_sched = preferences.get_depth_finalize_time()
+
+    def _depth_finalize():
+        depth_svc = getattr(_get_app_state(), "depth_service", None) if _get_app_state() else None
+        if depth_svc:
+            depth_svc.finalize()
+
+    scheduler.add_job(
+        _depth_finalize,
+        trigger=CronTrigger(day_of_week="mon-fri",
+                            hour=depth_sched["hour"], minute=depth_sched["minute"],
+                            timezone="Asia/Shanghai"),
+        id="depth_finalize",
+        misfire_grace_time=3600,
+        replace_existing=True,
+    )
+
     scheduler.start()
-    logger.info("scheduler started; instruments@%02d:%02d, pipeline@%02d:%02d mon-fri",
-                inst_sched["hour"], inst_sched["minute"], sched["hour"], sched["minute"])
+    logger.info("scheduler started; instruments@%02d:%02d, pipeline@%02d:%02d, depth@%02d:%02d mon-fri",
+                inst_sched["hour"], inst_sched["minute"], sched["hour"], sched["minute"],
+                depth_sched["hour"], depth_sched["minute"])
     return scheduler
+
+
+# app_state 延迟引用(start_scheduler 在 lifespan 早期调用, app.state 可能还没就绪)
+_app_state_ref = None
+
+
+def set_app_state(app_state) -> None:
+    """lifespan 注册 app.state 引用, 供 scheduled job 访问 depth_service 等单例。"""
+    global _app_state_ref
+    _app_state_ref = app_state
+
+
+def _get_app_state():
+    return _app_state_ref

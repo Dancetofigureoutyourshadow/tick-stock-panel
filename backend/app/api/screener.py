@@ -434,16 +434,36 @@ def run_all(request: Request, body: Optional[dict] = None):
 def limit_ladder(
     request: Request,
     as_of: Optional[date] = None,
+    direction: str = Query("up", description="up=涨停梯队 | down=跌停梯队"),
     ext_columns: Optional[str] = Query(None, description="逗号分隔: config_id.field_name"),
 ):
-    """连板梯队 — 按连板数分组, 含涨停/炸板/断板三种状态。
+    """连板/连跌梯队 — 按连板数分组, 含三状态。
     返回: tiers = [{ boards, count, stocks: [{symbol,name,change_pct,status,...}] }]
-    status: limit_up=涨停 | broken=炸板(摸板未封) | failed=断板(晋级失败)
+
+    direction=up (默认):
+      status: limit_up=涨停 | broken=炸板(摸板未封) | failed=断板(晋级失败)
+    direction=down:
+      status: limit_down=跌停 | recovery=翘板(跌停后回升,含收阳条件) | failed=止跌(昨日跌停今日未跌停也未翘板)
+
     ext_columns: 动态 JOIN 扩展数据, 如 "concept.concept,industry.industry"
     """
     from datetime import timedelta
 
     import polars as pl
+
+    is_down = direction == "down"
+
+    # 按 direction 参数化字段映射
+    if is_down:
+        sig_col = "signal_limit_down"
+        consec_col = "consecutive_limit_downs"
+        broken_col = "signal_limit_down_recovery"
+        status_main, status_broken, status_failed = "limit_down", "recovery", "failed"
+    else:
+        sig_col = "signal_limit_up"
+        consec_col = "consecutive_limit_ups"
+        broken_col = "signal_broken_limit_up"
+        status_main, status_broken, status_failed = "limit_up", "broken", "failed"
 
     repo = request.app.state.repo
     svc = ScreenerService(repo)
@@ -453,17 +473,50 @@ def limit_ladder(
 
     df = svc._load_enriched_for_date(as_of)
     if df.is_empty():
-        return {"as_of": str(as_of), "tiers": []}
+        return {"as_of": str(as_of), "tiers": [], "counts": {"up": 0, "down": 0}}
 
-    # 加载前一日数据获取 prev consecutive_limit_ups
+    # 双方向涨跌停计数(不论当前 direction, 前端始终同时显示)
+    count_up_raw = int(df.filter(pl.col("signal_limit_up").fill_null(False)).height) if "signal_limit_up" in df.columns else 0
+    count_down_raw = int(df.filter(pl.col("signal_limit_down").fill_null(False)).height) if "signal_limit_down" in df.columns else 0
+
+    # 双方向 sealed 修正: 减去各自的假涨停(假涨停已归炸板, 不计入涨停数)
+    depth_svc_global = getattr(request.app.state, "depth_service", None)
+    fake_up = 0
+    fake_down = 0
+    sealed_up_ready = False
+    sealed_down_ready = False
+    if depth_svc_global:
+        up_map = depth_svc_global.get_sealed_map(as_of, is_down=False)
+        down_map = depth_svc_global.get_sealed_map(as_of, is_down=True)
+        sealed_up_ready = bool(up_map) and depth_svc_global.is_sealed_ready(as_of)
+        sealed_down_ready = bool(down_map) and depth_svc_global.is_sealed_ready(as_of)
+        if up_map:
+            fake_up = sum(1 for v in up_map.values() if v.get("sealed") is False)
+        if down_map:
+            fake_down = sum(1 for v in down_map.values() if v.get("sealed") is False)
+    count_up = count_up_raw - fake_up if sealed_up_ready else count_up_raw
+    count_down = count_down_raw - fake_down if sealed_down_ready else count_down_raw
+
+    # 双方向 sealed 明细(供前端弹窗同时显示涨跌停)
+    def _count_sealed(m: dict, ready: bool):
+        if not m or not ready:
+            return {"real": 0, "fake": 0, "pending": 0}
+        real = sum(1 for v in m.values() if v.get("sealed") is True)
+        fake = sum(1 for v in m.values() if v.get("sealed") is False)
+        pending = sum(1 for v in m.values() if v.get("sealed") is None)
+        return {"real": real, "fake": fake, "pending": pending}
+    sealed_counts_up = _count_sealed(up_map, sealed_up_ready)
+    sealed_counts_down = _count_sealed(down_map, sealed_down_ready)
+
+    # 加载前一日数据获取 prev consecutive_limit_ups/downs
     prev_consec: pl.DataFrame = pl.DataFrame()
     for delta in range(1, 10):
         candidate = as_of - timedelta(days=delta)
         df_prev = svc._load_enriched_for_date(candidate)
-        if not df_prev.is_empty() and "consecutive_limit_ups" in df_prev.columns:
+        if not df_prev.is_empty() and consec_col in df_prev.columns:
             prev_consec = df_prev.select(
                 "symbol",
-                pl.col("consecutive_limit_ups").alias("prev_consec"),
+                pl.col(consec_col).alias("prev_consec"),
             )
             break
 
@@ -473,17 +526,17 @@ def limit_ladder(
         df = df.with_columns(pl.lit(0).cast(pl.UInt32).alias("prev_consec"))
 
     # 表达式
-    is_limit = pl.col("signal_limit_up").fill_null(False) if "signal_limit_up" in df.columns else pl.lit(False)
-    is_broken = pl.col("signal_broken_limit_up").fill_null(False) if "signal_broken_limit_up" in df.columns else pl.lit(False)
-    consec = pl.col("consecutive_limit_ups").fill_null(0) if "consecutive_limit_ups" in df.columns else pl.lit(0)
+    is_limit = pl.col(sig_col).fill_null(False) if sig_col in df.columns else pl.lit(False)
+    is_broken = pl.col(broken_col).fill_null(False) if broken_col in df.columns else pl.lit(False)
+    consec = pl.col(consec_col).fill_null(0) if consec_col in df.columns else pl.lit(0)
     prev_c = pl.col("prev_consec").fill_null(0)
 
-    # 计算 status + boards
+    # 计算 status + boards (结构涨跌停对称, 仅字段与字面量不同)
     is_failed = ~is_limit & ~is_broken & (prev_c > 0)
     df = df.with_columns([
-        pl.when(is_limit).then(pl.lit("limit_up"))
-        .when(is_broken).then(pl.lit("broken"))
-        .when(is_failed).then(pl.lit("failed"))
+        pl.when(is_limit).then(pl.lit(status_main))
+        .when(is_broken).then(pl.lit(status_broken))
+        .when(is_failed).then(pl.lit(status_failed))
         .otherwise(None).alias("status"),
         pl.when(is_limit).then(consec)
         .when(is_broken | is_failed).then(prev_c + 1)
@@ -491,6 +544,70 @@ def limit_ladder(
     ])
 
     df = df.filter(pl.col("status").is_not_null() & (pl.col("boards") > 0))
+
+    # ── 五档 sealed 叠加(独立旁路, 不改 signal_limit_up) ──
+    # 假涨停(收盘价=涨停价但卖一有量)从 limit 降级为 broken(归炸板视图)
+    # 真涨停保留 + 附封单量; sealed=null(待确认/降级)保持原状
+    depth_svc = getattr(request.app.state, "depth_service", None)
+    sealed_ready = False
+    sealed_age: float | None = None
+    if depth_svc:
+        sealed_map = depth_svc.get_sealed_map(as_of, is_down=is_down)
+        sealed_ready = bool(sealed_map) and depth_svc.is_sealed_ready(as_of)
+        sealed_age = depth_svc.get_sealed_age(as_of) if sealed_ready else None
+
+        if sealed_map:
+            # 构建 sealed 列(symbol → sealed bool, vol)
+            sym_sealed = {s: v.get("sealed") for s, v in sealed_map.items()}
+            sym_vol = {s: v.get("vol") for s, v in sealed_map.items()}
+
+            # JOIN sealed: 对每只 status=main 的票, 看 sealed 值
+            sealed_rows = pl.DataFrame({
+                "symbol": list(sym_sealed.keys()),
+                "_sealed": list(sym_sealed.values()),
+                "_sealed_vol": list(sym_vol.values()),
+            }) if sym_sealed else pl.DataFrame()
+
+            if not sealed_rows.is_empty():
+                df = df.join(sealed_rows, on="symbol", how="left")
+                # 假涨停(main 状态但 sealed=False)→ 降级为 broken
+                df = df.with_columns(
+                    pl.when(
+                        (pl.col("status") == status_main)
+                        & pl.col("_sealed").is_not_null()
+                        & (pl.col("_sealed") == False)  # noqa: E712
+                    ).then(pl.lit(status_broken))
+                    .otherwise(pl.col("status")).alias("status"),
+                    # sealed_status: real/fake/pending/null
+                    pl.when(
+                        (pl.col("status") == status_main)
+                        & (pl.col("_sealed") == True)  # noqa: E712
+                    ).then(pl.lit("real"))
+                    .when(
+                        (pl.col("_sealed") == False)  # noqa: E712
+                    ).then(pl.lit("fake"))
+                    .when(
+                        (pl.col("status") == status_main)
+                        & pl.col("_sealed").is_null()
+                    ).then(pl.lit("pending"))
+                    .otherwise(None).alias("sealed_status"),
+                    pl.col("_sealed_vol").alias("sealed_vol"),
+                ).drop(["_sealed", "_sealed_vol"])
+            else:
+                df = df.with_columns(
+                    pl.lit(None).alias("sealed_status"),
+                    pl.lit(None).alias("sealed_vol"),
+                )
+        else:
+            df = df.with_columns(
+                pl.lit(None).alias("sealed_status"),
+                pl.lit(None).alias("sealed_vol"),
+            )
+    else:
+        df = df.with_columns(
+            pl.lit(None).alias("sealed_status"),
+            pl.lit(None).alias("sealed_vol"),
+        )
 
     # 动态 JOIN 扩展数据
     ext_specs = _parse_ext_columns(ext_columns) if ext_columns else []
@@ -529,11 +646,11 @@ def limit_ladder(
                         pass
 
     # 选择输出列
-    cols = ["symbol", "name", "change_pct", "boards", "status"] + ext_col_names
+    cols = ["symbol", "name", "close", "change_pct", "boards", "status", consec_col, "sealed_status", "sealed_vol"] + ext_col_names
     df = df.select([c for c in cols if c in df.columns])
-    # 排序: boards 降序, status 按涨停→炸板→断板
-    status_order = pl.when(pl.col("status") == "limit_up").then(0)
-    status_order = status_order.when(pl.col("status") == "broken").then(1)
+    # 排序: boards 降序, status 按主状态→炸/翘→断/止
+    status_order = pl.when(pl.col("status") == status_main).then(0)
+    status_order = status_order.when(pl.col("status") == status_broken).then(1)
     status_order = status_order.otherwise(2).alias("_status_order")
     df = df.with_columns(status_order).sort(["boards", "_status_order"], descending=[True, False]).drop("_status_order")
 
@@ -554,7 +671,21 @@ def limit_ladder(
         for n, stocks in sorted(tiers.items(), key=lambda x: -x[0])
     ]
 
-    return {"as_of": str(as_of), "tiers": tier_list}
+    return {
+        "as_of": str(as_of),
+        "tiers": tier_list,
+        "counts": {"up": count_up, "down": count_down},
+        "counts_raw": {"up": count_up_raw, "down": count_down_raw},
+        "sealed_ready": sealed_ready,
+        "sealed_age": round(sealed_age, 0) if sealed_age is not None else None,
+        "sealed_counts": {
+            "real": sum(1 for t in tier_list for s in t.get("stocks", []) if s.get("sealed_status") == "real"),
+            "fake": sum(1 for t in tier_list for s in t.get("stocks", []) if s.get("sealed_status") == "fake"),
+            "pending": sum(1 for t in tier_list for s in t.get("stocks", []) if s.get("sealed_status") == "pending"),
+        },
+        "sealed_counts_up": sealed_counts_up,
+        "sealed_counts_down": sealed_counts_down,
+    }
 
 
 def _parse_ext_columns(ext_columns: str) -> list[tuple[str, str]]:

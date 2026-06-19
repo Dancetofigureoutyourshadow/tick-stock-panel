@@ -10,6 +10,8 @@ import { storage } from '@/lib/storage'
 import { fmtPct, priceColorClass } from '@/lib/format'
 import { PageHeader } from '@/components/PageHeader'
 import { EmptyState } from '@/components/EmptyState'
+import { useCapabilities } from '@/lib/useSharedQueries'
+import { SealedBadge } from '@/components/SealedBadge'
 import type { ExtColumnDisplayConfig } from '@/lib/watchlist-columns'
 
 // ===== Ext 字段配置 =====
@@ -114,6 +116,24 @@ function getExtTags(stock: LimitLadderStock, item?: ExtFieldItem): string[] {
     : sliced
 }
 
+// ===== 方向(涨停/跌停) =====
+
+type Direction = 'up' | 'down'
+
+/** 格式化封单量(手/股): 大数转万/亿 */
+function fmtSealVol(v: number): string {
+  if (v >= 1e8) return (v / 1e8).toFixed(2) + '亿'
+  if (v >= 1e4) return (v / 1e4).toFixed(1) + '万'
+  return v.toLocaleString()
+}
+
+/** 格式化封单额(元): 大数转万/亿 */
+function fmtSealAmount(v: number): string {
+  if (v >= 1e8) return (v / 1e8).toFixed(2) + '亿'
+  if (v >= 1e4) return (v / 1e4).toFixed(0) + '万'
+  return v.toFixed(0)
+}
+
 // ===== 板块标识 =====
 
 function boardTag(symbol: string): { label: string; cls: string } | null {
@@ -125,7 +145,7 @@ function boardTag(symbol: string): { label: string; cls: string } | null {
 
 // ===== 状态标识 + 卡片样式 =====
 
-const STATUS_STYLE: Record<string, { bg: string; bar: string; nameCls: string; codeCls: string; badge: string; badgeText: string; cardStyle?: React.CSSProperties }> = {
+const STATUS_STYLE: Record<string, { bg: string; bar: string; nameCls: string; codeCls: string; badge: string; badgeText: string | ((d: Direction) => string); cardStyle?: React.CSSProperties; hoverShadow?: string }> = {
   limit_up: {
     bg: '',
     bar: 'border-l-2 border-bull/50',
@@ -137,6 +157,20 @@ const STATUS_STYLE: Record<string, { bg: string; bar: string; nameCls: string; c
       background: 'linear-gradient(105deg, hsl(4 60% 45% / 0.14) 0%, hsl(6 50% 30% / 0.09) 40%, hsl(220 15% 12% / 0.0) 100%)',
       boxShadow: 'inset 1px 0 0 hsl(4 80% 55% / 0.12), 0 0 10px -4px hsl(4 80% 50% / 0.10)',
     },
+    hoverShadow: 'inset 1px 0 0 hsl(4 80% 55% / 0.30), 0 0 18px -4px hsl(4 80% 50% / 0.28)',
+  },
+  limit_down: {
+    bg: '',
+    bar: 'border-l-2 border-bear/50',
+    nameCls: 'text-green-50 text-[13px]',
+    codeCls: 'text-muted/80',
+    badge: '',
+    badgeText: '',
+    cardStyle: {
+      background: 'linear-gradient(105deg, hsl(152 60% 45% / 0.14) 0%, hsl(150 50% 30% / 0.09) 40%, hsl(220 15% 12% / 0.0) 100%)',
+      boxShadow: 'inset 1px 0 0 hsl(152 80% 45% / 0.12), 0 0 10px -4px hsl(152 80% 45% / 0.10)',
+    },
+    hoverShadow: 'inset 1px 0 0 hsl(152 80% 45% / 0.30), 0 0 18px -4px hsl(152 80% 45% / 0.28)',
   },
   broken: {
     bg: 'opacity-75',
@@ -144,7 +178,15 @@ const STATUS_STYLE: Record<string, { bg: string; bar: string; nameCls: string; c
     nameCls: 'text-foreground/70 text-xs',
     codeCls: 'text-muted/60',
     badge: 'text-purple-400',
-    badgeText: '炸',
+    badgeText: d => d === 'down' ? '撬' : '炸',
+  },
+  recovery: {
+    bg: 'opacity-75',
+    bar: 'border-l border-purple-400/30',
+    nameCls: 'text-foreground/70 text-xs',
+    codeCls: 'text-muted/60',
+    badge: 'text-purple-400',
+    badgeText: '撬',
   },
   failed: {
     bg: 'opacity-75',
@@ -152,28 +194,51 @@ const STATUS_STYLE: Record<string, { bg: string; bar: string; nameCls: string; c
     nameCls: 'text-foreground/70 text-xs',
     codeCls: 'text-muted/60',
     badge: 'text-muted/80',
-    badgeText: '断',
+    badgeText: d => d === 'down' ? '止' : '断',
   },
+}
+
+// ===== sealed 降级标识 =====
+
+/** 判定 sealed 是否处于降级状态。
+ *  isHistorical 判定基于"用户选的日期是否早于数据最新日", 而非自然日今天
+ *  (否则休市日/节假日会把最新交易日误判为历史)。
+ */
+function useSealedDegrade(asOf: string, latestDate: string | undefined, sealedReady: boolean | undefined, sealedCounts?: { real: number; fake: number; pending: number }) {
+  const { data: caps } = useCapabilities()
+  const hasDepth = !!caps?.capabilities?.['depth5.batch']
+  // 历史判定: 用户主动选了早于最新交易日的日期
+  const isHistorical = !!asOf && !!latestDate && asOf < latestDate
+  // 降级: 无能力 / 历史日期 / 最新日但 sealed 未就绪
+  const degraded = !hasDepth || isHistorical || !sealedReady
+  return { degraded, hasDepth, isHistorical, sealedReady, sealedCounts }
 }
 
 // ===== 单只股票卡片 =====
 
-function StockCard({ stock, extFields, onClick }: {
+function StockCard({ stock, extFields, direction, sealMode, onClick }: {
   stock: LimitLadderStock
   extFields: ExtFieldConfig
+  direction: Direction
+  sealMode: 'vol' | 'amount'
   onClick: () => void
 }) {
   const code = stock.symbol.replace(/\.BJ$/, '').replace(/\.SZ$/, '').replace(/\.SH$/, '')
   const tag = boardTag(stock.symbol)
-  const status = stock.status || 'limit_up'
-  const style = STATUS_STYLE[status] || STATUS_STYLE.limit_up
-  const isLimitUp = status === 'limit_up'
+  const status = stock.status || (direction === 'down' ? 'limit_down' : 'limit_up')
+  const style = STATUS_STYLE[status] || STATUS_STYLE[direction === 'down' ? 'limit_down' : 'limit_up']
+  const isLimitHit = status === 'limit_up' || status === 'limit_down'
   const conceptTags = getExtTags(stock, extFields.concept)
   const industryTags = getExtTags(stock, extFields.industry)
   const isTextConcept = extFields.concept?.display?.displayMode === 'text'
   const isTextIndustry = extFields.industry?.display?.displayMode === 'text'
   const conceptLayout = extFields.concept?.display?.tagLayout ?? 'horizontal'
   const industryLayout = extFields.industry?.display?.tagLayout ?? 'horizontal'
+
+  // 连板数: 按 direction 选字段
+  const consecNum = direction === 'down' ? stock.consecutive_limit_downs : stock.consecutive_limit_ups
+  // badgeText 可能是函数(涨跌停共用 status 如 failed/broken)
+  const badgeText = typeof style.badgeText === 'function' ? style.badgeText(direction) : style.badgeText
 
   const tagCls = 'text-[9px] leading-none px-1 py-px rounded-sm'
   const conceptCls = 'text-[10px] leading-none px-1.5 py-0.5 rounded-sm text-orange-200/60 bg-orange-400/[0.05]'
@@ -188,8 +253,8 @@ function StockCard({ stock, extFields, onClick }: {
       className={`group flex flex-col items-start gap-1 px-2.5 py-2 rounded-md transition-all duration-200 cursor-pointer hover:opacity-100 ${style.bg} ${style.bar}`}
       style={style.cardStyle ? { ...style.cardStyle } : undefined}
       onMouseEnter={e => {
-        if (!style.cardStyle) return
-        e.currentTarget.style.boxShadow = 'inset 1px 0 0 hsl(4 80% 55% / 0.30), 0 0 18px -4px hsl(4 80% 50% / 0.28)'
+        if (!style.cardStyle || !style.hoverShadow) return
+        e.currentTarget.style.boxShadow = style.hoverShadow
       }}
       onMouseLeave={e => {
         if (!style.cardStyle) return
@@ -207,17 +272,28 @@ function StockCard({ stock, extFields, onClick }: {
       <div className="flex items-center gap-1.5 w-full">
         <span className={`${style.codeCls} font-mono text-[10px] tracking-tight`}>{code}</span>
         <span className="ml-auto flex items-center gap-1">
-          {!isLimitUp ? (
+          {!isLimitHit ? (
             <span className={`text-[10px] font-semibold tabular-nums ${priceColorClass(stock.change_pct)}`}>
               {fmtPct(stock.change_pct)}
             </span>
-          ) : (
+          ) : stock.sealed_status === 'real' && stock.sealed_vol != null ? (
+            /* 已修正真封板: 右侧显示封单(量或额, 替代连板数)。
+               sealed_vol 单位是手, 1手=100股, 算金额需 ×100 */
             <span className="text-[10px] font-semibold tabular-nums text-accent/80">
-              {stock.consecutive_limit_ups}
+              {sealMode === 'amount' && stock.close
+                ? fmtSealAmount(stock.sealed_vol * 100 * stock.close)
+                : fmtSealVol(stock.sealed_vol)}
+            </span>
+          ) : stock.sealed_status === 'pending' ? (
+            <span className="text-[9px] text-yellow-500/60 leading-none">待确认</span>
+          ) : (
+            /* 未修正: 显示连板数 */
+            <span className="text-[10px] font-semibold tabular-nums text-accent/80">
+              {consecNum}
             </span>
           )}
-          {style.badgeText && (
-            <span className={`text-[9px] font-medium ${style.badge}`}>{style.badgeText}</span>
+          {badgeText && (
+            <span className={`text-[9px] font-medium ${style.badge}`}>{badgeText}</span>
           )}
         </span>
       </div>
@@ -246,13 +322,23 @@ function StockCard({ stock, extFields, onClick }: {
 
 // ===== 过滤（多选） =====
 
-type FilterKey = 'limit_up' | 'broken' | 'failed' | 'main' | 'chinext' | 'star' | 'bj' | 'st'
+type FilterKey = 'limit_up' | 'broken' | 'failed' | 'limit_down' | 'recovery' | 'main' | 'chinext' | 'star' | 'bj' | 'st'
 
-const STATUS_TABS: { key: FilterKey; label: string }[] = [
+const STATUS_TABS_UP: { key: FilterKey; label: string }[] = [
   { key: 'limit_up', label: '涨停' },
   { key: 'broken', label: '炸板' },
   { key: 'failed', label: '断板' },
 ]
+
+const STATUS_TABS_DOWN: { key: FilterKey; label: string }[] = [
+  { key: 'limit_down', label: '跌停' },
+  { key: 'recovery', label: '翘板' },
+  { key: 'failed', label: '止跌' },
+]
+
+function statusTabs(direction: Direction) {
+  return direction === 'down' ? STATUS_TABS_DOWN : STATUS_TABS_UP
+}
 
 const BOARD_TABS: { key: FilterKey; label: string }[] = [
   { key: 'main', label: 'A主板' },
@@ -268,8 +354,12 @@ function matchFilter(stock: LimitLadderStock, key: FilterKey): boolean {
   switch (key) {
     case 'limit_up':
       return stock.status === 'limit_up' || !stock.status
+    case 'limit_down':
+      return stock.status === 'limit_down'
     case 'broken':
       return stock.status === 'broken'
+    case 'recovery':
+      return stock.status === 'recovery'
     case 'failed':
       return stock.status === 'failed'
     case 'main':
@@ -285,8 +375,8 @@ function matchFilter(stock: LimitLadderStock, key: FilterKey): boolean {
   }
 }
 
-function isStatusKey(key: FilterKey): key is 'limit_up' | 'broken' | 'failed' {
-  return key === 'limit_up' || key === 'broken' || key === 'failed'
+function isStatusKey(key: FilterKey): boolean {
+  return key === 'limit_up' || key === 'limit_down' || key === 'broken' || key === 'recovery' || key === 'failed'
 }
 
 function filterTiers(tiers: LimitLadderTier[], keys: Set<FilterKey>, bf?: BrokenFailedConfig): LimitLadderTier[] {
@@ -300,11 +390,14 @@ function filterTiers(tiers: LimitLadderTier[], keys: Set<FilterKey>, bf?: Broken
     .map(t => ({
       ...t,
       stocks: t.stocks.filter(s => {
-        // 炸板/断板：先按 boards 阈值过滤
-        if (s.status === 'broken' && (cfg.brokenMinBoards ?? 0) > 0 && t.boards < (cfg.brokenMinBoards ?? 0)) return false
+        // 炸板/翘板：先按 boards 阈值过滤 (broken 涨停侧, recovery 跌停侧共用 broken 配置)
+        const isBrokenLike = s.status === 'broken' || s.status === 'recovery'
+        if (isBrokenLike && (cfg.brokenMinBoards ?? 0) > 0 && t.boards < (cfg.brokenMinBoards ?? 0)) return false
+        // 断板/止跌：按 boards 阈值过滤 (failed 涨跌停两侧共用)
         if (s.status === 'failed' && (cfg.failedMinBoards ?? 0) > 0 && t.boards < (cfg.failedMinBoards ?? 0)) return false
-        // 炸板/断板：是否显示
-        if (s.status === 'broken' && !cfg.brokenShow) return false
+        // 炸板/翘板：是否显示
+        if (isBrokenLike && !cfg.brokenShow) return false
+        // 断板/止跌：是否显示
         if (s.status === 'failed' && !cfg.failedShow) return false
         // 状态组 AND 板块组：两组各至少匹配一个
         const statusOk = statusKeys.length === 0 || statusKeys.some(k => matchFilter(s, k))
@@ -324,7 +417,7 @@ const DEFAULT_FILTERS = new Set<FilterKey>(['limit_up', 'main', 'chinext', 'star
 
 function loadFilterKeys(): Set<FilterKey> {
   const arr = storage.limitLadderBoard.get([])
-  const allTabs = [...STATUS_TABS, ...BOARD_TABS]
+  const allTabs = [...STATUS_TABS_UP, ...BOARD_TABS]
   const valid = arr.filter((k): k is FilterKey => allTabs.some(t => t.key === k))
   return valid.length > 0 ? new Set(valid) : new Set(DEFAULT_FILTERS)
 }
@@ -357,31 +450,38 @@ function tierTextCls(n: number): string {
   return 'text-muted'
 }
 
-function tierLabel(n: number): string {
+function tierLabel(n: number, direction: Direction): string {
+  if (direction === 'down') return n === 1 ? '首跌' : `${n}连跌`
   return n === 1 ? '首板' : `${n}板`
 }
 
 // ===== 梯队总览条 =====
 
-function OverviewBar({ tiers, dateValue, onDateChange, filterKeys, bf }: {
+function OverviewBar({ tiers, dateValue, onDateChange, filterKeys, bf, direction }: {
   tiers: LimitLadderTier[]
   dateValue: string
   onDateChange: (v: string) => void
   filterKeys: Set<FilterKey>
   bf?: BrokenFailedConfig
+  direction: Direction
 }) {
   if (tiers.length === 0) return null
   const cfg = { ...DEFAULT_BF, ...bf }
-  const limitUpCounts = tiers.map(t => t.stocks.filter(s => s.status === 'limit_up' || !s.status).length)
+  const mainStatus = direction === 'down' ? 'limit_down' : 'limit_up'
+  const brokenStatus = direction === 'down' ? 'recovery' : 'broken'
+  // 命中数: 涨停/跌停主状态(含无 status 兜底)
+  const limitUpCounts = tiers.map(t => t.stocks.filter(s => s.status === mainStatus || !s.status).length)
   const maxCount = Math.max(...limitUpCounts, 1)
-  const showBroken = filterKeys.has('broken') && cfg.brokenShow
+  const showBroken = (filterKeys.has('broken') || filterKeys.has('recovery')) && cfg.brokenShow
   const showFailed = filterKeys.has('failed') && cfg.failedShow
   const totalBroken = cfg.brokenCount
-    ? tiers.reduce((s, t) => s + t.stocks.filter(st => st.status === 'broken').length, 0)
+    ? tiers.reduce((s, t) => s + t.stocks.filter(st => st.status === brokenStatus).length, 0)
     : 0
   const totalFailed = cfg.failedCount
     ? tiers.reduce((s, t) => s + t.stocks.filter(st => st.status === 'failed').length, 0)
     : 0
+  const brokenLabel = direction === 'down' ? '翘板' : '炸板'
+  const failedLabel = direction === 'down' ? '止跌' : '断板'
 
   return (
     <div className="flex items-center gap-4 px-5 py-2">
@@ -390,7 +490,7 @@ function OverviewBar({ tiers, dateValue, onDateChange, filterKeys, bf }: {
           const luCount = limitUpCounts[idx]
           return (
             <div key={t.boards} className="flex items-center gap-1">
-              <span className={`font-medium ${tierTextCls(t.boards)}`}>{tierLabel(t.boards)}</span>
+              <span className={`font-medium ${tierTextCls(t.boards)}`}>{tierLabel(t.boards, direction)}</span>
               <div
                 className="h-2 rounded-sm bg-accent/40"
                 style={{ width: `${Math.max(8, (luCount / maxCount) * 48)}px` }}
@@ -400,10 +500,10 @@ function OverviewBar({ tiers, dateValue, onDateChange, filterKeys, bf }: {
           )
         })}
         {showBroken && totalBroken > 0 && (
-          <span className="text-purple-400 font-medium">炸板 {totalBroken}</span>
+          <span className="text-purple-400 font-medium">{brokenLabel} {totalBroken}</span>
         )}
         {showFailed && totalFailed > 0 && (
-          <span className="text-yellow-500 font-medium">断板 {totalFailed}</span>
+          <span className="text-yellow-500 font-medium">{failedLabel} {totalFailed}</span>
         )}
       </div>
       <div className="ml-auto">
@@ -415,7 +515,7 @@ function OverviewBar({ tiers, dateValue, onDateChange, filterKeys, bf }: {
 
 // ===== 标签统计面板 =====
 
-function TagStats({ title, tiers, extFields, fieldKey, color, selectedTag, onSelect }: {
+function TagStats({ title, tiers, extFields, fieldKey, color, selectedTag, onSelect, direction }: {
   title: string
   tiers: LimitLadderTier[]
   extFields: ExtFieldConfig
@@ -423,8 +523,10 @@ function TagStats({ title, tiers, extFields, fieldKey, color, selectedTag, onSel
   color: { text: [number, number, number]; bg: [number, number, number] }
   selectedTag: { fieldKey: 'concept' | 'industry'; tag: string } | null
   onSelect: (sel: { fieldKey: 'concept' | 'industry'; tag: string } | null) => void
+  direction: Direction
 }) {
   const [expanded, setExpanded] = useState(false)
+  const mainStatus = direction === 'down' ? 'limit_down' : 'limit_up'
 
   const stats = useMemo(() => {
     const item = extFields[fieldKey]
@@ -432,7 +534,7 @@ function TagStats({ title, tiers, extFields, fieldKey, color, selectedTag, onSel
     const counts = new Map<string, number>()
     for (const t of tiers) {
       for (const s of t.stocks) {
-        if (s.status && s.status !== 'limit_up') continue
+        if (s.status && s.status !== mainStatus) continue
         const tags = getExtTags(s, item)
         for (const tag of tags) {
           counts.set(tag, (counts.get(tag) || 0) + 1)
@@ -440,7 +542,7 @@ function TagStats({ title, tiers, extFields, fieldKey, color, selectedTag, onSel
       }
     }
     return [...counts.entries()].sort((a, b) => b[1] - a[1])
-  }, [tiers, extFields, fieldKey])
+  }, [tiers, extFields, fieldKey, mainStatus])
 
   if (stats.length === 0) return null
 
@@ -507,7 +609,7 @@ function TagStats({ title, tiers, extFields, fieldKey, color, selectedTag, onSel
 
 // ===== 梯队分组 =====
 
-function TierGroup({ tier, defaultOpen, extFields, filterKeys, bf, onStockClick, selectedTag, onSelectTag }: {
+function TierGroup({ tier, defaultOpen, extFields, filterKeys, bf, onStockClick, selectedTag, onSelectTag, direction, sealMode }: {
   tier: LimitLadderTier
   defaultOpen: boolean
   extFields: ExtFieldConfig
@@ -516,14 +618,20 @@ function TierGroup({ tier, defaultOpen, extFields, filterKeys, bf, onStockClick,
   onStockClick: (symbol: string, name?: string) => void
   selectedTag: { fieldKey: 'concept' | 'industry'; tag: string } | null
   onSelectTag: (sel: { fieldKey: 'concept' | 'industry'; tag: string } | null) => void
+  direction: Direction
+  sealMode: 'vol' | 'amount'
 }) {
   const [open, setOpen] = useState(defaultOpen)
   const cfg = { ...DEFAULT_BF, ...bf }
-  const showBroken = filterKeys.has('broken') && cfg.brokenShow
+  const mainStatus = direction === 'down' ? 'limit_down' : 'limit_up'
+  const brokenStatus = direction === 'down' ? 'recovery' : 'broken'
+  const brokenBadge = direction === 'down' ? '撬' : '炸'
+  const failedBadge = direction === 'down' ? '止' : '断'
+  const showBroken = (filterKeys.has('broken') || filterKeys.has('recovery')) && cfg.brokenShow
   const showFailed = filterKeys.has('failed') && cfg.failedShow
 
-  const luCount = tier.stocks.filter(s => s.status === 'limit_up' || !s.status).length
-  const brCount = cfg.brokenCount ? tier.stocks.filter(s => s.status === 'broken').length : 0
+  const luCount = tier.stocks.filter(s => s.status === mainStatus || !s.status).length
+  const brCount = cfg.brokenCount ? tier.stocks.filter(s => s.status === brokenStatus).length : 0
   const faCount = cfg.failedCount ? tier.stocks.filter(s => s.status === 'failed').length : 0
 
   // 分组概念/行业统计
@@ -531,25 +639,25 @@ function TierGroup({ tier, defaultOpen, extFields, filterKeys, bf, onStockClick,
     if (!extFields.showConceptGroupStats || !extFields.concept?.field) return []
     const counts = new Map<string, number>()
     for (const s of tier.stocks) {
-      if (s.status && s.status !== 'limit_up') continue
+      if (s.status && s.status !== mainStatus) continue
       for (const tag of getExtTags(s, extFields.concept)) {
         counts.set(tag, (counts.get(tag) || 0) + 1)
       }
     }
     return [...counts.entries()].sort((a, b) => b[1] - a[1])
-  }, [tier.stocks, extFields])
+  }, [tier.stocks, extFields, mainStatus])
 
   const groupIndustryStats = useMemo(() => {
     if (!extFields.showIndustryGroupStats || !extFields.industry?.field) return []
     const counts = new Map<string, number>()
     for (const s of tier.stocks) {
-      if (s.status && s.status !== 'limit_up') continue
+      if (s.status && s.status !== mainStatus) continue
       for (const tag of getExtTags(s, extFields.industry)) {
         counts.set(tag, (counts.get(tag) || 0) + 1)
       }
     }
     return [...counts.entries()].sort((a, b) => b[1] - a[1])
-  }, [tier.stocks, extFields])
+  }, [tier.stocks, extFields, mainStatus])
 
   const hasGroupStats = groupConceptStats.length > 0 || groupIndustryStats.length > 0
 
@@ -565,12 +673,12 @@ function TierGroup({ tier, defaultOpen, extFields, filterKeys, bf, onStockClick,
         className="w-full flex items-center gap-2 px-3 py-2 hover:bg-surface/80 transition-colors"
       >
         <Flame className={`h-3.5 w-3.5 ${tier.boards >= 5 ? 'text-orange-500' : tier.boards >= 3 ? 'text-yellow-500' : 'text-muted'}`} />
-        <span className={`text-sm font-bold tabular-nums ${tierTextCls(tier.boards)}`}>{tierLabel(tier.boards)}<span className="text-muted/40 mx-1">·</span>{luCount}</span>
+        <span className={`text-sm font-bold tabular-nums ${tierTextCls(tier.boards)}`}>{tierLabel(tier.boards, direction)}<span className="text-muted/40 mx-1">·</span>{luCount}</span>
         {(showBroken && brCount > 0) || (showFailed && faCount > 0) ? (
           <span className="text-[11px] text-muted/60">
-            {showBroken && brCount > 0 && <span className="text-purple-400">{brCount}炸</span>}
+            {showBroken && brCount > 0 && <span className="text-purple-400">{brCount}{brokenBadge}</span>}
             {showBroken && brCount > 0 && showFailed && faCount > 0 && <span className="text-muted/40"> · </span>}
-            {showFailed && faCount > 0 && <span className="text-muted/80">{faCount}断</span>}
+            {showFailed && faCount > 0 && <span className="text-muted/80">{faCount}{failedBadge}</span>}
           </span>
         ) : null}
         <ChevronDown
@@ -649,13 +757,19 @@ function TierGroup({ tier, defaultOpen, extFields, filterKeys, bf, onStockClick,
                   return tags.includes(selectedTag.tag)
                 })
                 .sort((a, b) => {
-                  const ord = (s: string) => s === 'limit_up' || !s ? 0 : s === 'broken' ? 1 : 2
+                  const ord = (s: string) => {
+                    if (s === 'limit_up' || s === 'limit_down' || !s) return 0
+                    if (s === 'broken' || s === 'recovery') return 1
+                    return 2
+                  }
                   return ord(a.status ?? '') - ord(b.status ?? '')
                 }).map(s => (
                 <StockCard
                   key={`${s.symbol}-${s.status}`}
                   stock={s}
                   extFields={extFields}
+                  direction={direction}
+                  sealMode={sealMode}
                   onClick={() => onStockClick(s.symbol, s.name ?? undefined)}
                 />
               ))}
@@ -960,11 +1074,26 @@ function ExtConfigDialog({ fields, onSave, onClose }: {
 
 export function LimitUpLadder() {
   const [asOf, setAsOf] = useState('')
+  const [direction, setDirection] = useState<Direction>(() => storage.limitLadderDirection.get('up'))
+  const [sealMode, setSealMode] = useState<'vol' | 'amount'>(() => storage.limitLadderSealMode.get('vol'))
   const [filterKeys, setFilterKeys] = useState<Set<FilterKey>>(loadFilterKeys)
   const [extFields, setExtFields] = useState<ExtFieldConfig>(loadExtFields)
   const [showExtConfig, setShowExtConfig] = useState(false)
   const [showConcept, setShowConcept] = useState(() => storage.limitLadderShowExt.get({ concept: true, industry: true }).concept)
   const [showIndustry, setShowIndustry] = useState(() => storage.limitLadderShowExt.get({ concept: true, industry: true }).industry)
+
+  const toggleDirection = useCallback((d: Direction) => {
+    setDirection(d)
+    storage.limitLadderDirection.set(d)
+    // 切换方向时重置状态筛选为该方向默认集(避免涨跌状态键错配)
+    const defaultKeys = d === 'down'
+      ? ['limit_down', 'main', 'chinext', 'star', 'bj']
+      : ['limit_up', 'main', 'chinext', 'star', 'bj']
+    const allTabs = [...statusTabs(d), ...BOARD_TABS]
+    const valid = defaultKeys.filter(k => allTabs.some(t => t.key === k)) as FilterKey[]
+    setFilterKeys(new Set(valid))
+    storage.limitLadderBoard.set(valid)
+  }, [])
 
   const toggleConcept = useCallback(() => {
     setShowConcept(prev => {
@@ -1010,15 +1139,17 @@ export function LimitUpLadder() {
   const extColumnsParam = useMemo(() => buildExtColumnsParam(extFields), [extFields])
 
   const { data, isLoading, refetch, isFetching } = useQuery({
-    queryKey: [QK.limitLadder(asOf || undefined), extColumnsParam],
-    queryFn: () => api.limitLadder(asOf || undefined, extColumnsParam),
+    queryKey: [QK.limitLadder(asOf || undefined), extColumnsParam, direction],
+    queryFn: () => api.limitLadder(asOf || undefined, extColumnsParam, direction),
     staleTime: 5 * 60_000,
   })
 
   const rawTiers = data?.tiers ?? []
   const tiers = filterTiers(rawTiers, filterKeys, extFields.bf)
-  const totalStocks = tiers.reduce((sum, t) => sum + t.stocks.filter(s => s.status === 'limit_up' || !s.status).length, 0)
   const displayDate = data?.as_of ?? asOf
+
+  // sealed 降级判定
+  const sealedDegrade = useSealedDegrade(asOf, data?.as_of, data?.sealed_ready, data?.sealed_counts)
 
   if (isLoading) {
     return (
@@ -1033,8 +1164,8 @@ export function LimitUpLadder() {
   if (!data || rawTiers.length === 0) {
     return (
       <div className="flex flex-col h-full">
-        <PageHeader title="连板梯队" />
-        <EmptyState icon={Flame} title="暂无连板数据" hint="该日期无涨停股或 enriched 数据未就绪" />
+        <PageHeader title={direction === 'down' ? '连跌梯队' : '连板梯队'} />
+        <EmptyState icon={Flame} title={direction === 'down' ? '暂无连跌数据' : '暂无连板数据'} hint={direction === 'down' ? '该日期无跌停股或 enriched 数据未就绪' : '该日期无涨停股或 enriched 数据未就绪'} />
       </div>
     )
   }
@@ -1042,12 +1173,75 @@ export function LimitUpLadder() {
   return (
     <div className="flex flex-col h-full">
       <PageHeader
-        title="连板梯队"
-        subtitle={`${totalStocks}只`}
+        title={direction === 'down' ? '连跌梯队' : '连板梯队'}
+        titleExtra={
+          <div className="flex items-center gap-2">
+            <SealedBadge
+              degraded={sealedDegrade.degraded}
+              hasDepth={sealedDegrade.hasDepth}
+              isHistorical={sealedDegrade.isHistorical}
+              sealedReady={sealedDegrade.sealedReady}
+              sealedCountsUp={data?.sealed_counts_up}
+              sealedCountsDown={data?.sealed_counts_down}
+              rawUp={data?.counts_raw?.up}
+              rawDown={data?.counts_raw?.down}
+            />
+            {/* 涨跌停切换(胶囊式): 点击切换方向, 当前方向有背景 */}
+            <div className="flex items-center rounded-full bg-elevated/60 p-0.5">
+              <button
+                onClick={() => direction !== 'up' && toggleDirection('up')}
+                className={`flex items-center gap-1 px-2.5 h-7 rounded-full text-xs tabular-nums transition-all ${
+                  direction === 'up'
+                    ? 'bg-bull/15 text-bull font-semibold'
+                    : 'text-muted hover:text-bull/70'
+                }`}
+              >
+                <span>涨停</span>
+                <span>{data?.counts?.up ?? 0}</span>
+              </button>
+              <button
+                onClick={() => direction !== 'down' && toggleDirection('down')}
+                className={`flex items-center gap-1 px-2.5 h-7 rounded-full text-xs tabular-nums transition-all ${
+                  direction === 'down'
+                    ? 'bg-bear/15 text-bear font-semibold'
+                    : 'text-muted hover:text-bear/70'
+                }`}
+              >
+                <span>跌停</span>
+                <span>{data?.counts?.down ?? 0}</span>
+              </button>
+            </div>
+          </div>
+        }
         right={
           <div className="flex items-center gap-1">
-            {/* 状态组: 涨停/炸板/断板 */}
-            {STATUS_TABS.map(tab => (
+            {/* 封单模式: 成交量/金额(仅 sealed 就绪时显示) — 胶囊式 */}
+            {data?.sealed_ready && (
+              <>
+                <div className="flex items-center rounded-full bg-elevated/60 p-0.5">
+                  {(['vol', 'amount'] as const).map(m => (
+                    <button
+                      key={m}
+                      onClick={() => {
+                        setSealMode(m)
+                        storage.limitLadderSealMode.set(m)
+                      }}
+                      className={`flex items-center px-2 py-1 rounded-full text-xs transition-all ${
+                        sealMode === m
+                          ? 'bg-accent/15 text-accent font-medium'
+                          : 'text-muted hover:text-secondary'
+                      }`}
+                    >
+                      {m === 'vol' ? '封单量' : '封单额'}
+                    </button>
+                  ))}
+                </div>
+                <div className="w-px h-4 bg-border mx-1" />
+              </>
+            )}
+
+            {/* 状态组: 涨停/炸板/断板 或 跌停/翘板/止跌 */}
+            {statusTabs(direction).map(tab => (
               <button
                 key={tab.key}
                 onClick={() => toggleFilter(tab.key)}
@@ -1122,7 +1316,7 @@ export function LimitUpLadder() {
       />
 
       {/* 总览条 + 日期 */}
-      <OverviewBar tiers={tiers} dateValue={dateValue} onDateChange={setAsOf} filterKeys={filterKeys} bf={extFields.bf} />
+      <OverviewBar tiers={tiers} dateValue={dateValue} onDateChange={setAsOf} filterKeys={filterKeys} bf={extFields.bf} direction={direction} />
 
       {/* 概念统计 */}
       {(extFields.showConceptStats ?? true) && (
@@ -1134,6 +1328,7 @@ export function LimitUpLadder() {
           color={{ text: [250, 204, 21], bg: [234, 179, 8] }}
           selectedTag={selectedTag}
           onSelect={handleSelectTag}
+          direction={direction}
         />
       )}
       {/* 行业统计 */}
@@ -1146,6 +1341,7 @@ export function LimitUpLadder() {
           color={{ text: [96, 165, 250], bg: [59, 130, 246] }}
           selectedTag={selectedTag}
           onSelect={handleSelectTag}
+          direction={direction}
         />
       )}
 
@@ -1162,6 +1358,8 @@ export function LimitUpLadder() {
             onStockClick={handleStockClick}
             selectedTag={selectedTag}
             onSelectTag={handleSelectTag}
+            direction={direction}
+            sealMode={sealMode}
           />
         ))}
       </div>

@@ -21,6 +21,7 @@ class Cap(StrEnum):
     INTRADAY               = "intraday"
     INTRADAY_BATCH         = "intraday.batch"
     DEPTH5                 = "depth5"
+    DEPTH5_BATCH           = "depth5.batch"
     WEBSOCKET              = "websocket"
     FINANCIAL              = "financial"
     ADJ_FACTOR             = "adj_factor"

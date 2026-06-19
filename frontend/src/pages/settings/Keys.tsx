@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { motion } from 'framer-motion'
+import { motion, AnimatePresence } from 'framer-motion'
 import {
   Key,
   Eye,
@@ -15,11 +15,12 @@ import {
   Save,
   Check,
   Copy,
+  HelpCircle,
 } from 'lucide-react'
 import { api } from '@/lib/api'
 import { useCapabilities, useSettings } from '@/lib/useSharedQueries'
 import { QK } from '@/lib/queryKeys'
-import { CAP_LABELS } from '@/lib/capability-labels'
+import { CAP_LABELS, tierTextStyle, tierStyle, tierBaseName, ALL_TIERS, TierTag } from '@/lib/capability-labels'
 
 // ===== 导出为 Panel 组件 (由 Settings.tsx 嵌入) =====
 
@@ -224,8 +225,11 @@ export function SettingsKeysPanel() {
           >
             {caps.data ? (
               <>
-                <div className="font-mono text-3xl font-bold tracking-tight text-foreground">
-                  {caps.data.label}
+                <div className="flex items-center gap-1.5">
+                  <div className="font-mono text-3xl font-bold tracking-tight" style={tierTextStyle(caps.data.label)}>
+                    {caps.data.label}
+                  </div>
+                  <TierHelpPopover currentLabel={caps.data.label} />
                 </div>
                 <div className="mt-1 text-xs text-muted">
                   根据 API Key 自动检测 · 拥有"代表性 capability"任一即认为该档
@@ -343,6 +347,68 @@ export function SettingsKeysPanel() {
 }
 
 // ===== 通用卡片 =====
+
+// ===== 档位说明弹窗 =====
+
+function TierHelpPopover({ currentLabel }: { currentLabel: string }) {
+  const [open, setOpen] = useState(false)
+  const currentBase = tierBaseName(currentLabel)
+
+  return (
+    <div className="relative inline-flex items-center">
+      <HelpCircle
+        className="h-4 w-4 text-muted/60 cursor-help hover:text-muted transition-colors"
+        onClick={() => setOpen(v => !v)}
+      />
+      <AnimatePresence>
+        {open && (
+          <>
+            <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+            <motion.div
+              initial={{ opacity: 0, y: -4, scale: 0.95 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: -4, scale: 0.95 }}
+              transition={{ duration: 0.15 }}
+              className="absolute top-full left-0 mt-1 z-50 w-72 bg-surface border border-border rounded-lg shadow-xl p-3.5 text-[11px] leading-relaxed"
+              onClick={e => e.stopPropagation()}
+            >
+              {/* 4 档位 tag 横排 */}
+              <div className="flex items-center gap-1.5 mb-3">
+                {ALL_TIERS.map(t => (
+                  <div key={t} className={`flex flex-col items-center gap-1 ${t === currentBase ? '' : 'opacity-60'}`}>
+                    <TierTag label={t} />
+                  </div>
+                ))}
+              </div>
+
+              {/* 每档说明 */}
+              <div className="space-y-1 mb-3 pb-3 border-b border-border">
+                {ALL_TIERS.map(t => {
+                  const s = tierStyle(t)
+                  return (
+                    <div key={t} className="flex items-center gap-2">
+                      <span className="h-1.5 w-1.5 rounded-full shrink-0" style={s.dotStyle} />
+                      <span className="capitalize font-mono font-bold w-12 shrink-0" style={s.labelTextStyle}>{t}</span>
+                      <span className="text-secondary">{s.desc}</span>
+                    </div>
+                  )
+                })}
+              </div>
+
+              {/* 检测说明 */}
+              <div className="text-secondary space-y-1.5">
+                <div className="font-medium text-foreground">档位检测说明</div>
+                <p>系统保存 API Key 后会逐一试探各项数据能力,根据实际可用的功能自动匹配档位。拥有某档"代表性能力"(如 Expert 的财务数据)即判定为该档。</p>
+                <p className="text-muted">"代表性能力"任一命中即认作该档及以上,单个能力探测失败不会误降档位。补购单项能力(如 Pro + 分钟K)会在档位标签后显示 + 号。</p>
+              </div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
+    </div>
+  )
+}
+
 
 interface CardProps {
   icon: React.ComponentType<{ className?: string }>

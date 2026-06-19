@@ -399,6 +399,24 @@ def _build_overview(request: Request, as_of: date | None = None) -> dict:
     broken = sum(1 for r in rows if bool(r.get("signal_broken_limit_up")))
     limit_down = sum(1 for r in rows if bool(r.get("signal_limit_down")))
     max_boards = max([int(_finite(r.get("consecutive_limit_ups")) or 0) for r in rows], default=0)
+
+    # 五档 sealed 修正: 假涨停/假跌停不计入(需 Pro+ depth5.batch 能力)
+    depth_svc = getattr(request.app.state, "depth_service", None)
+    sealed_ready = False
+    fake_up = 0
+    fake_down = 0
+    if depth_svc:
+        up_map = depth_svc.get_sealed_map(as_of, is_down=False)
+        down_map = depth_svc.get_sealed_map(as_of, is_down=True)
+        sealed_ready = bool(up_map or down_map) and depth_svc.is_sealed_ready(as_of)
+        if up_map:
+            fake_up = sum(1 for v in up_map.values() if v.get("sealed") is False)
+        if down_map:
+            fake_down = sum(1 for v in down_map.values() if v.get("sealed") is False)
+    if sealed_ready:
+        limit_up = max(0, limit_up - fake_up)
+        limit_down = max(0, limit_down - fake_down)
+
     seal_rate = limit_up / (limit_up + broken) * 100 if (limit_up + broken) > 0 else 0
 
     def above_ma_count(ma_key: str) -> int:
@@ -496,7 +514,7 @@ def _build_overview(request: Request, as_of: date | None = None) -> dict:
         },
         "amount": {"total": total_amount, "avg": avg_amount},
         "boards": boards,
-        "limit": {"limit_up": limit_up, "broken": broken, "failed": 0, "limit_down": limit_down, "max_boards": max_boards, "seal_rate": seal_rate, "tiers": tiers},
+        "limit": {"limit_up": limit_up, "broken": broken, "failed": 0, "limit_down": limit_down, "max_boards": max_boards, "seal_rate": seal_rate, "tiers": tiers, "sealed_ready": sealed_ready, "fake_up": fake_up, "fake_down": fake_down},
         "distribution": _pct_band_rows(pct_values),
         "trend": {
             "above_ma5": above_ma5,

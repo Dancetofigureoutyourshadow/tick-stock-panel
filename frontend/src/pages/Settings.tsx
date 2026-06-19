@@ -34,6 +34,7 @@ export function Settings() {
   const [searchParams, setSearchParams] = useSearchParams()
   const tabParam = searchParams.get('tab') as TabKey | null
   const activeTab = TABS.find((t) => t.key === tabParam) ?? TABS[0]
+  const highlight = searchParams.get('highlight') ?? ''
 
   return (
     <>
@@ -73,7 +74,9 @@ export function Settings() {
             transition={{ duration: 0.15 }}
             className="min-w-0 flex-1"
           >
-            <activeTab.panel />
+            {activeTab.key === 'monitoring'
+            ? <SettingsMonitoringPanel highlight={highlight} />
+            : <activeTab.panel />}
           </motion.div>
         </div>
       </div>

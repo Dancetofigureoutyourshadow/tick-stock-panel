@@ -25,6 +25,12 @@ logger = logging.getLogger(__name__)
 
 _CAPSET_CACHE_FILE = "capabilities.json"
 
+# 缓存 schema 版本。capabilities 模型有结构性变更时 bump(如新增/拆分 Cap),
+# 旧缓存(无此字段或版本更低)会被判定过期,触发重新探测。
+# v2: 拆分 depth5 → depth5(单只) + depth5.batch(批量)
+# v3: 探测补全 quote.batch(此前 tiers.yaml 声明了但 _probe_real 漏探测)
+_CACHE_SCHEMA_VERSION = 3
+
 # 探测用最小代价请求:挑流通性最好的 1 只标的试
 _PROBE_SYMBOL = "600000.SH"  # 浦发银行,长期不会退市
 
@@ -149,6 +155,11 @@ def _probe_real(tiers: dict) -> tuple[CapabilitySet, list[str]]:
              lambda: tf.quotes.get(symbols=[_PROBE_SYMBOL], as_dataframe=False),
              defaults(Cap.QUOTE_BY_SYMBOL))
 
+    # quote.batch — 批量行情(POST /v1/quotes)。用 get_by_symbols 试探。
+    try_call(Cap.QUOTE_BATCH,
+             lambda: tf.quotes.get_by_symbols([_PROBE_SYMBOL], as_dataframe=False),
+             defaults(Cap.QUOTE_BATCH))
+
     # quote.pool — 用一个真实存在的 universe id 试探。
     # universes.list() 在 Free 也开放,先拿任意一个 universe id 再用 get_by_universes 试。
     def _probe_pool():
@@ -190,10 +201,15 @@ def _probe_real(tiers: dict) -> tuple[CapabilitySet, list[str]]:
              lambda: tf.klines.intraday_batch([_PROBE_SYMBOL], count=1, as_dataframe=False),
              defaults(Cap.INTRADAY_BATCH))
 
-    # depth5
+    # depth5 — 按标的查(单只)
     try_call(Cap.DEPTH5,
              lambda: tf.depth.get(_PROBE_SYMBOL),
              defaults(Cap.DEPTH5))
+
+    # depth5.batch — 批量查(SDK 0.1.23+ 提供 depth.batch,对应官方 /v1/depth/batch 端点)
+    try_call(Cap.DEPTH5_BATCH,
+             lambda: tf.depth.batch([_PROBE_SYMBOL]),
+             defaults(Cap.DEPTH5_BATCH))
 
     # financial — SDK 提供 income / balance_sheet / cash_flow / metrics / shares
     # 用 metrics 探测(单据最小)
@@ -223,7 +239,11 @@ def detect_capabilities(force: bool = False) -> CapabilitySet:
     if not force and cache_path.exists():
         with cache_path.open(encoding="utf-8") as f:
             cached = json.load(f)
-        return _capset_from_json(cached)
+        # schema 版本校验:旧缓存或缺版本号 → 过期,丢弃后重新探测
+        if cached.get("schema_version") == _CACHE_SCHEMA_VERSION:
+            return _capset_from_json(cached)
+        logger.info("capabilities 缓存 schema 版本过期(缓存=%s, 当前=%d), 重新探测",
+                    cached.get("schema_version"), _CACHE_SCHEMA_VERSION)
 
     tiers = _load_tiers_yaml()
     if settings.use_free_mode:
@@ -257,7 +277,7 @@ def detect_capabilities(force: bool = False) -> CapabilitySet:
 TIER_SIGNATURES: dict[str, set[Cap]] = {
     "expert":  {Cap.FINANCIAL, Cap.INTRADAY_BATCH, Cap.WEBSOCKET},
     "pro":     {Cap.KLINE_MINUTE_BATCH, Cap.KLINE_MINUTE_BY_SYMBOL,
-                Cap.INTRADAY, Cap.DEPTH5},
+                Cap.INTRADAY, Cap.DEPTH5, Cap.DEPTH5_BATCH},
     "starter": {Cap.QUOTE_BATCH, Cap.KLINE_DAILY_BATCH,
                 Cap.ADJ_FACTOR, Cap.QUOTE_POOL},
     # free 不需 signature — 默认兜底
@@ -270,6 +290,7 @@ _CAP_ALIASES: dict[Cap, str] = {
     Cap.INTRADAY: "分时",
     Cap.INTRADAY_BATCH: "批量分时",
     Cap.DEPTH5: "五档",
+    Cap.DEPTH5_BATCH: "批量五档",
     Cap.WEBSOCKET: "WS",
     Cap.FINANCIAL: "财务",
     Cap.ADJ_FACTOR: "复权",
@@ -378,6 +399,7 @@ def _persist(
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     cache_path = settings.data_dir / _CAPSET_CACHE_FILE
     payload = {
+        "schema_version": _CACHE_SCHEMA_VERSION,
         "label": label,
         "capabilities": capset.to_dict(),
         "probe_log": log or [],

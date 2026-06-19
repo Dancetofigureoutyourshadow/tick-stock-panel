@@ -1,10 +1,12 @@
-import { useState, useCallback } from 'react'
-import { useQueryClient } from '@tanstack/react-query'
+import { useState, useCallback, useEffect, useRef } from 'react'
+import { useQueryClient, useMutation } from '@tanstack/react-query'
 import {
   Activity,
   Shield,
   Wifi,
   BarChart3,
+  Flame,
+  Zap,
   Plus,
   X,
 } from 'lucide-react'
@@ -17,6 +19,8 @@ import {
 import { useUpdateQuoteInterval, useToggleRealtimeQuotes } from '@/lib/useSharedMutations'
 import { api, type StrategyDetail } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
+import { toast } from '@/components/Toast'
+import { DepthConfigContent } from '@/components/data/DepthConfigCard'
 
 // 页面 → 显示名
 const PAGE_LABELS: Record<string, string> = {
@@ -34,7 +38,7 @@ const SIDEBAR_INDEX_OPTIONS = [
 
 // ===== 导出为 Panel 组件 (由 Settings.tsx 嵌入) =====
 
-export function SettingsMonitoringPanel() {
+export function SettingsMonitoringPanel({ highlight }: { highlight?: string } = {}) {
   const qc = useQueryClient()
   const { data: prefs } = usePreferences()
   const { data: caps } = useCapabilities()
@@ -49,6 +53,8 @@ export function SettingsMonitoringPanel() {
   const refreshPages = prefs?.sse_refresh_pages ?? {}
   const monitorEnabled = prefs?.strategy_monitor_enabled ?? false
   const monitorIds = prefs?.strategy_monitor_ids ?? []
+  const limitLadderMonitor = prefs?.limit_ladder_monitor_enabled ?? false
+  const hasDepth = !!caps?.capabilities?.['depth5.batch']
   const sidebarIndexSymbols = prefs?.sidebar_index_symbols ?? SIDEBAR_INDEX_OPTIONS.map(i => i.symbol)
   const indicesPinned = prefs?.indices_nav_pinned ?? true
   const isRunning = quoteStatus?.running ?? false
@@ -86,6 +92,36 @@ export function SettingsMonitoringPanel() {
   const toggleIndicesPin = useCallback((pinned: boolean) => {
     api.updateIndicesNavPinned(pinned).then(() => qc.invalidateQueries({ queryKey: QK.preferences }))
   }, [qc])
+
+  const toggleLimitLadderMonitor = useCallback(async (enabled: boolean) => {
+    await api.updateLimitLadderMonitor(enabled)
+    qc.invalidateQueries({ queryKey: QK.preferences })
+  }, [qc])
+
+  const runFix = useMutation({
+    mutationFn: () => api.runLimitLadderFix(),
+    onSuccess: (data) => {
+      toast(data.msg, data.ok ? 'success' : 'error')
+      // 修正后连板梯队数据变了, 刷新相关缓存
+      qc.invalidateQueries({ queryKey: ['limit-ladder'] })
+    },
+    onError: () => toast('修正请求失败', 'error'),
+  })
+
+  // highlight=depth-fix 时闪烁高亮连板梯队修正卡片
+  const [flash, setFlash] = useState(false)
+  const flashedRef = useRef(false)
+  useEffect(() => {
+    if (highlight === 'depth-fix' && !flashedRef.current) {
+      flashedRef.current = true
+      // 延迟一帧确保 DOM 已渲染, 再触发闪烁
+      requestAnimationFrame(() => {
+        setFlash(true)
+        const t = setTimeout(() => setFlash(false), 2000)
+        return () => clearTimeout(t)
+      })
+    }
+  }, [highlight])
 
   // Free 档位 — 显示升级提示
   if (isFreeTier) {
@@ -222,6 +258,53 @@ export function SettingsMonitoringPanel() {
             />
           </div>
         </Card>
+
+        {/* 连板梯队降级修正 */}
+        <div
+          id="depth-fix"
+          className={`rounded-card transition-all duration-500 ${flash ? 'ring-2 ring-accent/60 ring-offset-2 ring-offset-base scale-[1.01]' : 'ring-0 ring-transparent'}`}
+        >
+        <Card
+          icon={Flame}
+          title="连板梯队降级修正"
+          badge={!hasDepth ? '需 Pro+' : undefined}
+          right={hasDepth ? (
+            <button
+              onClick={() => runFix.mutate()}
+              disabled={runFix.isPending}
+              className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px]
+                         bg-accent/15 text-accent hover:bg-accent/25 transition-colors
+                         disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <Zap className="h-3 w-3" />
+              {runFix.isPending ? '修正中…' : '立即修正'}
+            </button>
+          ) : undefined}
+        >
+          {hasDepth ? (
+            <>
+              <p className="text-xs text-secondary mb-4">
+                通过五档盘口实时修正真假涨停/跌停。真封板显示封单量,假涨停(收盘价=涨停价但卖一有量)归入炸板。
+                盘中按设定间隔轮询,收盘后自动定版。
+              </p>
+              <ToggleRow
+                label="启用真假板修正"
+                desc="开启后盘中自动拉取五档盘口修正真假板"
+                checked={limitLadderMonitor}
+                onChange={toggleLimitLadderMonitor}
+              />
+              <div className="mt-4 pt-3 border-t border-border">
+                <div className="text-[10px] uppercase tracking-widest text-muted mb-3">
+                  五档盘口配置
+                </div>
+                <DepthConfigContent disabled={!limitLadderMonitor} />
+              </div>
+            </>
+          ) : (
+            <DepthConfigContent disabled />
+          )}
+        </Card>
+        </div>
       </div>
     </div>
   )

@@ -127,6 +127,45 @@ def set_index_daily_batch_size(size: int) -> int:
     return size
 
 
+# ── 五档盘口 sealed(真假涨停) 配置 ──────────────────────
+
+def get_limit_ladder_monitor_enabled() -> bool:
+    """连板梯队 5 档监控开关。关闭时 depth 不轮询(连板梯队降级显示)。"""
+    return load().get("limit_ladder_monitor_enabled", False)
+
+
+def get_depth_polling_interval() -> float:
+    """depth 盘中轮询间隔(秒)。默认 20(Pro/Expert 都适用)。"""
+    return float(load().get("depth_polling_interval", 20.0))
+
+
+def set_depth_polling_interval(interval: float) -> float:
+    """保存 depth 轮询间隔。套餐范围 clamp 由 depth_service 按档位做。"""
+    interval = max(1.0, min(600.0, float(interval)))
+    save({"depth_polling_interval": interval})
+    return interval
+
+
+def get_depth_finalize_time() -> dict:
+    """盘后 sealed 定版时间 {"hour": 15, "minute": 2}。范围 15:01~18:00。"""
+    d = load().get("depth_finalize_time", {"hour": 15, "minute": 2})
+    return {"hour": d.get("hour", 15), "minute": d.get("minute", 2)}
+
+
+def set_depth_finalize_time(hour: int, minute: int) -> dict:
+    """保存盘后 sealed 定版时间,强制范围 15:01~18:00。"""
+    h = max(0, min(23, hour))
+    m = max(0, min(59, minute))
+    # 下限 15:01, 上限 18:00
+    if h * 60 + m < 15 * 60 + 1:
+        h, m = 15, 1
+    if h * 60 + m > 18 * 60:
+        h, m = 18, 0
+    save({"depth_finalize_time": {"hour": h, "minute": m}})
+    return {"hour": h, "minute": m}
+
+
+
 # ===== 实时监控 =====
 
 # 页面 SSE 刷新配置: { "watchlist": true, "monitor": true, ... }
@@ -248,3 +287,16 @@ def set_screener_result_columns(columns: list[dict]) -> list[dict]:
     """保存策略结果列表列配置。"""
     save({"screener_result_columns": columns})
     return columns
+
+
+# ===== 首次使用引导 =====
+
+def get_onboarding_completed() -> bool:
+    """是否已完成首次使用向导。默认 False（新用户）。"""
+    return bool(load().get("onboarding_completed", False))
+
+
+def set_onboarding_completed(done: bool = True) -> bool:
+    """标记首次使用向导完成状态。"""
+    save({"onboarding_completed": bool(done)})
+    return bool(done)

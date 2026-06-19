@@ -1,6 +1,6 @@
 [project]
 name = "tf-stocks-panel-backend"
-version = "0.1.0"
+version = "0.1.20"
 description = "A 股选股 + 监控 + 回测面板 — TickFlow 适配"
 readme = "../README.md"
 requires-python = ">=3.11"
@@ -20,7 +20,7 @@ dependencies = [
     "pandas>=2.2",                # 仅在 BacktestService 边界使用,见 §7.4 / ADR-19
     "fastexcel>=0.10",            # Polars 读取 xlsx/xls
     # TickFlow 官方 SDK
-    "tickflow[all]>=0.1.21",
+    "tickflow[all]>=0.1.23",
     # Scheduling
     "apscheduler>=3.10",
     # Config

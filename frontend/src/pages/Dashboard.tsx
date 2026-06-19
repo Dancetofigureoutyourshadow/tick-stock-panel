@@ -6,7 +6,8 @@ import { DatePicker } from '@/components/DatePicker'
 import { api, type MarketSnapshotRow, type OverviewDimensionRankItem, type OverviewMarket } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
 import { fmtBigNum } from '@/lib/format'
-import { useDataStatus } from '@/lib/useSharedQueries'
+import { useDataStatus, useCapabilities } from '@/lib/useSharedQueries'
+import { SealedBadge } from '@/components/SealedBadge'
 
 function n(v: number | null | undefined) {
   return typeof v === 'number' && Number.isFinite(v) ? v : null
@@ -59,7 +60,7 @@ function compactCount(v: number | null | undefined) {
   return x.toFixed(0)
 }
 
-function SectionTitle({ icon: Icon, title, hint }: { icon: typeof Activity; title: string; hint?: string }) {
+function SectionTitle({ icon: Icon, title, hint }: { icon: typeof Activity; title: string; hint?: ReactNode }) {
   return (
     <div className="mb-2 flex items-center justify-between gap-2">
       <div className="flex items-center gap-1.5">
@@ -71,12 +72,12 @@ function SectionTitle({ icon: Icon, title, hint }: { icon: typeof Activity; titl
   )
 }
 
-function KpiCell({ label, value, sub, tone = 'neutral' }: { label: string; value: ReactNode; sub?: string; tone?: 'bull' | 'bear' | 'accent' | 'neutral' }) {
+function KpiCell({ label, value, sub, tone = 'neutral' }: { label: ReactNode; value: ReactNode; sub?: string; tone?: 'bull' | 'bear' | 'accent' | 'neutral' }) {
   const isPlain = typeof value === 'string' || typeof value === 'number'
   const color = tone === 'bull' ? 'text-bull' : tone === 'bear' ? 'text-bear' : tone === 'accent' ? 'text-accent' : 'text-foreground'
   return (
     <div className="min-w-0 rounded-lg border border-border bg-surface/80 px-3 py-2">
-      <div className="truncate text-[11px] text-muted">{label}</div>
+      <div className="flex items-center gap-1 text-[11px] text-muted">{label}</div>
       <div className={`mt-1 truncate font-mono text-lg font-semibold leading-none tabular-nums ${isPlain ? color : 'text-foreground'}`}>{value}</div>
       {sub && <div className="mt-1 truncate text-[10px] text-muted">{sub}</div>}
     </div>
@@ -337,6 +338,10 @@ export function Dashboard() {
     placeholderData: (prev) => prev,
   })
   const data = overview.data
+  const caps = useCapabilities()
+  const hasDepth = !!caps.data?.capabilities?.['depth5.batch']
+  const sealedReady = !!data?.limit?.sealed_ready
+  const isSealedDegrade = !hasDepth || !sealedReady
 
   // 手动刷新: 显示旋转动画; SSE 自动刷新: 静默, 无体感
   const handleRefresh = () => {
@@ -420,7 +425,7 @@ export function Dashboard() {
       <div className="mb-3 grid grid-cols-6 gap-2">
         <KpiCell label="个股涨 / 平 / 跌" value={<><span className="text-bull">{data.breadth.up}</span><span className="text-muted">/</span><span className="text-muted">{data.breadth.flat}</span><span className="text-muted">/</span><span className="text-bear">{data.breadth.down}</span></>} sub={`上涨率 ${data.breadth.up_pct.toFixed(1)}%`} />
         <KpiCell label="强势 / 弱势" value={<><span className="text-bull">{strongUp}</span><span className="text-muted">/</span><span className="text-bear">{strongDown}</span></>} sub="涨跌 ≥3%" />
-        <KpiCell label="涨停 / 跌停" value={<><span className="text-bull">{data.limit.limit_up}</span><span className="text-muted">/</span><span className="text-bear">{data.limit.limit_down}</span></>} sub={`封板率 ${(data.limit.seal_rate ?? 0).toFixed(0)}%`} />
+        <KpiCell label={<span className="inline-flex items-center gap-1">涨停 / 跌停<SealedBadge degraded={isSealedDegrade} hasDepth={hasDepth} isHistorical={false} sealedReady={sealedReady} sealedCountsUp={{ real: data.limit.limit_up, fake: data.limit.fake_up ?? 0, pending: 0 }} sealedCountsDown={{ real: data.limit.limit_down, fake: data.limit.fake_down ?? 0, pending: 0 }} rawUp={data.limit.limit_up + (data.limit.fake_up ?? 0)} rawDown={data.limit.limit_down + (data.limit.fake_down ?? 0)} invalidateKeys={['overview-market', 'limit-ladder']} /></span>} value={<><span className="text-bull">{data.limit.limit_up}</span><span className="text-muted">/</span><span className="text-bear">{data.limit.limit_down}</span></>} sub={`封板率 ${(data.limit.seal_rate ?? 0).toFixed(0)}%`} />
         <KpiCell label="最高连板" value={`${data.limit.max_boards || 0}板`} sub={`梯队 ${data.limit.tiers.length}`} tone="accent" />
         <KpiCell label="成交额" value={fmtBigNum(data.amount.total)} sub={`均额 ${fmtBigNum(data.amount.avg)}`} />
         <KpiCell label="换手 / 量比" value={`${fmtPrice(data.activity.avg_turnover, 1)}% / ${fmtPrice(data.activity.vol_ratio, 2)}`} sub={`高换手 ${data.activity.high_turnover} · 放量 ${data.activity.high_vol_ratio}`} tone="accent" />
@@ -490,7 +495,7 @@ export function Dashboard() {
 
         <aside className="min-w-0 space-y-3">
           <section className="rounded-card border border-border bg-surface/80 p-3">
-            <SectionTitle icon={Flame} title="涨停梯队" hint={`涨停 ${data.limit.limit_up}`} />
+            <SectionTitle icon={Flame} title="涨停梯队" hint={<span className="inline-flex items-center gap-1">{`涨停 ${data.limit.limit_up}`}{isSealedDegrade && <span className="text-[9px] px-1 rounded bg-yellow-500/10 text-yellow-600 dark:text-yellow-500">{hasDepth ? '未修正' : '降级'}</span>}</span>} />
             <LadderMini limit={data.limit} />
           </section>
           <section className="rounded-card border border-border bg-surface/80 p-3">

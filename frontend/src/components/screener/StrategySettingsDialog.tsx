@@ -1,11 +1,10 @@
-﻿import { useState, useEffect, useCallback, useMemo } from 'react'
+﻿import { useState, useEffect, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { X, Settings2, RotateCcw, Save, ChevronDown, Filter, Star, TrendingUp, Sparkles } from 'lucide-react'
-import { useQuery } from '@tanstack/react-query'
 import { api, type StrategyDetail, type StrategyParamDef } from '@/lib/api'
-import { QK } from '@/lib/queryKeys'
 import { BUILTIN_COLUMNS } from '@/lib/watchlist-columns'
 import { color } from '@/lib/colors'
+import { SignalPicker } from './SignalPicker'
 
 // 内置列名 → 中文标签
 const FIELD_LABEL: Record<string, string> = {}
@@ -108,23 +107,6 @@ function RangeField({ label, minVal, maxVal, onMinChange, onMaxChange, unit, ste
 // 板块标签
 const ALL_BOARDS = ['沪主板', '深主板', '创业板', '科创板', '北交所']
 
-// 信号名 → 中文映射
-const SIGNAL_CN: Record<string, string> = {
-  golden_cross: '金叉', death_cross: '死叉',
-  breakout: '突破', breakdown: '跌破',
-  oversold: '超卖', overbought: '超买',
-  stop_loss: '止损', take_profit: '止盈',
-  signal_limit_up: '涨停', signal_broken_board_recovery: '反包',
-  signal_volume_surge: '放量', signal_ma_golden_5_20: 'MA金叉',
-  signal_ma_dead_5_20: 'MA死叉', signal_ma_golden_20_60: '均线金叉',
-  signal_macd_golden: 'MACD金叉', signal_macd_dead: 'MACD死叉',
-  signal_ma20_breakout: '站上MA20', signal_ma20_breakdown: '跌破MA20',
-  signal_n_day_high: '60日新高', signal_n_day_low: '60日新低',
-  signal_boll_breakout_upper: '布林突破', signal_boll_breakdown_lower: '布林下破',
-}
-
-function cnSignal(name: string) { return SIGNAL_CN[name] ?? name }
-
 // 策略参数字段
 function ParamField({ def, value, onChange }: {
   def: StrategyParamDef
@@ -212,14 +194,6 @@ function ScoringField({ col, weight, pct, editing, onChange }: {
 
 export function StrategySettingsDialog({ strategyId, onClose, onSaved, onAiModify, onDeleted }: Props) {
   const [detail, setDetail] = useState<StrategyDetail | null>(null)
-  // 自定义信号标签（csg_ 前缀 -> 名称），用于买卖信号展示
-  const customSignalsQuery = useQuery({ queryKey: QK.customSignals, queryFn: api.customSignalsList })
-  const customSignalName = useMemo(() => {
-    const m: Record<string, string> = {}
-    for (const cs of customSignalsQuery.data?.signals ?? []) m[`csg_${cs.id}`] = cs.name
-    return m
-  }, [customSignalsQuery.data])
-  const cnSignalWithCustom = (name: string) => customSignalName[name] ?? cnSignal(name)
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [resetting, setResetting] = useState(false)
@@ -232,6 +206,8 @@ export function StrategySettingsDialog({ strategyId, onClose, onSaved, onAiModif
   const [scoring, setScoring] = useState<Record<string, number>>({})
   const [stopLoss, setStopLoss] = useState<number | null>(null)
   const [maxHoldDays, setMaxHoldDays] = useState<number | null>(null)
+  const [entrySignals, setEntrySignals] = useState<string[]>([])
+  const [exitSignals, setExitSignals] = useState<string[]>([])
   const [displayLimit, setDisplayLimit] = useState<number | null>(null)
   const [basicFilterEnabled, setBasicFilterEnabled] = useState(true)
   const [editingScoring, setEditingScoring] = useState(false)
@@ -260,6 +236,8 @@ export function StrategySettingsDialog({ strategyId, onClose, onSaved, onAiModif
         setScoring(Object.fromEntries(Object.entries(d.scoring).map(([k, v]) => [k, Math.round((v as number) * 100)])))
         setStopLoss(d.stop_loss)
         setMaxHoldDays(d.max_hold_days)
+        setEntrySignals(d.entry_signals ?? [])
+        setExitSignals(d.exit_signals ?? [])
         setDisplayLimit(d.display_limit ?? null)
         setBasicFilterEnabled(d.basic_filter?.enabled !== false)
       })
@@ -280,6 +258,8 @@ export function StrategySettingsDialog({ strategyId, onClose, onSaved, onAiModif
         scoring: Object.fromEntries(Object.entries(scoring).map(([k, v]) => [k, +(v / 100).toFixed(4)])),
         stop_loss: stopLoss,
         max_hold_days: maxHoldDays,
+        entry_signals: entrySignals,
+        exit_signals: exitSignals,
         display_limit: displayLimit,
       })
       onSaved?.(displayLimit)
@@ -307,6 +287,8 @@ export function StrategySettingsDialog({ strategyId, onClose, onSaved, onAiModif
       setScoring(Object.fromEntries(Object.entries(d.scoring).map(([k, v]) => [k, Math.round((v as number) * 100)])))
         setStopLoss(d.stop_loss)
         setMaxHoldDays(d.max_hold_days)
+        setEntrySignals(d.entry_signals ?? [])
+        setExitSignals(d.exit_signals ?? [])
         setDisplayLimit(d.display_limit ?? null)
         setBasicFilterEnabled(d.basic_filter?.enabled !== false)
       } finally {
@@ -503,11 +485,25 @@ export function StrategySettingsDialog({ strategyId, onClose, onSaved, onAiModif
                           <span className="text-[10px] text-muted">天</span>
                         </div>
                         <div className="text-[11px] text-muted pt-1 border-t border-border/10">
-                          <span className="text-secondary">买入 </span><span className="text-foreground/70">{detail.entry_signals.length > 0 ? detail.entry_signals.map(cnSignalWithCustom).join(', ') : '无'}</span>
-                          <span className="text-secondary ml-3">卖出 </span><span className="text-foreground/70">{detail.exit_signals.length > 0 ? detail.exit_signals.map(cnSignalWithCustom).join(', ') : '无'}</span>
+                          <span className="text-secondary">买入 </span><span className="text-foreground/70">{entrySignals.length > 0 ? `${entrySignals.length} 个触发器` : '无'}</span>
+                          <span className="text-secondary ml-3">卖出 </span><span className="text-foreground/70">{exitSignals.length > 0 ? `${exitSignals.length} 个触发器` : '无'}</span>
                         </div>
                       </div>
                     </Section>
+
+                    <Section icon={TrendingUp} title="买入触发器" accent="text-accent" defaultOpen={false}>
+                      <SignalPicker signals={entrySignals} onChange={setEntrySignals} kind="entry" variant="dialog" />
+                      <div className="text-[10px] leading-4 text-muted/70">任一买点满足即进入候选。</div>
+                    </Section>
+
+                    <Section icon={TrendingUp} title="卖出触发器" accent="text-warning" defaultOpen={false}>
+                      <SignalPicker signals={exitSignals} onChange={setExitSignals} kind="exit" variant="dialog" />
+                      <div className="text-[10px] leading-4 text-muted/70">任一卖点满足即触发卖出。</div>
+                    </Section>
+
+                    <div className="rounded-xl border border-amber-400/20 bg-amber-400/[0.04] px-3 py-2 text-[10px] leading-4 text-muted">
+                      买卖触发器保存后对<b className="text-secondary">回测和监控</b>生效;选股扫描仍按策略本身的筛选规则,不受此影响。
+                    </div>
 
                     {detail.alerts.length > 0 && (
                       <Section icon={Settings2} title="提醒" accent="text-muted">

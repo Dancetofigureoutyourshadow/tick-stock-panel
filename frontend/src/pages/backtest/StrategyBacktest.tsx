@@ -14,6 +14,7 @@ import { storage } from '@/lib/storage'
 import { fmtPct, fmtPrice, priceColorClass } from '@/lib/format'
 import { boardTag } from '@/lib/board'
 import { BUILTIN_COLUMNS } from '@/lib/watchlist-columns'
+import { SignalPicker } from '@/components/screener/SignalPicker'
 import { startBacktest, stopBacktest, tryReconnect, useBacktestTask } from '@/lib/backtestTask'
 import { useDataStatus, useCapabilities } from '@/lib/useSharedQueries'
 import { EmptyState } from '@/components/EmptyState'
@@ -104,25 +105,6 @@ Object.assign(FIELD_LABEL, {
   macd_dif: 'MACD-DIF', macd_dea: 'MACD-DEA', macd_hist: 'MACD柱',
   boll_upper: '布林上轨', boll_lower: '布林下轨',
 })
-const SIGNAL_LABELS: Record<string, string> = {
-  signal_ma_golden_5_20: 'MA5上穿MA20',
-  signal_ma_dead_5_20: 'MA5下穿MA20',
-  signal_ma_golden_20_60: 'MA20上穿MA60',
-  signal_macd_golden: 'MACD金叉',
-  signal_macd_dead: 'MACD死叉',
-  signal_ma20_breakout: '突破MA20',
-  signal_ma20_breakdown: '跌破MA20',
-  signal_n_day_high: '60日新高',
-  signal_n_day_low: '60日新低',
-  signal_boll_breakout_upper: '突破布林上轨',
-  signal_boll_breakdown_lower: '跌破布林下轨',
-  signal_volume_surge: '放量',
-  signal_limit_up: '涨停',
-  signal_limit_down: '跌停',
-  signal_limit_down_recovery: '跌停翘板',
-  signal_broken_board_recovery: '断板反包',
-}
-const SIGNAL_OPTIONS = Object.keys(SIGNAL_LABELS)
 const BOARD_OPTIONS = ['沪主板', '深主板', '创业板', '科创板', '北交所']
 const BASIC_FILTER_FIELDS = [
   { key: 'price_min', label: '最低价', unit: '元' },
@@ -900,14 +882,6 @@ export function StrategyBacktest() {
   const entrySignals = (overrides.entry_signals ?? []) as string[]
   const exitSignals = (overrides.exit_signals ?? []) as string[]
 
-  // 自定义信号：合并到买卖触发器选项中（列名带 csg_ 前缀）
-  const customSignalsQuery = useQuery({ queryKey: QK.customSignals, queryFn: api.customSignalsList })
-  const customSignalOptions = (customSignalsQuery.data?.signals ?? [])
-    .filter(s => s.enabled && s.kind !== (undefined as any))   // 启用的
-  const CUSTOM_LABELS: Record<string, string> = {}
-  for (const cs of customSignalOptions) {
-    CUSTOM_LABELS[`csg_${cs.id}`] = cs.name
-  }
   const scoring = useMemo(() => (overrides.scoring ?? {}) as Record<string, number>, [overrides.scoring])
   const scoreMinValue = overrides.score_min == null ? '' : String(overrides.score_min)
   const scoreMaxValue = overrides.score_max == null ? '' : String(overrides.score_max)
@@ -927,11 +901,6 @@ export function StrategyBacktest() {
   }
   const updateBasicFilter = (key: string, value: any) => {
     updateOverride('basic_filter', { ...basicFilter, [key]: value })
-  }
-  const toggleSignal = (key: 'entry_signals' | 'exit_signals', sig: string) => {
-    const list = key === 'entry_signals' ? entrySignals : exitSignals
-    const next = list.includes(sig) ? list.filter(x => x !== sig) : [...list, sig]
-    updateOverride(key, next)
   }
   const startScoringEdit = () => {
     setScoringDraft(scoringToPct(scoring))
@@ -1963,63 +1932,21 @@ export function StrategyBacktest() {
 
               {settingsTab === 'entry' && (
                 <ConfigSection title="买入触发器" hint="任一买点满足即可进入候选">
-                  <div className="flex flex-wrap gap-2">
-                    {SIGNAL_OPTIONS.map(sig => (
-                      <button
-                        key={sig}
-                        type="button"
-                        onClick={() => toggleSignal('entry_signals', sig)}
-                        className={`rounded-btn border px-2.5 py-1.5 text-[11px] transition-colors ${entrySignals.includes(sig) ? 'border-accent/50 bg-accent/10 text-accent' : 'border-border bg-base text-muted hover:border-accent/40'}`}
-                      >
-                        {SIGNAL_LABELS[sig]}
-                      </button>
-                    ))}
-                    {customSignalOptions.filter(cs => cs.kind === 'entry' || cs.kind === 'both').map(cs => {
-                      const id = `csg_${cs.id}`
-                      return (
-                        <button
-                          key={id}
-                          type="button"
-                          onClick={() => toggleSignal('entry_signals', id)}
-                          title="自定义信号"
-                          className={`rounded-btn border px-2.5 py-1.5 text-[11px] transition-colors ${entrySignals.includes(id) ? 'border-accent/50 bg-accent/10 text-accent' : 'border-amber-400/30 bg-amber-400/5 text-secondary hover:border-amber-400/50 hover:text-amber-400'}`}
-                        >
-                          {CUSTOM_LABELS[id]}
-                        </button>
-                      )
-                    })}
-                  </div>
+                  <SignalPicker
+                    signals={entrySignals}
+                    onChange={next => updateOverride('entry_signals', next)}
+                    kind="entry"
+                  />
                 </ConfigSection>
               )}
 
               {settingsTab === 'exit' && (
                 <ConfigSection title="卖出触发器" hint="任一卖点满足即触发卖出">
-                  <div className="flex flex-wrap gap-2">
-                    {SIGNAL_OPTIONS.map(sig => (
-                      <button
-                        key={sig}
-                        type="button"
-                        onClick={() => toggleSignal('exit_signals', sig)}
-                        className={`rounded-btn border px-2.5 py-1.5 text-[11px] transition-colors ${exitSignals.includes(sig) ? 'border-warning/50 bg-warning/10 text-warning' : 'border-border bg-base text-muted hover:border-warning/40'}`}
-                      >
-                        {SIGNAL_LABELS[sig]}
-                      </button>
-                    ))}
-                    {customSignalOptions.filter(cs => cs.kind === 'exit' || cs.kind === 'both').map(cs => {
-                      const id = `csg_${cs.id}`
-                      return (
-                        <button
-                          key={id}
-                          type="button"
-                          onClick={() => toggleSignal('exit_signals', id)}
-                          title="自定义信号"
-                          className={`rounded-btn border px-2.5 py-1.5 text-[11px] transition-colors ${exitSignals.includes(id) ? 'border-warning/50 bg-warning/10 text-warning' : 'border-amber-400/30 bg-amber-400/5 text-secondary hover:border-amber-400/50 hover:text-amber-400'}`}
-                        >
-                          {CUSTOM_LABELS[id]}
-                        </button>
-                      )
-                    })}
-                  </div>
+                  <SignalPicker
+                    signals={exitSignals}
+                    onChange={next => updateOverride('exit_signals', next)}
+                    kind="exit"
+                  />
                 </ConfigSection>
               )}
 

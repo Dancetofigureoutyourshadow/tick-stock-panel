@@ -697,17 +697,18 @@ export const api = {
   redetectCapabilities: () =>
     request<CapabilitiesResponse>('/api/capabilities/redetect', { method: 'POST' }),
 
-  klineDaily: (symbol: string, days = 120, dateRange?: { start: string; end: string }) =>
+  klineDaily: (symbol: string, days = 120, dateRange?: { start: string; end: string }, extColumns?: string) =>
     request<{
       symbol: string
       name?: string
-      stock_info?: { name?: string; total_shares?: number; float_shares?: number }
+      stock_info?: { name?: string; total_shares?: number; float_shares?: number; ext?: Record<string, unknown> }
       rows: KlineRow[]
       source?: string
     }>(
-      dateRange
+      (dateRange
         ? `/api/kline/daily?symbol=${encodeURIComponent(symbol)}&start_date=${dateRange.start}&end_date=${dateRange.end}`
-        : `/api/kline/daily?symbol=${encodeURIComponent(symbol)}&days=${days}`,
+        : `/api/kline/daily?symbol=${encodeURIComponent(symbol)}&days=${days}`)
+      + (extColumns ? `&ext_columns=${encodeURIComponent(extColumns)}` : ''),
     ),
   klineDailyBatch: (symbols: string[], days = 12) =>
     request<{ data: Record<string, KlineRow[]> }>('/api/kline/daily-batch', {

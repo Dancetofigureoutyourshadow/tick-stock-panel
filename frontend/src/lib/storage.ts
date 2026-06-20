@@ -30,6 +30,9 @@ export const storage = {
   /** 自选列表列配置 */
   watchlistColumns:     kv<unknown[]>('watchlist_columns'),
 
+  /** 个股日K信息条指标配置 */
+  stockInfoBarFields:   kv<unknown[]>('stock_info_bar_fields'),
+
   /** 策略结果列表列配置 */
   screenerResultColumns: kv<unknown[]>('screener_result_columns'),
 

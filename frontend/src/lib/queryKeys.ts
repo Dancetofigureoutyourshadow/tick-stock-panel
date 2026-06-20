@@ -48,8 +48,8 @@ export const QK = {
   analysisMenu:         (id: string) => ['analysis-menu', id] as const,
 
   // Kline
-  kline:                (symbol: string, start: string, end: string) =>
-                           ['kline', symbol, start, end] as const,
+  kline:                (symbol: string, start: string, end: string, extColumns?: string) =>
+                           ['kline', symbol, start, end, extColumns ?? ''] as const,
   klineMinute:          (symbol: string, date: string) =>
                              ['kline-minute', symbol, date] as const,
   indexDaily:           (symbol: string, start: string, end: string) =>

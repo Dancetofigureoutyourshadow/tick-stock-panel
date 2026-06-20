@@ -80,11 +80,14 @@ def get_daily(
     days: int = Query(120, ge=10, le=2000),
     start_date: Optional[str] = Query(None, description="起始日期 YYYY-MM-DD, 优先于 days"),
     end_date: Optional[str] = Query(None, description="截止日期 YYYY-MM-DD, 默认今天"),
+    ext_columns: Optional[str] = Query(None, description="逗号分隔的 ext 列: config_id.field_name"),
 ):
     """读取本地 enriched 表中某只股票的日 K。
 
     - 若 QuoteService 有实时行情, 追加/覆盖今日实时蜡烛
     - Free 用户: 若 enriched 表里没有该股票, 实时拉取 + 本地算 enriched 返回
+    - ext_columns: 可选，动态 LEFT JOIN 扩展数据表，结果平铺到 stock_info.ext 下
+      (key 为 "{config_id}__{field_name}")，供日K信息条等场景展示自定义字段
     """
     import polars as pl
 
@@ -112,14 +115,81 @@ def get_daily(
         rows = enriched.tail(days).to_dicts()
         # 即使 live 模式也尝试追加实时蜡烛
         rows = _maybe_inject_live_candle(request, symbol, rows)
-        return {"symbol": symbol, "name": stock_name, "stock_info": stock_info, "rows": rows, "source": "live"}
+        resp = {"symbol": symbol, "name": stock_name, "stock_info": stock_info, "rows": rows, "source": "live"}
+        return _attach_ext(resp, repo, symbol, ext_columns)
 
     rows = df.to_dicts()
 
     # 追加/覆盖今日实时蜡烛
     rows = _maybe_inject_live_candle(request, symbol, rows)
 
-    return {"symbol": symbol, "name": stock_name, "stock_info": stock_info, "rows": rows, "source": "enriched"}
+    resp = {"symbol": symbol, "name": stock_name, "stock_info": stock_info, "rows": rows, "source": "enriched"}
+    return _attach_ext(resp, repo, symbol, ext_columns)
+
+
+def _attach_ext(resp: dict, repo, symbol: str, ext_columns: Optional[str]) -> dict:
+    """按 ext_columns 规格为单只股票 LEFT JOIN 扩展数据，平铺到 stock_info['ext']。
+
+    key 形如 "{config_id}__{field_name}"，与自选列表 enriched 接口保持一致。
+    JOIN 逻辑参考 watchlist.watchlist_enriched；任何 ext 表/字段缺失都静默跳过。
+    """
+    if not ext_columns or not ext_columns.strip():
+        return resp
+
+    specs: list[tuple[str, str]] = []
+    for part in ext_columns.split(","):
+        part = part.strip()
+        if "." not in part:
+            continue
+        config_id, field_name = part.split(".", 1)
+        config_id, field_name = config_id.strip(), field_name.strip()
+        if config_id and field_name:
+            specs.append((config_id, field_name))
+    if not specs:
+        return resp
+
+    import polars as pl
+    data_dir = repo.store.data_dir
+    try:
+        from app.services.ext_data import ExtConfigStore
+        from app.api.ext_data import _read_ext_dataframe
+        ext_store = ExtConfigStore(data_dir)
+        configs = {c.id: c for c in ext_store.load_all()}
+    except Exception:  # noqa: BLE001
+        configs = {}
+
+    ext_values: dict = {}
+    for config_id, field_name in specs:
+        ext_col_name = f"{config_id}__{field_name}"
+        value = None
+        try:
+            cfg = configs.get(config_id)
+            if cfg:
+                ext_df, _ = _read_ext_dataframe(cfg, data_dir)
+            else:
+                ext_df = pl.from_arrow(
+                    repo.store.db.query(
+                        f'SELECT symbol, "{field_name}" FROM ext_{config_id}'
+                    ).arrow()
+                )
+            if not ext_df.is_empty() and "symbol" in ext_df.columns and field_name in ext_df.columns:
+                # 时序表取最新分区，避免一个 symbol 多行
+                row = (
+                    ext_df
+                    .select(["symbol", field_name])
+                    .unique(subset=["symbol"], keep="last")
+                    .filter(pl.col("symbol") == symbol)
+                )
+                if not row.is_empty():
+                    value = row[field_name][0]
+        except Exception as e:  # noqa: BLE001
+            logger.debug("kline ext join failed for %s.%s: %s", config_id, field_name, e)
+        ext_values[ext_col_name] = value
+
+    stock_info = dict(resp.get("stock_info") or {})
+    stock_info["ext"] = ext_values
+    resp["stock_info"] = stock_info
+    return resp
 
 
 def _maybe_inject_live_candle(request: Request, symbol: str, rows: list[dict]) -> list[dict]:

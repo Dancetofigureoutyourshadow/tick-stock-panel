@@ -89,6 +89,8 @@ export interface ColumnConfig {
   extDisplay?: ExtColumnDisplayConfig
   /** 日k列渲染配置（仅 builtin: candle 列生效） */
   candleConfig?: CandleColumnConfig
+  /** 信息条场景：是否单独占一行显示（仅 StockInfoBar 生效，表格场景忽略） */
+  standalone?: boolean
 }
 
 export interface ColumnGroup {
@@ -133,12 +135,13 @@ export function mergeColumns(
     const def = defaultMap.get(col.id)
     if (def) {
       // 内置列: label/source/align/pinned 以默认定义为准；visible 使用用户配置；
-      // 用户自定义的渲染配置（如日k的 candleConfig、策略列的 extDisplay）需保留，否则刷新后丢失
+      // 用户自定义的渲染配置（如日k的 candleConfig、策略列的 extDisplay、信息条 standalone）需保留，否则刷新后丢失
       result.push({
         ...def,
         visible: col.visible,
         ...(col.candleConfig ? { candleConfig: col.candleConfig } : {}),
         ...(col.extDisplay ? { extDisplay: col.extDisplay } : {}),
+        ...(col.standalone ? { standalone: col.standalone } : {}),
       })
     } else if (col.source?.type === 'ext') {
       // ext 列: 保留用户配置，清理旧 label 中的括号后缀

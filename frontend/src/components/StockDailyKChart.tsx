@@ -41,6 +41,8 @@ interface Props {
   linkedPrice?: number | null
   onDateClick?: (date: string) => void
   onDataChange?: (result: StockDailyKChartResult) => void
+  /** 扩展数据列参数（逗号分隔 config_id.field_name），透传给 klineDaily 接口 */
+  extColumns?: string
 }
 
 function isValidRow(r: any): boolean {
@@ -121,15 +123,17 @@ export function StockDailyKChart({
   linkedPrice,
   onDateClick,
   onDataChange,
+  extColumns,
 }: Props) {
   const [activeIndicators, setActiveIndicators] = useState<string[]>(['vol'])
   const [showMarkers, setShowMarkers] = useState(true)
   const dateRange = externalDateRange ?? getDefaultRange()
   const days = useMemo(() => rangeDays(dateRange), [dateRange])
 
+  // extColumns 纳入 query key：勾选/取消扩展字段时需重新请求（带 ext_columns 参数）
   const kline = useQuery({
-    queryKey: QK.kline(symbol, dateRange.start, dateRange.end),
-    queryFn: () => api.klineDaily(symbol, days, dateRange),
+    queryKey: QK.kline(symbol, dateRange.start, dateRange.end, extColumns),
+    queryFn: () => api.klineDaily(symbol, days, dateRange, extColumns),
     enabled: !!symbol,
     placeholderData: (prev) => prev,
   })

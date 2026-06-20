@@ -1,9 +1,16 @@
-import { useEffect, useState, useCallback } from 'react'
-import { type KlineRow } from '@/lib/api'
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
+import { type KlineRow, type FinancialMetricRecord } from '@/lib/api'
 import { StockInfoBar } from '@/components/StockInfoBar'
 import { StockDailyKChart, getDefaultRange, type StockDailyKChartResult } from '@/components/StockDailyKChart'
 import { StockIntradayChart } from '@/components/StockIntradayChart'
+import { useFinancialMetrics } from '@/lib/useFinancials'
 import type { ChartMarker, ChartPriceLine, ChartRange } from '@/components/EChartsCandlestick'
+import {
+  loadInfoFields,
+  saveInfoFields,
+  buildInfoExtColumnsParam,
+  type ColumnConfig,
+} from '@/lib/stock-info-fields'
 
 interface Props {
   symbol: string
@@ -39,6 +46,22 @@ export function StockPanel({
   const [linkedPrice, setLinkedPrice] = useState<number | null>(null)
   const [selectedDate, setSelectedDate] = useState<string | null>(null)
   const [dailyResult, setDailyResult] = useState<StockDailyKChartResult | null>(null)
+  // 信息条指标配置提升到此层：同时供 StockInfoBar 渲染与 StockDailyKChart 请求 ext 数据
+  const [fields, setFields] = useState<ColumnConfig[]>(loadInfoFields)
+  const extColumns = useMemo(() => buildInfoExtColumnsParam(fields), [fields])
+
+  const handleFieldsChange = useCallback((next: ColumnConfig[]) => {
+    setFields(next)
+    saveInfoFields(next)
+  }, [])
+
+  // 财务指标：仅当信息条配置含可见的财务字段时才请求（避免无谓请求 + 受 Cap.FINANCIAL 门控）
+  const hasFinanceField = useMemo(
+    () => fields.some(f => f.visible && f.source.type === 'builtin'
+      && ['eps', 'bps', 'roe', 'pe_ttm', 'pb', 'gross_margin', 'net_margin', 'debt_ratio', 'revenue_yoy', 'net_income_yoy'].includes(f.source.key)),
+    [fields],
+  )
+  const financials = useFinancialMetrics(hasFinanceField ? symbol : undefined)
 
   const dateRange = externalDateRange ?? getDefaultRange()
 
@@ -51,8 +74,14 @@ export function StockPanel({
   const stockInfo = dailyResult?.stockInfo
   const rawRows: KlineRow[] = dailyResult?.rawRows ?? []
 
-  // symbol 变化时重置分时相关状态，避免切股后残留旧日期
+  // symbol 变化时重置分时相关状态，避免切股后残留旧日期。
+  // 注意：必须跳过首次挂载——重开弹窗时 kline 命中 react-query 缓存，
+  // 子组件 onDataChange effect（先于父 effect 执行）会把 dailyResult 置为有效数据，
+  // 若此处再无条件清空，会把刚加载的数据抹掉，导致信息条整行消失。
+  const prevSymbol = useRef<string | null>(symbol)
   useEffect(() => {
+    if (prevSymbol.current === symbol) return
+    prevSymbol.current = symbol
     setSelectedDate(null)
     setLinkedPrice(null)
     setDailyResult(null)
@@ -73,6 +102,9 @@ export function StockPanel({
       : undefined
   if (!symbol) return null
 
+  // 财务指标最新一期（metrics 按 period_end 排序，取首项）
+  const financialMetrics: FinancialMetricRecord | undefined = financials.data?.data?.[0]
+
   return (
     <div className={className}>
       <StockInfoBar
@@ -80,6 +112,9 @@ export function StockPanel({
         name={dailyResult?.name}
         stockInfo={stockInfo}
         rows={rawRows}
+        fields={fields}
+        onFieldsChange={handleFieldsChange}
+        financialMetrics={financialMetrics}
       />
 
       <div className="flex gap-3 items-start">
@@ -97,6 +132,7 @@ export function StockPanel({
           onDateClick={handleDateClick}
           onDataChange={setDailyResult}
           visibleBars={showIntraday ? 40 : 60}
+          extColumns={extColumns}
         />
 
         {showIntraday && selectedDate && (

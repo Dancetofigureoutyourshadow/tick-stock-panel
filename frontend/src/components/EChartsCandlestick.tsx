@@ -55,6 +55,8 @@ export interface StockInfo {
   name?: string
   total_shares?: number
   float_shares?: number
+  /** 扩展数据（key: configId__fieldName），来自 klineDaily 的 ext_columns */
+  ext?: Record<string, unknown>
 }
 
 /** 子图定义 */

@@ -34,9 +34,13 @@ interface ListColumnCustomizerProps {
   builtinSectionLabel?: string
   extColumnAlign?: 'left' | 'center' | 'right'
   extFieldFilter?: (field: { name: string; label: string; type: string }) => boolean
+  /** 是否显示扩展数据列区块（默认 true；信息条等无法渲染 ext 数据的场景设为 false）。 */
+  showExtColumns?: boolean
+  /** 是否显示「单独显示」勾选项（默认 false；仅信息条场景启用，让某列独占一行）。 */
+  showStandaloneToggle?: boolean
 }
 
-function SortableActiveCol({ col, onRemove, onConfig, configOpen, extTableLabel, extConfig, candleConfig: candlePanel, strategiesConfig }: {
+function SortableActiveCol({ col, onRemove, onConfig, configOpen, extTableLabel, extConfig, candleConfig: candlePanel, strategiesConfig, showStandaloneToggle, onToggleStandalone }: {
   col: ColumnConfig
   onRemove: (id: string) => void
   onConfig: (id: string | null) => void
@@ -45,6 +49,8 @@ function SortableActiveCol({ col, onRemove, onConfig, configOpen, extTableLabel,
   extConfig: React.ReactNode
   candleConfig: React.ReactNode
   strategiesConfig: React.ReactNode
+  showStandaloneToggle?: boolean
+  onToggleStandalone?: (id: string) => void
 }) {
   const {
     attributes, listeners, setNodeRef, transform, transition, isDragging,
@@ -80,6 +86,19 @@ function SortableActiveCol({ col, onRemove, onConfig, configOpen, extTableLabel,
             ? `${col.label}（${extTableLabel}）`
             : col.label}
         </span>
+        {showStandaloneToggle && (
+          <button
+            onClick={() => onToggleStandalone?.(col.id)}
+            className={`flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] transition-colors shrink-0 ${
+              col.standalone
+                ? 'text-accent bg-accent/10'
+                : 'text-muted hover:text-secondary opacity-0 group-hover:opacity-100'
+            }`}
+            title={col.standalone ? '取消单独显示' : '单独一行显示'}
+          >
+            {col.standalone ? '单独' : '单行'}
+          </button>
+        )}
         {hasConfig && (
           <button
             onClick={() => onConfig(configOpen ? null : col.id)}
@@ -112,11 +131,13 @@ export function ListColumnCustomizer({
   builtinSectionLabel = '内置列',
   extColumnAlign = 'center',
   extFieldFilter,
+  showExtColumns = true,
+  showStandaloneToggle = false,
 }: ListColumnCustomizerProps) {
   const extSchema = useQuery({
     queryKey: QK.extDataSchemaAll,
     queryFn: api.extDataSchemaAll,
-    enabled: open,
+    enabled: open && showExtColumns,
     staleTime: 60_000,
   })
 
@@ -139,6 +160,12 @@ export function ListColumnCustomizer({
   const toggleVisible = useCallback((colId: string) => {
     onChange(columns.map(c =>
       c.id === colId && !c.pinned ? { ...c, visible: !c.visible } : c
+    ))
+  }, [columns, onChange])
+
+  const toggleStandalone = useCallback((colId: string) => {
+    onChange(columns.map(c =>
+      c.id === colId ? { ...c, standalone: !c.standalone } : c
     ))
   }, [columns, onChange])
 
@@ -513,14 +540,28 @@ export function ListColumnCustomizer({
   )
 
   const renderBuiltinRow = (col: ColumnConfig) => (
-    <button
+    <div
       key={col.id}
-      onClick={() => toggleVisible(col.id)}
       className="flex items-center gap-2 w-full px-2 py-1.5 rounded hover:bg-elevated/50 text-left group transition-colors"
     >
-      {renderCheckbox(col.visible)}
-      <span className={`flex-1 text-xs truncate ${col.visible ? 'text-foreground' : 'text-muted'}`}>{col.label}</span>
-    </button>
+      <button onClick={() => toggleVisible(col.id)} className="flex items-center gap-2 flex-1 min-w-0">
+        {renderCheckbox(col.visible)}
+        <span className={`flex-1 text-xs truncate ${col.visible ? 'text-foreground' : 'text-muted'}`}>{col.label}</span>
+      </button>
+      {showStandaloneToggle && col.visible && (
+        <button
+          onClick={() => toggleStandalone(col.id)}
+          className={`flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] transition-colors shrink-0 ${
+            col.standalone
+              ? 'text-accent bg-accent/10'
+              : 'text-muted hover:text-secondary'
+          }`}
+          title={col.standalone ? '取消单独显示' : '单独一行显示'}
+        >
+          {col.standalone ? '单独' : '单行'}
+        </button>
+      )}
+    </div>
   )
 
   const renderExtFieldRow = (configId: string, field: { name: string; label: string; type: string }) => {
@@ -596,6 +637,8 @@ export function ListColumnCustomizer({
                           extConfig={renderExtConfig(col)}
                           candleConfig={renderCandleConfig(col)}
                           strategiesConfig={renderStrategiesConfig(col)}
+                          showStandaloneToggle={showStandaloneToggle}
+                          onToggleStandalone={toggleStandalone}
                         />
                       ))}
                     </SortableContext>
@@ -650,7 +693,7 @@ export function ListColumnCustomizer({
                 })}
               </div>
 
-              {extTables.length > 0 && (
+              {showExtColumns && extTables.length > 0 && (
                 <div className="pt-1 border-t border-border mt-1">
                   <div className="flex items-center gap-1.5 px-1 py-1.5">
                     <Database className="h-3 w-3 text-accent/70" />
@@ -700,7 +743,7 @@ export function ListColumnCustomizer({
                 </div>
               )}
 
-              {extTables.length === 0 && extSchema.isSuccess && (
+              {showExtColumns && extTables.length === 0 && extSchema.isSuccess && (
                 <div className="text-xs text-muted text-center py-4">
                   暂无扩展数据表，可在「数据」页面创建
                 </div>

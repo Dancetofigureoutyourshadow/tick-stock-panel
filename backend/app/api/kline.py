@@ -55,6 +55,21 @@ def search_instruments(
     return {"results": rows}
 
 
+@router.post("/instruments/names")
+def instruments_names(request: Request, symbols: list[str]):
+    """批量查股票名称。传入 symbol 列表, 返回 {symbol: name}。"""
+    if not symbols:
+        return {"names": {}}
+    repo = request.app.state.repo
+    df = repo.get_instruments()
+    if df.is_empty():
+        return {"names": {}}
+    import polars as pl
+    matched = df.filter(pl.col("symbol").is_in(symbols)).select(["symbol", "name"])
+    names = {row["symbol"]: row["name"] for row in matched.iter_rows(named=True)}
+    return {"names": names}
+
+
 def _get_stock_info(repo, symbol: str) -> dict:
     """从 instruments 视图查标的名称 + 股本。"""
     try:

@@ -701,10 +701,29 @@ def table_schema(request: Request, table: str) -> list[dict]:
 
 @router.get("/version")
 def get_version(request: Request) -> dict:
-    """返回当前项目版本号（读取项目根目录 VERSION 文件）。"""
+    """返回当前项目版本号。
+
+    优先从 pyproject.toml 读取 (项目权威版本源),
+    回退到 VERSION 文件, 最后兜底 v0.0.0。
+    """
     from app.config import settings
-    version_file = Path(settings.data_dir).parent / "VERSION"
-    version = "v0.0.0"
+    project_root = Path(settings.data_dir).parent
+
+    # 1. 优先读 pyproject.toml
+    pyproject = project_root / "pyproject.toml"
+    if pyproject.exists():
+        for line in pyproject.read_text(encoding="utf-8").splitlines():
+            if line.strip().startswith("version"):
+                # version = "0.1.28"
+                v = line.split("=", 1)[1].strip().strip('"').strip("'")
+                if v:
+                    return {"version": f"v{v}" if not v.startswith("v") else v}
+
+    # 2. 回退到 VERSION 文件
+    version_file = project_root / "VERSION"
     if version_file.exists():
-        version = version_file.read_text(encoding="utf-8").strip() or version
-    return {"version": version}
+        v = version_file.read_text(encoding="utf-8").strip()
+        if v:
+            return {"version": v}
+
+    return {"version": "v0.0.0"}

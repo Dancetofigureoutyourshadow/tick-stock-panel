@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { motion } from 'framer-motion'
 import { ScanSearch, Clock, TrendingUp, Star, Filter, Layers, Network, Sparkles, RefreshCw, Settings2, Store } from 'lucide-react'
-import { api, type ScreenerStrategy, type ScreenerResult } from '@/lib/api'
+import { api, genRuleId, type ScreenerStrategy, type ScreenerResult } from '@/lib/api'
 import { useDataStatus, usePreferences } from '@/lib/useSharedQueries'
 import { useWatchlistBatchAdd } from '@/lib/useSharedMutations'
 import { QK } from '@/lib/queryKeys'
@@ -328,7 +328,7 @@ export function Screener() {
   // asOf 确定后 + 策略列表就绪 + 策略池非空 → 自动跑一次 (受系统设置开关控制)
   // 缓存命中时秒加载; 未命中时, 仅当 screener_auto_run 开启才自动触发 runAll
   useEffect(() => {
-    if (!asOf || !strategies.data?.presets.length || runAll.isPending || visiblePool.length === 0) return
+    if (!asOf || !strategies.data?.presets?.length || runAll.isPending || visiblePool.length === 0) return
     const runKey = `${asOf}|${visiblePool.join(',')}|${extColumnsParam}`
     if (runAllDateRef.current === runKey) return
     // 缓存已覆盖当前策略池 → 秒加载, 不触发 runAll
@@ -433,6 +433,46 @@ export function Screener() {
     },
   })
 
+  // 策略监控: 查询规则, 建立 strategyId → ruleId 映射 (只看 type=strategy 且 enabled)
+  const monitorRules = useQuery({ queryKey: QK.monitorRules, queryFn: api.monitorRulesList })
+  const strategyMonitorMap = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const r of monitorRules.data?.rules ?? []) {
+      if (r.type === 'strategy' && r.enabled && r.strategy_id) {
+        m.set(r.strategy_id, r.id)
+      }
+    }
+    return m
+  }, [monitorRules.data])
+
+  const toggleStrategyMonitor = (strategyId: string, strategyName: string) => {
+    const existingRuleId = strategyMonitorMap.get(strategyId)
+    if (existingRuleId) {
+      // 已监控 → 删除规则
+      api.monitorRuleDelete(existingRuleId).then(() =>
+        qc.invalidateQueries({ queryKey: QK.monitorRules }),
+      )
+    } else {
+      // 未监控 → 直接创建 type=strategy 规则
+      api.monitorRuleSave({
+        id: genRuleId(),
+        name: `策略监控 · ${strategyName}`,
+        enabled: true,
+        type: 'strategy',
+        scope: 'all',
+        symbols: [],
+        sector: null,
+        strategy_id: strategyId,
+        direction: 'entry',
+        conditions: [],
+        logic: 'or',
+        cooldown_seconds: 3600,
+        severity: 'info',
+        message: '',
+      }).then(() => qc.invalidateQueries({ queryKey: QK.monitorRules }))
+    }
+  }
+
   const handleBatchAdd = () => {
     if (!displayRows.length) return
     const symbols = displayRows.map((r: any) => r.symbol)
@@ -515,7 +555,7 @@ export function Screener() {
               <Layers className="h-3.5 w-3.5" />
               策略池
               <span className="ml-0.5 min-w-[28px] h-4 flex items-center justify-center rounded-full bg-accent/15 text-accent text-[10px] font-bold">
-                {visiblePool.length}/{strategies.data?.presets.length ?? 0}
+                {visiblePool.length}/{strategies.data?.presets?.length ?? 0}
               </span>
             </button>
             {/* 创建策略 */}
@@ -570,6 +610,8 @@ export function Screener() {
                   onRun={() => handleRun(s)}
                   disabled={run.isPending && activeStrategy === s.id}
                   onSettings={() => setSettingsStrategyId(s.id)}
+                  monitored={strategyMonitorMap.has(s.id)}
+                  onToggleMonitor={() => toggleStrategyMonitor(s.id, s.name)}
                 />
               )
             })}

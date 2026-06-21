@@ -319,6 +319,68 @@ export interface CustomSignalOptions {
   kinds: { key: string; label: string }[]
 }
 
+// ===== Monitor (监控规则 + 触发记录) =====
+export interface MonitorCondition {
+  field: string
+  op: string              // truth | > >= < <= == !=
+  value?: number | null   // op 非 truth 时必填
+}
+
+export interface MonitorRule {
+  id: string
+  name: string
+  enabled: boolean
+  type: 'strategy' | 'signal' | 'price' | 'market'
+  scope: 'symbols' | 'all' | 'sector'
+  symbols: string[]
+  sector?: string | null
+  strategy_id?: string | null
+  direction: 'entry' | 'exit' | 'both'
+  conditions: MonitorCondition[]
+  logic: 'and' | 'or'
+  cooldown_seconds: number
+  severity: 'info' | 'warn' | 'critical'
+  message: string
+  webhook_url?: string
+  webhook_enabled?: boolean
+  created_at?: string
+}
+
+export interface MonitorRuleOptions {
+  threshold_fields: { key: string; label: string }[]
+  builtin_signals: { key: string; label: string }[]
+  custom_signals: { key: string; label: string }[]
+  operators: string[]
+  types: { key: string; label: string }[]
+  scopes: { key: string; label: string }[]
+  logics: { key: string; label: string }[]
+  severities: { key: string; label: string }[]
+  directions: { key: string; label: string }[]
+}
+
+export interface AlertEvent {
+  ts: number
+  rule_id?: string
+  rule_name?: string
+  source: string
+  type: string
+  symbol?: string
+  name?: string | null
+  message: string
+  price?: number | null
+  change_pct?: number | null
+  signals?: string[]
+  severity?: string
+  strategy_id?: string
+}
+
+/** 生成监控规则 id (时间戳 + 随机后缀), 用户无需手动填写。 */
+export function genRuleId(): string {
+  const ts = Date.now().toString(36)
+  const rand = Math.random().toString(36).slice(2, 6)
+  return `mr_${ts}_${rand}`
+}
+
 // ===== Limit Ladder =====
 export interface LimitLadderStock {
   symbol: string
@@ -719,6 +781,13 @@ export const api = {
     request<{ results: { symbol: string; name: string; code: string }[] }>(
       `/api/kline/instruments/search?q=${encodeURIComponent(q)}&limit=${limit}`,
     ),
+
+  /** 批量查股票名称 (传入 symbol 列表, 返回 {symbol: name}) */
+  instrumentNames: (symbols: string[]) =>
+    request<{ names: Record<string, string> }>('/api/kline/instruments/names', {
+      method: 'POST',
+      body: JSON.stringify(symbols),
+    }),
   klineMinute: (symbol: string, date?: string) =>
     request<{
       symbol: string
@@ -1131,6 +1200,47 @@ export const api = {
 
   customSignalDelete: (id: string) =>
     request<{ ok: boolean }>(`/api/custom-signals/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
+  // ===== Monitor Rules (监控规则) =====
+  monitorRulesList: () =>
+    request<{ rules: MonitorRule[] }>('/api/monitor-rules'),
+
+  monitorRuleOptions: () =>
+    request<MonitorRuleOptions>('/api/monitor-rules/options'),
+
+  monitorRuleSave: (rule: MonitorRule) =>
+    request<{ ok: boolean; rule: MonitorRule }>('/api/monitor-rules', {
+      method: 'POST',
+      body: JSON.stringify(rule),
+    }),
+
+  monitorRuleDelete: (id: string) =>
+    request<{ ok: boolean }>(`/api/monitor-rules/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
+  /** 生成演示监控规则 (Dev 页用) */
+  monitorRuleSeed: () =>
+    request<{ ok: boolean; generated: number }>('/api/monitor-rules/seed', { method: 'POST' }),
+
+  // ===== Alerts (触发记录) =====
+  alertsList: (params?: { days?: number; limit?: number; source?: string; type?: string }) => {
+    const qs = new URLSearchParams()
+    if (params?.days) qs.set('days', String(params.days))
+    if (params?.limit) qs.set('limit', String(params.limit))
+    if (params?.source) qs.set('source', params.source)
+    if (params?.type) qs.set('type', params.type)
+    const s = qs.toString()
+    return request<{ alerts: AlertEvent[]; total: number }>(`/api/alerts${s ? `?${s}` : ''}`)
+  },
+
+  alertsClear: () =>
+    request<{ ok: boolean; cleared: number }>('/api/alerts', { method: 'DELETE' }),
+
+  alertDelete: (ts: number) =>
+    request<{ ok: boolean }>(`/api/alerts/${ts}`, { method: 'DELETE' }),
+
+  /** 生成演示触发记录 (Dev 页用) */
+  alertSeed: (count = 12, recent = true) =>
+    request<{ ok: boolean; generated: number }>(`/api/alerts/seed?count=${count}&recent=${recent}`, { method: 'POST' }),
 
   /** 检查 AI 配置状态 */
   strategyAiStatus: () =>

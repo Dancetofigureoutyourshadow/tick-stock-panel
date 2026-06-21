@@ -426,36 +426,8 @@ def delete_strategy(strategy_id: str, request: Request):
 
 
 # ── 监控 ─────────────────────────────────────────────────────────────
-
-
-@router.post("/monitor/start")
-def monitor_start(req: MonitorStartRequest, request: Request):
-    engine = _get_engine(request)
-    monitor = _get_monitor(request)
-    try:
-        s = engine.get(req.strategy_id)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
-
-    monitor.start(req.strategy_id, {
-        "entry_signals": s.entry_signals,
-        "exit_signals": s.exit_signals,
-        "alerts": s.alerts,
-    })
-    return {"ok": True, "watching": list(monitor.watching.keys())}
-
-
-@router.post("/monitor/stop/{strategy_id}")
-def monitor_stop(strategy_id: str, request: Request):
-    monitor = _get_monitor(request)
-    monitor.stop(strategy_id)
-    return {"ok": True, "watching": list(monitor.watching.keys())}
-
-
-@router.get("/monitor/status")
-def monitor_status(request: Request):
-    monitor = _get_monitor(request)
-    return {"watching": list(monitor.watching.keys())}
+# 注: 策略监控已统一迁移到 MonitorRuleEngine (监控通知页), 旧的 start/stop/status
+# 路由已移除。StrategyMonitorService 类保留 (其 _check_signals 被 MonitorRuleEngine 复用)。
 
 
 # ── 热重载 ───────────────────────────────────────────────────────────

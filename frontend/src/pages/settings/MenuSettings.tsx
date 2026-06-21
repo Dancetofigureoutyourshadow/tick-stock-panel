@@ -17,7 +17,7 @@ import {
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import { Eye, EyeOff, ExternalLink, GripVertical, Settings } from 'lucide-react'
+import { Eye, EyeOff, ExternalLink, GripVertical, Settings, Bell } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { api } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
@@ -42,16 +42,18 @@ const BUILTIN_PAGES: NavEntry[] = [
   { id: '/financials', label: '财务', type: 'builtin', visible: true },
   { id: '/indices', label: '指数', type: 'builtin', visible: true },
   { id: '/trading', label: '交易', type: 'builtin', visible: true },
-  { id: '/monitor', label: '监控通知', type: 'builtin', visible: true },
+  { id: '/monitor', label: '监控中心', type: 'builtin', visible: true },
   { id: '/data', label: '数据', type: 'builtin', visible: true },
 ]
 
 // ── Sortable row ──
 
-function SortableItem({ entry, hidden, onToggleHidden }: {
+function SortableItem({ entry, hidden, onToggleHidden, badgeEnabled, onToggleBadge }: {
   entry: NavEntry
   hidden: boolean
   onToggleHidden: (id: string) => void
+  badgeEnabled?: boolean
+  onToggleBadge?: (id: string) => void
 }) {
   const {
     attributes,
@@ -73,7 +75,7 @@ function SortableItem({ entry, hidden, onToggleHidden }: {
     <div
       ref={setNodeRef}
       style={style}
-      className={`grid grid-cols-[2.5rem_1fr_5rem_3rem_3rem] items-center border-b border-border/70 px-4 py-3 last:border-b-0 ${
+      className={`grid grid-cols-[2.5rem_1fr_4.5rem_3rem_3rem_3rem] items-center border-b border-border/70 px-4 py-3 last:border-b-0 ${
         isDragging ? 'bg-elevated rounded-lg shadow-lg' : ''
       } ${hidden ? 'opacity-50' : ''}`}
     >
@@ -130,6 +132,22 @@ function SortableItem({ entry, hidden, onToggleHidden }: {
           >
             <Settings className="h-3.5 w-3.5" />
           </Link>
+        )}
+      </div>
+      {/* 第 6 列: 徽标开关 (仅监控中心) */}
+      <div className="flex justify-center">
+        {onToggleBadge && (
+          <button
+            onClick={() => onToggleBadge(entry.id)}
+            className={`rounded p-1 transition-colors ${
+              badgeEnabled
+                ? 'text-accent hover:bg-accent/10'
+                : 'text-muted hover:text-accent hover:bg-accent/10'
+            }`}
+            title={badgeEnabled ? '关闭数字提示' : '开启数字提示'}
+          >
+            <Bell className="h-3.5 w-3.5" />
+          </button>
         )}
       </div>
     </div>
@@ -230,6 +248,17 @@ export function SettingsMenuSettingsPanel() {
     saveNavHidden.mutate([...next])
   }
 
+  // 监控中心徽标开关 (localStorage)
+  const [badgeEnabled, setBadgeEnabled] = useState(() => {
+    try { return localStorage.getItem('monitor_badge_enabled') !== '0' } catch { return true }
+  })
+  const toggleBadge = (id: string) => {
+    if (id !== '/monitor') return
+    const next = !badgeEnabled
+    setBadgeEnabled(next)
+    try { localStorage.setItem('monitor_badge_enabled', next ? '1' : '0') } catch { /* ignore */ }
+  }
+
   return (
     <div className="max-w-5xl space-y-6">
       <section className="rounded-2xl border border-border bg-surface p-6 bg-[radial-gradient(circle_at_top_right,rgba(59,130,246,0.12),transparent_38%)]">
@@ -241,12 +270,13 @@ export function SettingsMenuSettingsPanel() {
       </section>
 
       <section className="rounded-card border border-border bg-surface overflow-hidden">
-        <div className="grid grid-cols-[2.5rem_1fr_5rem_3rem_3rem] items-center border-b border-border px-4 py-2 text-[11px] text-muted">
+        <div className="grid grid-cols-[2.5rem_1fr_4.5rem_3rem_3rem_3rem] items-center border-b border-border px-4 py-2 text-[11px] text-muted">
           <div />
           <div>菜单</div>
           <div>类型</div>
           <div className="text-center">显示</div>
           <div className="text-center">设置</div>
+          <div className="text-center">数字</div>
         </div>
 
         <DndContext
@@ -264,6 +294,8 @@ export function SettingsMenuSettingsPanel() {
                 entry={entry}
                 hidden={hiddenSet.has(entry.id)}
                 onToggleHidden={toggleHidden}
+                badgeEnabled={entry.id === '/monitor' ? badgeEnabled : undefined}
+                onToggleBadge={entry.id === '/monitor' ? toggleBadge : undefined}
               />
             ))}
           </SortableContext>

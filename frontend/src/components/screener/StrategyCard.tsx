@@ -1,4 +1,4 @@
-import { Settings2, TrendingDown } from 'lucide-react'
+import { Settings2, TrendingDown, RadioTower } from 'lucide-react'
 import { motion } from 'framer-motion'
 import { storage } from '@/lib/storage'
 
@@ -30,7 +30,7 @@ const CARD_STYLES: Record<CardSize, {
   },
   normal: {
     wrap: 'gap-2',
-    card: 'relative inline-flex items-center gap-2 pl-3 pr-7 py-1.5 rounded-lg',
+    card: 'relative inline-flex items-center gap-2 pl-3 pr-12 py-1.5 rounded-lg',
     name: 'text-xs',
     count: 'text-xs',
     desc: 'text-[10px] text-muted leading-tight mt-0.5 line-clamp-1 max-w-[120px]',
@@ -38,7 +38,7 @@ const CARD_STYLES: Record<CardSize, {
   },
   large: {
     wrap: 'gap-2',
-    card: 'relative inline-flex flex-col items-start px-3.5 py-2.5 rounded-btn min-w-[100px]',
+    card: 'relative inline-flex flex-col items-start pl-3.5 pr-12 py-2.5 rounded-btn min-w-[100px]',
     name: 'text-xs',
     count: 'text-lg font-mono font-bold tabular-nums',
     desc: 'text-[10px] text-muted leading-tight mt-0.5 line-clamp-2 max-w-[140px]',
@@ -87,12 +87,16 @@ interface StrategyCardProps {
   onRun: () => void
   disabled: boolean
   onSettings: () => void
+  /** 是否已加入策略监控 */
+  monitored?: boolean
+  /** 切换策略监控 (点击 RadioTower 图标) */
+  onToggleMonitor?: () => void
 }
 
 export function StrategyCard({
   name, description, source, active, count, expiredCount,
   loading, cardSize,
-  onRun, disabled, onSettings,
+  onRun, disabled, onSettings, monitored, onToggleMonitor,
 }: StrategyCardProps) {
   const cs = CARD_STYLES[cardSize]
   const activeCls = active
@@ -118,9 +122,9 @@ export function StrategyCard({
         <>
           <button onClick={onRun} disabled={disabled}
             className="flex flex-col items-start cursor-pointer disabled:opacity-50 disabled:cursor-wait w-full">
-            <div className="flex items-center gap-1.5">
-              <span className={`text-[9px] px-1 py-px rounded border font-medium leading-tight ${badgeCls}`}>{srcLabel}</span>
-              <span className="text-xs font-medium whitespace-nowrap text-foreground">{name}</span>
+            <div className="flex items-center gap-1.5 max-w-full">
+              <span className={`text-[9px] px-1 py-px rounded border font-medium leading-tight shrink-0 ${badgeCls}`}>{srcLabel}</span>
+              <span className="text-xs font-medium truncate text-foreground">{name}</span>
             </div>
             {description && (
               <span className="text-[10px] text-muted leading-tight mt-0.5 line-clamp-1">{description}</span>
@@ -145,18 +149,25 @@ export function StrategyCard({
             className="absolute top-1.5 right-1.5 p-0.5 rounded hover:bg-elevated transition-colors cursor-pointer" title="策略设置">
             <Settings2 className="h-3 w-3 text-muted hover:text-accent transition-colors" />
           </button>
+          {onToggleMonitor && (
+            <button onClick={(e) => { e.stopPropagation(); onToggleMonitor() }}
+              className="absolute top-1.5 right-7 p-0.5 rounded hover:bg-elevated transition-colors cursor-pointer" title={monitored ? '取消策略监控' : '开启策略监控'}>
+              <RadioTower className={`relative h-3 w-3 transition-colors ${monitored ? 'text-accent' : 'text-muted hover:text-accent'}`} />
+              {monitored && <span className="absolute inset-0 rounded animate-ping bg-accent/20" />}
+            </button>
+          )}
         </>
       ) : cardSize === 'normal' ? (
         <>
           <button onClick={onRun} disabled={disabled}
-            className="flex flex-col items-start cursor-pointer disabled:opacity-50 disabled:cursor-wait">
-            <div className="flex items-center gap-1.5">
-              <span className={`text-[9px] px-1 py-px rounded border font-medium leading-tight ${badgeCls}`}>{srcLabel}</span>
-              <span className="text-xs font-medium whitespace-nowrap text-foreground">{name}</span>
+            className="flex flex-col items-start cursor-pointer disabled:opacity-50 disabled:cursor-wait min-w-0">
+            <div className="flex items-center gap-1.5 min-w-0">
+              <span className={`text-[9px] px-1 py-px rounded border font-medium leading-tight shrink-0 ${badgeCls}`}>{srcLabel}</span>
+              <span className="text-xs font-medium truncate text-foreground">{name}</span>
               {count != null && (
-                <span className={`text-xs font-mono font-bold tabular-nums ${countCls}`}>{count}</span>
+                <span className={`text-xs font-mono font-bold tabular-nums shrink-0 ${countCls}`}>{count}</span>
               )}
-              {loading && <span className="w-5 h-3 rounded bg-elevated animate-pulse" />}
+              {loading && <span className="w-5 h-3 rounded bg-elevated animate-pulse shrink-0" />}
             </div>
             <div className="flex items-center gap-1.5 mt-0.5">
               {description && (
@@ -171,6 +182,13 @@ export function StrategyCard({
             className="absolute top-1.5 right-1.5 p-0.5 rounded hover:bg-elevated transition-colors cursor-pointer" title="策略设置">
             <Settings2 className="h-3 w-3 text-muted hover:text-accent transition-colors" />
           </button>
+          {onToggleMonitor && (
+            <button onClick={(e) => { e.stopPropagation(); onToggleMonitor() }}
+              className="absolute top-1.5 right-7 p-0.5 rounded hover:bg-elevated transition-colors cursor-pointer" title={monitored ? '取消策略监控' : '开启策略监控'}>
+              <RadioTower className={`relative h-3 w-3 transition-colors ${monitored ? 'text-accent' : 'text-muted hover:text-accent'}`} />
+              {monitored && <span className="absolute inset-0 rounded animate-ping bg-accent/20" />}
+            </button>
+          )}
         </>
       ) : (
         /* mini */
@@ -187,6 +205,13 @@ export function StrategyCard({
             )}
             {loading && <span className="w-4 h-2.5 rounded bg-elevated animate-pulse" />}
           </button>
+          {onToggleMonitor && (
+            <button onClick={(e) => { e.stopPropagation(); onToggleMonitor() }}
+              className="relative p-0.5 rounded hover:bg-elevated transition-colors cursor-pointer" title={monitored ? '取消策略监控' : '开启策略监控'}>
+              <RadioTower className={`h-3 w-3 transition-colors ${monitored ? 'text-accent' : 'text-muted hover:text-accent'}`} />
+              {monitored && <span className="absolute inset-0 rounded animate-ping bg-accent/20" />}
+            </button>
+          )}
           <button onClick={(e) => { e.stopPropagation(); onSettings() }}
             className="p-0.5 rounded hover:bg-elevated transition-colors cursor-pointer" title="策略设置">
             <Settings2 className="h-3 w-3 text-muted hover:text-accent transition-colors" />

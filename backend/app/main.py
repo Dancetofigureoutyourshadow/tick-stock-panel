@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app import __version__
-from app.api import analysis, backtest, data, ext_data, financials, indices, intraday, kline, overview, pipeline, screener, settings as settings_api, signals, strategy, watchlist
+from app.api import analysis, backtest, data, ext_data, financials, indices, intraday, kline, monitor_rules, alerts, overview, pipeline, screener, settings as settings_api, signals, strategy, watchlist
 from app.api.routes import router as core_router
 from app.config import settings
 from app.jobs import daily_pipeline
@@ -113,6 +113,32 @@ async def lifespan(app: FastAPI):
     app.state.strategy_engine = strategy_engine
     logger.info("strategy engine loaded: %d strategies", len(strategy_engine.list_strategies()))
 
+    # 通用监控规则引擎: 启动时 reload 规则到内存态 (修复重启后告警失效)
+    from app.strategy.monitor import MonitorRuleEngine
+    from app.strategy import monitor_rules as mr_store
+    from app.services import preferences
+    monitor_engine = MonitorRuleEngine()
+    monitor_engine.set_strategy_engine(strategy_engine)
+
+    # 自动迁移: 把旧 strategy_monitor_ids 同步为 type=strategy 规则 (统一到监控页)
+    try:
+        if preferences.get_strategy_monitor_enabled():
+            ids = preferences.get_strategy_monitor_ids()
+            if ids:
+                names = {s.id: s.name for s in strategy_engine.list_strategies()}
+                mr_store.migrate_strategy_monitors(store.data_dir, ids, names)
+                logger.info("strategy monitor migrated: %d strategies", len(ids))
+    except Exception as e:  # noqa: BLE001
+        logger.warning("strategy monitor migration failed: %s", e)
+
+    try:
+        rules = mr_store.load_all(store.data_dir)
+        monitor_engine.set_rules(rules)
+        logger.info("monitor engine loaded: %d rules", monitor_engine.rule_count)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("monitor engine load failed: %s", e)
+    app.state.monitor_engine = monitor_engine
+
     yield
 
     if app.state.scheduler:
@@ -139,11 +165,13 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# 开发期 CORS 允许 Vite dev server
+# CORS: 允许局域网访问 (自托管场景, 放开所有来源)
+# 注: allow_credentials=True 与 allow_origins=['*'] 不能共存 (浏览器规范),
+# 本项目认证走 header (API Key), 不依赖 cookie, 故关闭 credentials 换取通配来源。
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3011", "http://127.0.0.1:3011"],
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -165,6 +193,8 @@ app.include_router(financials.router)
 app.include_router(settings_api.router)
 app.include_router(strategy.router)
 app.include_router(signals.router)
+app.include_router(monitor_rules.router)
+app.include_router(alerts.router)
 
 # 生产期静态文件(前端 dist)
 _static = Path(settings.static_dir)

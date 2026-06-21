@@ -1,13 +1,15 @@
 import { useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
+import { motion } from 'framer-motion'
 import { Activity, ArrowDownRight, ArrowUpRight, BarChart3, BellRing, Flame, Gauge, LineChart, Loader2, RefreshCw, Sparkles, Target, Timer } from 'lucide-react'
 import { DatePicker } from '@/components/DatePicker'
-import { api, type MarketSnapshotRow, type OverviewDimensionRankItem, type OverviewMarket } from '@/lib/api'
+import { api, type MarketSnapshotRow, type OverviewDimensionRankItem, type OverviewMarket, type AlertEvent } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
-import { fmtBigNum } from '@/lib/format'
+import { fmtBigNum, fmtPct } from '@/lib/format'
 import { useDataStatus, useCapabilities } from '@/lib/useSharedQueries'
 import { SealedBadge } from '@/components/SealedBadge'
+import { cn } from '@/lib/cn'
 
 function n(v: number | null | undefined) {
   return typeof v === 'number' && Number.isFinite(v) ? v : null
@@ -68,6 +70,81 @@ function SectionTitle({ icon: Icon, title, hint }: { icon: typeof Activity; titl
         <h2 className="text-xs font-semibold text-foreground">{title}</h2>
       </div>
       {hint && <span className="font-mono text-[10px] text-muted">{hint}</span>}
+    </div>
+  )
+}
+
+// 看板监控中心小组件 — 显示前 10 条触发记录 + 更多按钮
+const _SOURCE_BADGE: Record<string, string> = {
+  strategy: 'bg-amber-400/10 text-amber-400',
+  signal: 'bg-accent/10 text-accent',
+  price: 'bg-emerald-400/10 text-emerald-400',
+  market: 'bg-purple-500/10 text-purple-400',
+}
+const _SOURCE_LABEL: Record<string, string> = {
+  strategy: '策略', signal: '信号', price: '价格', market: '异动',
+}
+const _SEVERITY_BAR: Record<string, string> = {
+  info: 'bg-accent/40', warn: 'bg-warning', critical: 'bg-danger',
+}
+
+function MonitorWidget() {
+  const alerts = useQuery({
+    queryKey: ['alerts', ''],
+    queryFn: () => api.alertsList({ days: 7, limit: 10 }),
+    refetchInterval: 10000,
+    refetchIntervalInBackground: true,
+  })
+  const events: AlertEvent[] = alerts.data?.alerts ?? []
+
+  if (events.length === 0) {
+    return (
+      <div className="mt-1 py-6 text-center text-[11px] text-muted">暂无触发记录</div>
+    )
+  }
+
+  return (
+    <div className="mt-1 space-y-1.5">
+      {events.map((ev, i) => {
+        const sev = _SEVERITY_BAR[ev.severity ?? 'info'] ?? _SEVERITY_BAR.info
+        const pct = ev.change_pct ?? 0
+        return (
+          <motion.div
+            key={`${ev.ts}-${i}`}
+            initial={{ opacity: 0, y: -8, scale: 0.98 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            transition={{ duration: 0.3, delay: Math.min(i * 0.03, 0.3) }}
+            className="relative overflow-hidden rounded-md border border-border/40 bg-surface/60 pl-2.5 pr-2 py-1.5 hover:border-border hover:bg-surface transition-colors"
+          >
+            <div className={cn('absolute left-0 top-0 h-full w-0.5', sev)} />
+            {/* 第一行: 代码 + 名称 + 价格 + 涨跌幅 */}
+            <div className="flex items-center gap-1.5">
+              <span className="font-mono text-[10px] font-medium text-foreground/80 shrink-0">{ev.symbol?.replace(/\.(SH|SZ|BJ)$/, '')}</span>
+              {ev.name && <span className="text-[10px] text-secondary truncate flex-1">{ev.name}</span>}
+              {ev.price != null && (
+                <span className="text-[10px] font-mono text-foreground/60 shrink-0">{fmtPrice(ev.price)}</span>
+              )}
+              {ev.change_pct != null && (
+                <span className={cn('text-[10px] font-mono font-medium shrink-0 w-12 text-right', pct >= 0 ? 'text-danger' : 'text-bear')}>
+                  {pct >= 0 ? '+' : ''}{fmtPct(pct)}
+                </span>
+              )}
+            </div>
+            {/* 第二行: 分类标签 + 触发消息 + 时间 */}
+            <div className="mt-0.5 flex items-center gap-1.5">
+              <span className={cn('shrink-0 rounded px-1 py-px text-[8px] font-medium', _SOURCE_BADGE[ev.source] ?? 'bg-elevated text-muted')}>
+                {_SOURCE_LABEL[ev.source] ?? ev.source}
+              </span>
+              {ev.message && (
+                <span className="text-[9px] text-muted truncate flex-1">{ev.message}</span>
+              )}
+              <span className="text-[8px] text-muted/50 shrink-0 font-mono">
+                {ev.ts ? new Date(ev.ts).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : ''}
+              </span>
+            </div>
+          </motion.div>
+        )
+      })}
     </div>
   )
 }
@@ -499,21 +576,17 @@ export function Dashboard() {
             <LadderMini limit={data.limit} />
           </section>
           <section className="rounded-card border border-border bg-surface/80 p-3">
-            <SectionTitle icon={BellRing} title="监控通知" hint="实时信号" />
-            <Link
-              to="/monitor"
-              className="mt-1 flex flex-col items-center justify-center gap-2 py-6 text-center rounded-btn hover:bg-elevated/60 transition-colors group"
-            >
-              <span className="relative">
-                <span className="absolute inset-0 blur-xl bg-accent/20 rounded-full" />
-                <BellRing className="relative h-7 w-7 text-accent group-hover:scale-110 transition-transform" />
-              </span>
-              <span className="text-xs text-muted leading-relaxed">
-                实时监控信号中心
-                <br />
-                <span className="text-[11px] text-accent/80">点击进入 · 开发中</span>
-              </span>
-            </Link>
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5">
+                <BellRing className="h-3.5 w-3.5 text-accent" />
+                <h2 className="text-xs font-semibold text-foreground">监控中心</h2>
+                <span className="font-mono text-[10px] text-muted">实时信号</span>
+              </div>
+              <Link to="/monitor" className="inline-flex items-center justify-center h-5 w-5 rounded text-muted hover:text-accent hover:bg-accent/10 transition-colors" title="进入监控中心">
+                <ArrowUpRight className="h-3.5 w-3.5" />
+              </Link>
+            </div>
+            <MonitorWidget />
           </section>
         </aside>
       </div>

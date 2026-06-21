@@ -64,6 +64,11 @@ export const QK = {
   // Custom Signals
   customSignals:        ['custom-signals'] as const,
   customSignalsOptions: ['custom-signals-options'] as const,
+
+  // Monitor (监控规则 + 触发记录)
+  monitorRules:         ['monitor-rules'] as const,
+  monitorRuleOptions:   ['monitor-rule-options'] as const,
+  alerts:               (source?: string) => ['alerts', source ?? ''] as const,
 } as const
 
 // ===== SSE 应该 invalidate 的 key 前缀列表 =====

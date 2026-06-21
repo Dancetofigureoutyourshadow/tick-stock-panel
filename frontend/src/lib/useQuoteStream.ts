@@ -3,6 +3,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { SSE_INVALIDATE_PREFIXES } from './queryKeys'
 import { getQueryConfig } from './useQueryConfig'
 import { toast } from '@/components/Toast'
+import { pushAlertToast } from '@/components/AlertToast'
 import type { StrategyAlertEvent } from './api'
 
 /**
@@ -34,28 +35,25 @@ export function useQuoteStream(
       toast(a.message, 'success')
     }
 
-    if (onAlert && strategyAlerts.length > 0) {
-      onAlert(strategyAlerts)
-    } else if (strategyAlerts.length > 0) {
-      // 默认: 弹 toast
-      for (const a of strategyAlerts.slice(0, 3)) {
-        const label = a.name ? `${a.symbol} ${a.name}` : a.symbol
-        toast(`[${a.strategy_id}] ${label} — ${a.message}`, 'success')
+    // 监控告警: 用专用 AlertToast (最多显示 2 条, 自动去重)
+    if (strategyAlerts.length > 0) {
+      // 有 onAlert 回调时走回调, 否则弹 AlertToast
+      if (onAlert) {
+        onAlert(strategyAlerts)
       }
-      if (strategyAlerts.length > 3) {
-        toast(`...以及另外 ${strategyAlerts.length - 3} 条告警`, 'success')
+      // 同时弹专用通知 (不管有没有 onAlert)
+      for (const a of strategyAlerts.slice(0, 2)) {
+        pushAlertToast(a as any)
       }
     }
   }, [onAlert])
 
+  const enabledRef = useRef(enabled)
+  enabledRef.current = enabled
+
   useEffect(() => {
-    if (!enabled) {
-      if (esRef.current) {
-        esRef.current.close()
-        esRef.current = null
-      }
-      return
-    }
+    // SSE 始终连接 — 监控告警不依赖实时行情开关
+    // (quotes_updated 行情刷新受 enabled 控制, strategy_alert 始终处理)
 
     const connect = () => {
       const es = new EventSource('/api/intraday/stream')
@@ -64,6 +62,8 @@ export function useQuoteStream(
       // sse-starlette ping 心跳走 SSE comment，不会到达这里
 
       es.addEventListener('quotes_updated', () => {
+        // 实时行情未开启时不处理行情刷新
+        if (!enabledRef.current) return
         // 根据用户配置过滤 invalidation
         const pages = pagesRef.current
         if (pages) {
@@ -96,6 +96,9 @@ export function useQuoteStream(
             const alerts: StrategyAlertEvent[] = data.alerts || []
             if (alerts.length > 0) {
               handleAlerts(alerts)
+              // 实时刷新触发记录列表 + 监控中心徽标
+              qc.invalidateQueries({ queryKey: ['alerts'] })
+              qc.invalidateQueries({ queryKey: ['alerts-total'] })
             }
         } catch {
           // 忽略解析错误
@@ -119,5 +122,5 @@ export function useQuoteStream(
         esRef.current = null
       }
     }
-  }, [enabled, qc, handleAlerts])
+  }, [qc, handleAlerts])
 }

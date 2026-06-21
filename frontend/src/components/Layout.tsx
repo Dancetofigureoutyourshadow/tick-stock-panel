@@ -1,8 +1,10 @@
+import { useEffect } from 'react'
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { motion } from 'framer-motion'
 import { useQuoteStream } from '@/lib/useQuoteStream'
 import { ToastContainer } from '@/components/Toast'
+import { AlertToastContainer } from '@/components/AlertToast'
 import {
   useCapabilities,
   useSettings,
@@ -37,6 +39,7 @@ import {
 import { Logo } from './Logo'
 import { api, type IndexQuote } from '@/lib/api'
 import { cn } from '@/lib/cn'
+import { setCurrentTotal as setAlertTotal, useUnreadAlerts } from '@/lib/monitorBadge'
 
 // 品牌色 — 只用于 logo / brand 区域,不影响功能语义色
 const BRAND = '#8B5CF6'
@@ -62,7 +65,7 @@ const nav = [
   { to: '/financials', label: '财务',   icon: FileText },
   { to: '/indices', label: '指数', icon: BarChart3 },
   { to: '/trading', label: '交易', icon: Cable },
-  { to: '/monitor', label: '监控通知', icon: RadioTower },
+  { to: '/monitor', label: '监控中心', icon: RadioTower },
   { to: '/data',       label: '数据',   icon: Database },
 ] as const
 
@@ -79,6 +82,21 @@ function fmtIndexPct(v: number | null | undefined) {
 function indexPctClass(v: number | null | undefined) {
   if (v == null || Number.isNaN(Number(v))) return 'text-muted'
   return Number(v) >= 0 ? 'text-bull' : 'text-bear'
+}
+
+/** 监控中心未读徽标 — 仅在非监控页且有未读时显示。 */
+function MonitorBadge({ active }: { active: boolean }) {
+  const unread = useUnreadAlerts()
+  // 尊重用户设置: 可在菜单设置里关闭数字提示
+  const badgeEnabled = (() => {
+    try { return localStorage.getItem('monitor_badge_enabled') !== '0' } catch { return true }
+  })()
+  if (active || unread <= 0 || !badgeEnabled) return null
+  return (
+    <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-danger px-1 text-[9px] font-bold text-white animate-pulse">
+      {unread > 99 ? '99+' : unread}
+    </span>
+  )
 }
 
 function SidebarIndexQuotes({ rows, items }: { rows: IndexQuote[] | undefined; items: CoreIndex[] }) {
@@ -253,6 +271,20 @@ export function Layout() {
   const isTrading = quoteStatus?.is_trading_hours ?? false
   const isFreeTier = (caps?.label ?? '').toLowerCase().startsWith('free')
 
+  // 轮询触发记录总数 → 更新监控中心徽标 (每 15 秒)
+  const alertsTotalQuery = useQuery({
+    queryKey: ['alerts-total'],
+    queryFn: () => api.alertsList({ days: 7, limit: 1 }),
+    refetchInterval: 15000,
+    refetchIntervalInBackground: true,
+    select: (data) => data.total,
+  })
+  // 只在拿到真实总数时同步徽标 (避免 data=undefined 时传 0 重置 lastSeen)
+  const alertsTotal = alertsTotalQuery.data
+  useEffect(() => {
+    if (alertsTotal != null) setAlertTotal(alertsTotal)
+  }, [alertsTotal])
+
   // 合并内置页面 + 可见的扩展分析菜单
   const analysisNav = (analysisMenus?.items ?? [])
     .filter(m => m.visible)
@@ -344,8 +376,14 @@ export function Layout() {
                 )
               }
             >
-              <Icon className="h-4 w-4 shrink-0" />
-              <span>{label}</span>
+              {({ isActive }) => (
+                <>
+                  <Icon className="h-4 w-4 shrink-0" />
+                  <span className="flex-1">{label}</span>
+                  {/* 监控中心徽标: 仅非监控页且有未读时显示 */}
+                  {to === '/monitor' && <MonitorBadge active={isActive} />}
+                </>
+              )}
             </NavLink>
           ))}
         </nav>
@@ -445,6 +483,7 @@ export function Layout() {
         <Outlet />
       </motion.main>
       <ToastContainer />
+      <AlertToastContainer />
     </div>
   )
 }

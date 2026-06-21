@@ -7,8 +7,6 @@ import {
   BarChart3,
   Flame,
   Zap,
-  Plus,
-  X,
 } from 'lucide-react'
 import {
   usePreferences,
@@ -17,7 +15,7 @@ import {
   useCapabilities,
 } from '@/lib/useSharedQueries'
 import { useUpdateQuoteInterval, useToggleRealtimeQuotes } from '@/lib/useSharedMutations'
-import { api, type StrategyDetail } from '@/lib/api'
+import { api } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
 import { toast } from '@/components/Toast'
 import { DepthConfigContent } from '@/components/data/DepthConfigCard'
@@ -46,13 +44,9 @@ export function SettingsMonitoringPanel({ highlight }: { highlight?: string } = 
   const { data: intervalData } = useQuoteInterval()
   const updateInterval = useUpdateQuoteInterval()
   const toggleQuote = useToggleRealtimeQuotes()
-  const [saving, setSaving] = useState(false)
-
   const isFreeTier = (caps?.label ?? '').toLowerCase().startsWith('free')
   const realtimeEnabled = prefs?.realtime_quotes_enabled ?? false
   const refreshPages = prefs?.sse_refresh_pages ?? {}
-  const monitorEnabled = prefs?.strategy_monitor_enabled ?? false
-  const monitorIds = prefs?.strategy_monitor_ids ?? []
   const limitLadderMonitor = prefs?.limit_ladder_monitor_enabled ?? false
   const hasDepth = !!caps?.capabilities?.['depth5.batch']
   const sidebarIndexSymbols = prefs?.sidebar_index_symbols ?? SIDEBAR_INDEX_OPTIONS.map(i => i.symbol)
@@ -64,12 +58,11 @@ export function SettingsMonitoringPanel({ highlight }: { highlight?: string } = 
   const maxInterval = intervalData?.max_interval ?? 60
 
   const save = useCallback(async (cfg: Record<string, unknown>) => {
-    setSaving(true)
     try {
       await api.updateRealtimeMonitorConfig(cfg)
       qc.invalidateQueries({ queryKey: QK.preferences })
-    } finally {
-      setSaving(false)
+    } catch (e) {
+      // 忽略 — Toast 已在 request 层处理
     }
   }, [qc])
 
@@ -235,28 +228,17 @@ export function SettingsMonitoringPanel({ highlight }: { highlight?: string } = 
 
       {/* ========== 右列 ========== */}
       <div className="space-y-6">
-        {/* 策略监控 */}
+        {/* 策略监控已迁移至监控中心 */}
         <Card icon={Shield} title="策略监控">
-          <p className="text-xs text-secondary mb-4">
-            每次行情刷新时自动评估监控池中的策略。命中买入/卖出信号或阈值条件时弹通知。
-            与当前打开的页面无关 — 后端始终在评估。
+          <p className="text-xs text-secondary mb-3">
+            策略监控、个股信号监控、价格监控已统一到「监控中心」页面,支持灵活配置触发条件、冷却期和作用范围。
           </p>
-          <ToggleRow
-            label="启用策略监控"
-            desc="开启后后端每次轮询自动跑策略评估"
-            checked={monitorEnabled}
-            onChange={(v) => save({ strategy_monitor_enabled: v })}
-          />
-          <div className="mt-4 pt-3 border-t border-border">
-            <div className="text-[10px] uppercase tracking-widest text-muted mb-2">
-              监控策略池 ({monitorIds.length})
-            </div>
-            <StrategyPoolSelector
-              selectedIds={monitorIds}
-              disabled={!monitorEnabled || saving}
-              onChange={(ids) => save({ strategy_monitor_ids: ids })}
-            />
-          </div>
+          <a
+            href="#/monitor"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-btn bg-accent/15 text-accent text-xs font-medium hover:bg-accent/25 transition-colors"
+          >
+            前往监控中心配置 →
+          </a>
         </Card>
 
         {/* 连板梯队降级修正 */}
@@ -306,109 +288,6 @@ export function SettingsMonitoringPanel({ highlight }: { highlight?: string } = 
         </Card>
         </div>
       </div>
-    </div>
-  )
-}
-
-
-// ===== 策略池选择器 =====
-
-function StrategyPoolSelector({
-  selectedIds,
-  disabled,
-  onChange,
-}: {
-  selectedIds: string[]
-  disabled: boolean
-  onChange: (ids: string[]) => void
-}) {
-  const [allStrategies, setAllStrategies] = useState<StrategyDetail[] | null>(null)
-  const [showAdd, setShowAdd] = useState(false)
-
-  const loadStrategies = useCallback(async () => {
-    const res = await api.strategyList()
-    setAllStrategies(res.strategies)
-  }, [])
-
-  const addStrategy = (id: string) => {
-    if (!selectedIds.includes(id)) {
-      onChange([...selectedIds, id])
-    }
-    setShowAdd(false)
-  }
-
-  const removeStrategy = (id: string) => {
-    onChange(selectedIds.filter((s) => s !== id))
-  }
-
-  const selected = allStrategies?.filter((s) => selectedIds.includes(s.id)) ?? []
-  const available = allStrategies?.filter((s) => !selectedIds.includes(s.id)) ?? []
-
-  return (
-    <div className="space-y-2">
-      {/* 已选标签 */}
-      {selected.length > 0 ? (
-        <div className="flex flex-wrap gap-1.5">
-          {selected.map((s) => (
-            <span
-              key={s.id}
-              className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px]
-                         bg-accent/10 text-accent border border-accent/20"
-            >
-              <span className="font-medium">{s.name}</span>
-              {!disabled && (
-                <button onClick={() => removeStrategy(s.id)} className="hover:text-foreground">
-                  <X className="h-3 w-3" />
-                </button>
-              )}
-              <span className="text-[9px] text-muted font-mono">{s.source}</span>
-            </span>
-          ))}
-        </div>
-      ) : (
-        <div className="text-[11px] text-muted py-1">
-          {disabled ? '请先开启策略监控' : '未选择策略'}
-        </div>
-      )}
-
-      {/* 添加按钮 */}
-      {!disabled && (
-        <div className="relative">
-          <button
-            onClick={() => {
-              if (!allStrategies) loadStrategies()
-              setShowAdd(!showAdd)
-            }}
-            className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px]
-                       bg-elevated text-secondary hover:text-foreground transition-colors"
-          >
-            <Plus className="h-3 w-3" />
-            添加策略
-          </button>
-          {showAdd && available.length > 0 && (
-            <div className="absolute left-0 top-full mt-1 z-20 w-64 max-h-48 overflow-y-auto
-                            bg-surface border border-border rounded-lg shadow-xl">
-              {available.map((s) => (
-                <button
-                  key={s.id}
-                  onClick={() => addStrategy(s.id)}
-                  className="w-full text-left px-3 py-2 hover:bg-elevated transition-colors
-                             text-[11px] border-b border-border/50 last:border-0"
-                >
-                  <div className="font-medium text-foreground">{s.name}</div>
-                  <div className="text-muted truncate">{s.description}</div>
-                </button>
-              ))}
-            </div>
-          )}
-          {showAdd && available.length === 0 && allStrategies && (
-            <div className="absolute left-0 top-full mt-1 z-20 px-3 py-2 text-[11px] text-muted
-                            bg-surface border border-border rounded-lg shadow-xl">
-              所有策略已在监控池中
-            </div>
-          )}
-        </div>
-      )}
     </div>
   )
 }

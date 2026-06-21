@@ -57,6 +57,7 @@ class QuoteService:
         self._update_event = threading.Event()  # SSE 通知: 行情更新后 set
         self._alert_event = threading.Event()   # SSE 通知: 有告警时 set
         self._pending_alerts: list[dict] = []    # 待推送的告警
+        self._max_pending_alerts: int = 1000     # 背压上限: 超出丢弃最旧
         self._strategy_monitor = None            # 延迟注入
         self._app_state = None                   # 延迟注入 (FastAPI app.state)
 
@@ -448,9 +449,7 @@ class QuoteService:
     # ================================================================
 
     def _evaluate_monitors(self, daily_df: pl.DataFrame, quote_extra: pl.DataFrame | None) -> None:
-        """行情更新后评估策略监控，并刷新策略结果缓存。"""
-        from app.services import preferences
-
+        """行情更新后评估统一监控规则引擎,并刷新策略结果缓存。"""
         try:
             # 获取 enriched 数据 (刚算好的)
             enriched_today, enriched_date = self.get_enriched_today()
@@ -459,34 +458,50 @@ class QuoteService:
 
             all_alerts: list[dict] = []
 
-            # 1. 策略监控评估
-            if preferences.get_strategy_monitor_enabled():
-                monitor = getattr(self._app_state, "strategy_monitor", None) if self._app_state else None
-                if monitor and monitor.watching:
-                    strategy_alerts = monitor.on_quote_update(enriched_today)
-                    for a in strategy_alerts:
-                        all_alerts.append({
-                            "source": "strategy",
-                            "type": a.type,
-                            "strategy_id": a.strategy_id,
-                            "symbol": a.symbol,
-                            "name": a.name,
-                            "message": a.message,
-                            "price": a.price,
-                            "change_pct": a.change_pct,
-                            "signals": a.signals,
-                        })
+            # 通用监控规则评估 (统一引擎: signal/price/market/strategy)
+            if self._app_state:
+                engine = getattr(self._app_state, "monitor_engine", None)
+                if engine and engine.rule_count > 0:
+                    rule_events = engine.evaluate(enriched_today)
+                    if rule_events:
+                        # 落盘到 alerts.jsonl
+                        try:
+                            from app.services import alert_store
+                            alert_store.append_many(
+                                self._app_state.repo.store.data_dir, rule_events,
+                            )
+                        except Exception as e:  # noqa: BLE001
+                            logger.warning("告警落盘失败: %s", e)
+                        # 转为 SSE 推送格式 (兼容旧 alert schema)
+                        for ev in rule_events:
+                            all_alerts.append({
+                                "source": ev["source"],
+                                "type": ev["type"],
+                                "rule_id": ev.get("rule_id"),
+                                "strategy_id": ev.get("rule_id") if ev["source"] == "strategy" else None,
+                                "symbol": ev["symbol"],
+                                "name": ev["name"],
+                                "message": ev["message"],
+                                "price": ev["price"],
+                                "change_pct": ev["change_pct"],
+                                "signals": ev["signals"],
+                                "severity": ev.get("severity", "info"),
+                            })
 
-            # 2. 刷新策略结果缓存 (实时行情开启时，每轮行情更新后自动重算)
+            # 刷新策略结果缓存 (实时行情开启时，每轮行情更新后自动重算)
             if self._enabled and self._app_state:
                 self._refresh_strategy_cache(enriched_today, enriched_date)
 
-            # 推入待推送队列 + 通知 SSE
+            # 推入待推送队列 + 通知 SSE (含背压保护)
             if all_alerts:
                 with self._lock:
                     self._pending_alerts.extend(all_alerts)
+                    # 背压: 超出上限丢弃最旧
+                    if len(self._pending_alerts) > self._max_pending_alerts:
+                        overflow = len(self._pending_alerts) - self._max_pending_alerts
+                        self._pending_alerts = self._pending_alerts[overflow:]
                 self._alert_event.set()
-                logger.info("策略监控评估完成: %d 条通知", len(all_alerts))
+                logger.info("监控评估完成: %d 条通知", len(all_alerts))
 
         except Exception as e:  # noqa: BLE001
             logger.warning("监控评估失败: %s", e)

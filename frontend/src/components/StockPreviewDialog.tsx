@@ -1,16 +1,26 @@
 import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { motion, AnimatePresence } from 'framer-motion'
-import { X, RefreshCw, Clock, Star } from 'lucide-react'
+import { X, RefreshCw, Clock } from 'lucide-react'
 import { api } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
+import { cnSignal } from '@/lib/signals'
 import { StockPanel, getDefaultRange } from '@/components/StockPanel'
 import { DatePicker } from '@/components/DatePicker'
+import { RuleEditor } from '@/components/monitor/RuleEditor'
 
 interface Props {
   symbol: string | null
   name?: string
   onClose: () => void
+  /** 触发信息 (来自监控触发记录, 有值时在顶栏下方显示) */
+  triggerInfo?: {
+    price?: number | null
+    changePct?: number | null
+    ts?: number
+    signals?: string[]
+    message?: string
+  } | null
 }
 
 // ===== 板块标识（与 Screener 列表一致）=====
@@ -28,9 +38,10 @@ function boardTag(symbol: string): { label: string; color: string } | null {
   return null
 }
 
-export function StockPreviewDialog({ symbol, name, onClose }: Props) {
+export function StockPreviewDialog({ symbol, name, onClose, triggerInfo }: Props) {
   const [showIntraday, setShowIntraday] = useState(false)
   const [dateRange, setDateRange] = useState(getDefaultRange)
+  const [showMonitorEditor, setShowMonitorEditor] = useState(false)
   const qc = useQueryClient()
 
   const watchlist = useQuery({
@@ -159,22 +170,6 @@ export function StockPreviewDialog({ symbol, name, onClose }: Props) {
 
                 <span className="text-muted/20 mx-0.5">|</span>
 
-                {/* 加自选 */}
-                <button
-                  onClick={() => toggleWatchlist.mutate()}
-                  disabled={toggleWatchlist.isPending}
-                  className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs transition-colors cursor-pointer ${
-                    inWatchlist
-                      ? 'bg-[#FACC15]/15 text-[#FACC15] border border-[#FACC15]/30'
-                      : 'bg-elevated text-secondary border border-border hover:border-accent/30'
-                  }`}
-                >
-                  <Star className="h-3 w-3" />
-                  {inWatchlist ? '移出自选' : '加自选'}
-                </button>
-
-                <span className="text-muted/20 mx-0.5">|</span>
-
                 {/* 刷新 */}
                 <button
                   onClick={handleRefresh}
@@ -194,6 +189,47 @@ export function StockPreviewDialog({ symbol, name, onClose }: Props) {
               </div>
             </div>
 
+            {/* 触发信息条 (来自监控触发记录) */}
+            {triggerInfo && (
+              <div className="flex items-center gap-4 border-b border-amber-400/20 bg-amber-400/[0.06] px-5 py-2 shrink-0">
+                {/* 左: 触发标记 + 时间 */}
+                <div className="flex items-center gap-2 shrink-0">
+                  <span className="text-[10px] font-semibold text-amber-400">⚡ 触发</span>
+                  {triggerInfo.ts && (
+                    <span className="text-[11px] text-secondary font-mono">
+                      {new Date(triggerInfo.ts).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}
+                    </span>
+                  )}
+                </div>
+
+                {/* 中: 价格 + 涨跌幅 */}
+                <div className="flex items-center gap-2 shrink-0">
+                  {triggerInfo.price != null && (
+                    <span className="text-[11px] font-mono text-foreground/80">{triggerInfo.price.toFixed(2)}</span>
+                  )}
+                  {triggerInfo.changePct != null && (
+                    <span className={`text-[11px] font-mono font-medium ${triggerInfo.changePct >= 0 ? 'text-danger' : 'text-bear'}`}>
+                      {triggerInfo.changePct >= 0 ? '+' : ''}{(triggerInfo.changePct * 100).toFixed(2)}%
+                    </span>
+                  )}
+                </div>
+
+                {/* 右: 消息 + 信号标签 */}
+                <div className="flex items-center gap-2 flex-wrap min-w-0">
+                  {triggerInfo.message && (
+                    <span className="text-[11px] text-foreground/70 truncate">{triggerInfo.message}</span>
+                  )}
+                  {triggerInfo.signals && triggerInfo.signals.length > 0 && (
+                    <div className="flex items-center gap-1 flex-wrap">
+                      {triggerInfo.signals.map((s, j) => (
+                        <span key={j} className="rounded bg-accent/10 px-1.5 py-0.5 text-[9px] text-accent/80">{cnSignal(s)}</span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
             {/* K 线内容 */}
             <div className="flex-1 overflow-auto p-4">
               <StockPanel
@@ -202,8 +238,39 @@ export function StockPreviewDialog({ symbol, name, onClose }: Props) {
                 showIntraday={showIntraday}
                 onSelectDate={() => { if (!showIntraday) setShowIntraday(true) }}
                 dateRange={dateRange}
+                onMonitor={() => setShowMonitorEditor(true)}
+                inWatchlist={inWatchlist}
+                onToggleWatchlist={() => toggleWatchlist.mutate()}
               />
             </div>
+
+            {/* 加监控编辑器弹层 */}
+            <AnimatePresence>
+              {showMonitorEditor && symbol && (
+                <motion.div
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  className="absolute inset-0 z-20 flex items-start justify-center overflow-auto bg-black/40 p-4"
+                  onClick={() => setShowMonitorEditor(false)}
+                >
+                  <div className="mt-8 w-full max-w-2xl" onClick={e => e.stopPropagation()}>
+                    <RuleEditor
+                      rule={null}
+                      simple
+                      preset={{
+                        scope: 'symbols',
+                        symbols: [symbol],
+                        type: 'signal',
+                        logic: 'or',
+                      }}
+                      onClose={() => setShowMonitorEditor(false)}
+                      onSaved={() => setShowMonitorEditor(false)}
+                    />
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
           </motion.div>
         </div>
       )}

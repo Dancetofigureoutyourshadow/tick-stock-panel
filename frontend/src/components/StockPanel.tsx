@@ -26,6 +26,11 @@ interface Props {
   priceLines?: ChartPriceLine[]
   showLimitMarkers?: boolean
   showMarkerToggle?: boolean
+  /** 加监控回调 (传入后信息条显示 RadioTower 图标) */
+  onMonitor?: () => void
+  /** 加自选 (传入后信息条显示 Star 图标) */
+  inWatchlist?: boolean
+  onToggleWatchlist?: () => void
 }
 
 export { getDefaultRange }
@@ -42,6 +47,9 @@ export function StockPanel({
   priceLines,
   showLimitMarkers = true,
   showMarkerToggle = true,
+  onMonitor,
+  inWatchlist,
+  onToggleWatchlist,
 }: Props) {
   const [linkedPrice, setLinkedPrice] = useState<number | null>(null)
   const [selectedDate, setSelectedDate] = useState<string | null>(null)
@@ -115,6 +123,9 @@ export function StockPanel({
         fields={fields}
         onFieldsChange={handleFieldsChange}
         financialMetrics={financialMetrics}
+        onMonitor={onMonitor}
+        inWatchlist={inWatchlist}
+        onToggleWatchlist={onToggleWatchlist}
       />
 
       <div className="flex gap-3 items-start">

@@ -828,6 +828,11 @@ export function EChartsCandlestick({
     html += `<span style="color:${THEME.bear}">${d.low.toFixed(2)}</span>`
     html += `<span style="color:${THEME.text}">收</span>`
     html += `<span style="color:${clr};font-weight:600">${d.close.toFixed(2)}</span>`
+    // 涨跌幅 (收盘后, 换手前; 和收间隔一些距离)
+    if (prev) {
+      const chgPct = (chg / prev.close * 100)
+      html += `<span style="color:${clr};margin-left:8px">${isUp ? '+' : ''}${chgPct.toFixed(2)}%</span>`
+    }
     if (turnoverRate != null) {
       html += `<span style="color:${THEME.text}">换手</span>`
       html += `<span style="color:${THEME.text}">${turnoverRate.toFixed(2)}%</span>`
@@ -1051,7 +1056,14 @@ export function EChartsCandlestick({
     html += `<span style="color:${THEME.text}">低</span>`
     html += `<span style="color:${THEME.bear}">${d.low.toFixed(2)}</span>`
     html += `<span style="color:${THEME.text}">收</span>`
-    html += `<span style="color:${d.close >= (data[idx-1]?.close ?? d.close) ? THEME.bull : THEME.bear};font-weight:600">${d.close.toFixed(2)}</span>`
+    const prevClose0 = data[idx-1]?.close ?? d.close
+    const clr0 = d.close >= prevClose0 ? THEME.bull : THEME.bear
+    html += `<span style="color:${clr0};font-weight:600">${d.close.toFixed(2)}</span>`
+    // 涨跌幅 (收盘后, 换手前; 和收间隔一些距离)
+    if (idx > 0) {
+      const chgPct0 = ((d.close - prevClose0) / prevClose0 * 100)
+      html += `<span style="color:${clr0};margin-left:8px">${chgPct0 >= 0 ? '+' : ''}${chgPct0.toFixed(2)}%</span>`
+    }
     if (turnoverRate != null) {
       html += `<span style="color:${THEME.text}">换手</span>`
       html += `<span style="color:${THEME.text}">${turnoverRate.toFixed(2)}%</span>`

@@ -1,0 +1,142 @@
+import { useCallback, useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { motion, AnimatePresence } from 'framer-motion'
+import { Bell, TrendingUp, TrendingDown, X } from 'lucide-react'
+import type { AlertEvent } from '@/lib/api'
+import { fmtPct, fmtPrice } from '@/lib/format'
+import { cn } from '@/lib/cn'
+import { playNotificationSound } from '@/lib/notificationSound'
+
+// ===== 全局状态 (模块级, 仿 Toast.tsx 模式) =====
+type Item = { id: number; alert: AlertEvent }
+let _id = 0
+let _queue: Item[] = []
+const AUTO_DISMISS = 5000      // 5 秒自动消失
+const _listeners: Set<(items: Item[]) => void> = new Set()
+
+/** 从 localStorage 读取配置 */
+function getEnabled(): boolean {
+  try {
+    const v = localStorage.getItem('alert_toast_enabled')
+    return v === null ? true : v === '1'   // 默认开启
+  } catch { return true }
+}
+
+function getMaxVisible(): number {
+  try {
+    const v = parseInt(localStorage.getItem('alert_toast_max') || '', 10)
+    return v >= 1 && v <= 10 ? v : 3       // 默认 3, 范围 1-10
+  } catch { return 3 }
+}
+
+/** 通知外部配置变更后刷新 (设置页改了配置后调用) */
+export function refreshAlertToastConfig() {
+  _emit()
+}
+
+function _emit() { _listeners.forEach(fn => fn([..._queue])) }
+
+/** 推入监控告警通知 (外部调用) */
+export function pushAlertToast(alert: AlertEvent) {
+  if (!getEnabled()) return                  // 开关关闭: 不弹
+  const maxVisible = getMaxVisible()
+  const item = { id: ++_id, alert }
+  _queue = [..._queue, item]
+  // 超出上限: 丢弃最旧的
+  if (_queue.length > maxVisible) {
+    _queue = _queue.slice(-maxVisible)
+  }
+  _emit()
+  setTimeout(() => dismiss(item.id), AUTO_DISMISS)
+  playNotificationSound()                     // 播放声效
+}
+
+/** 手动关闭 */
+export function dismiss(id: number) {
+  _queue = _queue.filter(t => t.id !== id)
+  _emit()
+}
+
+// ===== 配色 =====
+const SEVERITY_BAR: Record<string, string> = {
+  info: 'bg-accent', warn: 'bg-warning', critical: 'bg-danger',
+}
+const SOURCE_BADGE: Record<string, { label: string; cls: string }> = {
+  strategy: { label: '策略', cls: 'bg-amber-400/15 text-amber-400' },
+  signal:   { label: '信号', cls: 'bg-accent/15 text-accent' },
+  price:    { label: '价格', cls: 'bg-emerald-400/15 text-emerald-400' },
+  market:   { label: '异动', cls: 'bg-purple-500/15 text-purple-400' },
+}
+
+// ===== 容器 — 挂在 Layout =====
+export function AlertToastContainer() {
+  const [items, setItems] = useState<Item[]>([])
+  const navigate = useNavigate()
+
+  const sub = useCallback(() => {
+    _listeners.add(setItems)
+    return () => { _listeners.delete(setItems) }
+  }, [])
+  useEffect(sub, [sub])
+
+  // 点击通知 → 跳转监控中心 + 关闭当前通知
+  const handleClick = (id: number) => {
+    dismiss(id)
+    navigate('/monitor')
+  }
+
+  if (!items.length) return null
+
+  return (
+    <div className="fixed bottom-4 right-4 z-[9999] flex flex-col gap-2 w-[320px] pointer-events-none">
+      <AnimatePresence>
+        {items.map(item => {
+          const ev = item.alert
+          const sev = SEVERITY_BAR[ev.severity ?? 'info'] ?? SEVERITY_BAR.info
+          const badge = SOURCE_BADGE[ev.source] ?? { label: ev.source, cls: 'bg-elevated text-muted' }
+          const pct = ev.change_pct ?? 0
+          return (
+            <motion.div
+              key={item.id}
+              layout
+              initial={{ opacity: 0, x: 60, scale: 0.9 }}
+              animate={{ opacity: 1, x: 0, scale: 1 }}
+              exit={{ opacity: 0, x: 60, scale: 0.9 }}
+              transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
+              onClick={() => handleClick(item.id)}
+              className="pointer-events-auto relative overflow-hidden rounded-xl border border-border/60 bg-surface/95 backdrop-blur-md shadow-2xl pl-3 pr-2 py-2.5 cursor-pointer hover:border-accent/40 hover:shadow-accent/10 transition-all"
+            >
+              {/* 左侧色条 */}
+              <div className={cn('absolute left-0 top-0 h-full w-0.5', sev)} />
+
+              {/* 顶行: 分类标签 + 代码/名称 + 涨跌幅 + 关闭 */}
+              <div className="flex items-center gap-2">
+                <span className={cn('shrink-0 rounded px-1 py-px text-[9px] font-medium', badge.cls)}>
+                  {badge.label}
+                </span>
+                {ev.symbol && <span className="font-mono text-xs font-medium text-foreground shrink-0">{ev.symbol}</span>}
+                {ev.name && <span className="text-xs text-secondary truncate flex-1">{ev.name}</span>}
+                {ev.change_pct != null && (
+                  <span className={cn('inline-flex items-center gap-0.5 text-[10px] font-mono font-medium shrink-0', pct >= 0 ? 'text-danger' : 'text-bear')}>
+                    {pct >= 0 ? <TrendingUp className="h-2.5 w-2.5" /> : <TrendingDown className="h-2.5 w-2.5" />}
+                    {fmtPct(pct)}
+                  </span>
+                )}
+                <button onClick={(e) => { e.stopPropagation(); dismiss(item.id) }} className="shrink-0 p-0.5 rounded text-muted/50 hover:text-foreground hover:bg-elevated transition-colors cursor-pointer">
+                  <X className="h-3 w-3" />
+                </button>
+              </div>
+
+              {/* 底行: 触发消息 + 价格 */}
+              <div className="mt-1 flex items-center gap-2 pl-0.5">
+                <Bell className={cn('h-3 w-3 shrink-0', sev.replace('bg-', 'text-'))} />
+                {ev.message && <span className="text-[11px] text-foreground/70 truncate flex-1">{ev.message}</span>}
+                {ev.price != null && <span className="text-[10px] font-mono text-muted shrink-0">{fmtPrice(ev.price)}</span>}
+              </div>
+            </motion.div>
+          )
+        })}
+      </AnimatePresence>
+    </div>
+  )
+}

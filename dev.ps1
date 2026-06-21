@@ -148,14 +148,14 @@ $backendJob = Start-Job -Name 'backend' -ScriptBlock {
     $PID | Out-File -FilePath $pidFile -Encoding ascii -Force
     $env:PYTHONUNBUFFERED = '1'
     Set-Location $dir
-    & .\.venv\Scripts\python.exe -m uvicorn app.main:app --reload --port $port 2>&1
+    & .\.venv\Scripts\python.exe -m uvicorn app.main:app --reload --host 0.0.0.0 --port $port 2>&1
 } -ArgumentList $backendPidFile, $BackendDir, $BackendPort
 
 $frontendJob = Start-Job -Name 'frontend' -ScriptBlock {
     param($pidFile, $dir, $port)
     $PID | Out-File -FilePath $pidFile -Encoding ascii -Force
     Set-Location $dir
-    & pnpm dev --port $port 2>&1
+    & pnpm dev --host 0.0.0.0 --port $port 2>&1
 } -ArgumentList $frontendPidFile, $FrontendDir, $FrontendPort
 
 # Wait up to 5 seconds for the PID files to materialise

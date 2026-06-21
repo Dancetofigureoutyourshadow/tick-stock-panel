@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react'
-import { Settings2, BellRing } from 'lucide-react'
+import { Settings2, RadioTower, Star } from 'lucide-react'
 import type { KlineRow, FinancialMetricRecord } from '@/lib/api'
 import { fmtPrice, fmtBigNum, fmtVolume } from '@/lib/format'
 import { ListColumnCustomizer } from '@/components/ListColumnCustomizer'
@@ -18,6 +18,11 @@ interface Props {
   onFieldsChange: (fields: ColumnConfig[]) => void
   /** 财务指标最新一期（来自 useFinancialMetrics，受 Cap.FINANCIAL 门控） */
   financialMetrics?: FinancialMetricRecord
+  /** 加监控回调 (个股弹窗传入, 有值时渲染 RadioTower 图标) */
+  onMonitor?: () => void
+  /** 加自选回调 + 是否已自选 (有 onToggle 时渲染 Star 图标) */
+  inWatchlist?: boolean
+  onToggleWatchlist?: () => void
 }
 
 /**
@@ -86,7 +91,7 @@ function renderExtInline(
   )
 }
 
-export function StockInfoBar({ symbol, name, stockInfo, rows, fields, onFieldsChange, financialMetrics }: Props) {
+export function StockInfoBar({ symbol, name, stockInfo, rows, fields, onFieldsChange, financialMetrics, onMonitor, inWatchlist, onToggleWatchlist }: Props) {
   // 弹窗开关：纯本地状态，与数据/配置无关，放早期 return 之前
   const [customizerOpen, setCustomizerOpen] = useState(false)
   // ext 标签展开状态：按 symbol::colId，切股/切字段时互不干扰
@@ -209,14 +214,26 @@ export function StockInfoBar({ symbol, name, stockInfo, rows, fields, onFieldsCh
         <span style={{ color: clr }} className="tabular-nums">
           {isUp ? '+' : ''}{fmtPrice(chgPct)}%
         </span>
-        {/* 右侧操作按钮：监控通知 + 信息条配置 */}
+        {/* 右侧操作按钮：加自选 + 加监控 + 信息条配置 */}
         <div className="ml-auto self-center flex items-center gap-1">
-          <button
-            className="p-1 rounded-btn text-muted hover:text-foreground hover:bg-elevated transition-colors"
-            title="监控通知（开发中）"
-          >
-            <BellRing className="h-3.5 w-3.5" />
-          </button>
+          {onToggleWatchlist && (
+            <button
+              onClick={onToggleWatchlist}
+              className={`p-1 rounded-btn transition-colors cursor-pointer ${inWatchlist ? 'text-[#FACC15]' : 'text-muted hover:text-foreground hover:bg-elevated'}`}
+              title={inWatchlist ? '移出自选' : '加自选'}
+            >
+              <Star className="h-3.5 w-3.5" />
+            </button>
+          )}
+          {onMonitor && (
+            <button
+              onClick={onMonitor}
+              className="p-1 rounded-btn text-amber-400 hover:bg-amber-400/10 transition-colors cursor-pointer"
+              title="加监控"
+            >
+              <RadioTower className="h-3.5 w-3.5" />
+            </button>
+          )}
           <button
             onClick={() => setCustomizerOpen(true)}
             className="p-1 rounded-btn text-muted hover:text-foreground hover:bg-elevated transition-colors"

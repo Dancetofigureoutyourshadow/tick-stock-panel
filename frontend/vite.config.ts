@@ -10,6 +10,7 @@ export default defineConfig({
     },
   },
   server: {
+    host: '0.0.0.0',   // 允许局域网访问
     port: 3011,
     proxy: {
       // dev 时 /api 转发到 FastAPI

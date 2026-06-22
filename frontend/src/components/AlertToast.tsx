@@ -36,19 +36,31 @@ export function refreshAlertToastConfig() {
 
 function _emit() { _listeners.forEach(fn => fn([..._queue])) }
 
-/** 推入监控告警通知 (外部调用) */
+/** 推入单条监控告警通知 (兼容入口, 不发声 — 发声由批量入口统一处理) */
 export function pushAlertToast(alert: AlertEvent) {
+  pushAlertToasts([alert])
+}
+
+/**
+ * 批量推入监控告警通知 (一轮 SSE 多只新命中时调用)。
+ * - 每条都弹 Toast (受 maxVisible 上限, 超出丢最旧)
+ * - 整批只播放一声通知音, 避免短时连续响多声刷屏
+ */
+export function pushAlertToasts(alerts: AlertEvent[]) {
+  if (alerts.length === 0) return
   if (!getEnabled()) return                  // 开关关闭: 不弹
   const maxVisible = getMaxVisible()
-  const item = { id: ++_id, alert }
-  _queue = [..._queue, item]
+  const newItems = alerts.map(alert => ({ id: ++_id, alert }))
+  _queue = [..._queue, ...newItems]
   // 超出上限: 丢弃最旧的
   if (_queue.length > maxVisible) {
     _queue = _queue.slice(-maxVisible)
   }
   _emit()
-  setTimeout(() => dismiss(item.id), AUTO_DISMISS)
-  playNotificationSound()                     // 播放声效
+  for (const item of newItems) {
+    setTimeout(() => dismiss(item.id), AUTO_DISMISS)
+  }
+  playNotificationSound()                     // 整批只响一声
 }
 
 /** 手动关闭 */

@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+import datetime as _dt
 import logging
 import time
 from dataclasses import dataclass, field
@@ -19,6 +20,7 @@ from typing import Any, Callable
 import polars as pl
 
 from app.strategy.custom_signals import _OP_BUILDERS  # type: ignore  # 复用运算符构造器
+from app.strategy import config as _strategy_config
 
 logger = logging.getLogger(__name__)
 
@@ -267,13 +269,21 @@ class MonitorRuleEngine:
         self._rules: dict[str, dict] = {}  # rule_id → rule
         # (rule_id, symbol) → 上次触发时间戳(秒)。用于 cooldown 去重。
         self._last_fire: dict[tuple[str, str], float] = {}
-        self._strategy_engine = None  # 延迟注入, type=strategy 规则用它读策略信号
+        self._strategy_engine = None  # 延迟注入, type=strategy 规则用它跑选股
         # symbol → 股票名 (enriched DataFrame 已 drop name 列, 触发时从此映射回填)
         self._name_map: dict[str, str] = {}
+        # 策略选股池状态: strategy_id → 上期选股符号集合 (用于 diff 变更)
+        self._strategy_pools: dict[str, set[str]] = {}
+        # 数据目录 (用于加载策略 overrides)
+        self._data_dir = None
 
     def set_strategy_engine(self, engine) -> None:
-        """注入 StrategyEngine, type=strategy 规则据此读策略的 entry/exit_signals。"""
+        """注入 StrategyEngine, type=strategy 规则据此跑选股。"""
         self._strategy_engine = engine
+
+    def set_data_dir(self, data_dir) -> None:
+        """注入数据目录, 用于加载策略的用户覆盖配置。"""
+        self._data_dir = data_dir
 
     def set_name_map(self, name_map: dict[str, str]) -> None:
         """注入 symbol → 股票名 映射, 用于在告警事件里回填 name 字段。
@@ -346,15 +356,17 @@ class MonitorRuleEngine:
             return []
 
         # 2. 根据 type 构建命中集
-        hit_rows: list[tuple[str, Any, Any, Any, list[str]]] = []  # (symbol,name,price,pct,signals)
+        #    元组格式: (event_type, symbol, name, price, pct, signals)
+        hit_rows: list[tuple[str, str, Any, Any, Any, list[str]]] = []
 
         rtype = rule.get("type", "signal")
         if rtype == "strategy":
-            # 策略类型: 从 StrategyEngine 读策略的 entry/exit_signals, 按 direction 评估
+            # 策略类型: 跑策略选股 → 对比上期选股池 → 产出 new_entry/dropped 事件
             hit_rows = self._match_strategy(scoped, rule)
         else:
             # signal / price / market: 通用条件匹配
-            hit_rows = self._match_conditions(scoped, rule)
+            for sym, name, price, pct, hit_sigs in self._match_conditions(scoped, rule):
+                hit_rows.append((rtype, sym, name, price, pct, hit_sigs))
 
         if not hit_rows:
             return []
@@ -362,26 +374,36 @@ class MonitorRuleEngine:
         # 3. cooldown 去重 + 生成 events
         cooldown = rule.get("cooldown_seconds", 3600)
         severity = rule.get("severity", "info")
-        message = rule.get("message", "") or self._default_message(rule)
-        source = rtype if rtype != "strategy" else "strategy"
-        ev_type = rule.get("direction", "entry") if rtype == "strategy" else rtype
+        source = rtype
 
         events: list[dict] = []
-        for sym, name, price, pct, hit_sigs in hit_rows:
-            key = (rule["id"], sym)
+        for ev_type, sym, name, price, pct, hit_sigs in hit_rows:
+            # cooldown 键: 批量事件用特殊键, 单只事件用 (rule_id, symbol)
+            is_batch = sym == "_batch"
+            if is_batch:
+                key = (rule["id"], f"_{ev_type}_batch")
+            else:
+                key = (rule["id"], sym)
             last = self._last_fire.get(key)
             if last is not None and (now - last) < cooldown:
                 continue  # 冷却期内, 跳过
             self._last_fire[key] = now
-            # enriched DataFrame 已 drop name 列 → 从注入的 name_map 回填 (instruments 表)
-            resolved_name = name if name else self._name_map.get(sym)
+
+            # 批量事件: name 存放预构建的消息文本
+            if is_batch:
+                resolved_name = ""
+                message = name  # name 字段即批量消息
+            else:
+                resolved_name = name if name else self._name_map.get(sym)
+                message = rule.get("message", "") or self._default_message(rule, ev_type=ev_type, sym=sym, name=resolved_name, pct=pct)
+
             ev = {
                 "ts": int(now * 1000),
                 "rule_id": rule["id"],
                 "rule_name": rule.get("name", ""),
                 "source": source,
                 "type": ev_type,
-                "symbol": sym,
+                "symbol": "" if is_batch else sym,
                 "name": resolved_name,
                 "message": message,
                 "price": price,
@@ -417,12 +439,12 @@ class MonitorRuleEngine:
 
     def _match_strategy(
         self, df: pl.DataFrame, rule: dict,
-    ) -> list[tuple[str, Any, Any, Any, list[str]]]:
-        """策略类型评估: 从 StrategyEngine 读策略信号, 按 direction 用 OR 匹配。
+    ) -> list[tuple[str, str, Any, Any, Any, list[str]]]:
+        """策略类型评估: 跑策略选股 → 对比上期选股池 → 产出变更事件。
 
-        direction=entry → 策略 entry_signals
-        direction=exit  → 策略 exit_signals
-        direction=both  → entry + exit 合并 (命中信号名区分来源)
+        返回 [(event_type, symbol, name, price, pct, signals)]
+        event_type: "new_entry" (新入选) | "dropped" (已移出)
+        单只变更逐只返回; 同一策略 >5 只合并为一条批量事件 (symbol="_batch")
         """
         if self._strategy_engine is None:
             return []
@@ -436,18 +458,100 @@ class MonitorRuleEngine:
         if s is None:
             return []
 
-        direction = rule.get("direction", "entry")
-        # 收集要评估的信号 (OR 组合), 与旧 StrategyMonitorService 行为一致
-        sigs: list[str] = []
-        if direction in ("entry", "both"):
-            sigs.extend(s.entry_signals or [])
-        if direction in ("exit", "both"):
-            sigs.extend(s.exit_signals or [])
-        if not sigs:
+        # 需要历史数据的策略跳过 (实时监控不支持 history loader)
+        if s.filter_history_fn:
+            logger.debug("策略 %s 需要历史数据, 跳过实时监控", sid)
             return []
 
-        # 复用旧的 _check_signals 静态方法 (已支持 signal_/csg_ 前缀)
-        return StrategyMonitorService._check_signals(df, sigs)
+        # 运行策略选股: 复用当前 enriched DataFrame 跳过数据加载
+        overrides = {}
+        if self._data_dir:
+            try:
+                overrides = _strategy_config.load_override(self._data_dir, sid)
+            except Exception:
+                pass
+
+        try:
+            result = self._strategy_engine.run(
+                sid,
+                as_of=_dt.date.today(),
+                precomputed=df,
+                overrides=overrides,
+            )
+        except Exception as e:
+            logger.warning("策略 %s 选股执行失败: %s", sid, e)
+            return []
+
+        current_pool: set[str] = {r["symbol"] for r in result.rows}
+        prev_pool = self._strategy_pools.get(sid)
+
+        # 首次运行: 仅记录当前选股池, 不产生事件
+        if prev_pool is None:
+            self._strategy_pools[sid] = current_pool
+            return []
+
+        new_entries = current_pool - prev_pool
+        dropped = prev_pool - current_pool
+
+        # 无变更
+        if not new_entries and not dropped:
+            return []
+
+        # 更新存储
+        self._strategy_pools[sid] = current_pool
+
+        sname = s.meta.get("name", "") or s.meta.get("id", sid)
+
+        # 构建查找表 (新入选股票可在 result.rows 中找到; 移出股票需从 df 找)
+        row_map: dict[str, dict] = {r["symbol"]: r for r in result.rows}
+        dropped_map: dict[str, dict] = {}
+        if dropped:
+            try:
+                _dd = df.filter(pl.col("symbol").is_in(list(dropped)))
+                for row in _dd.iter_rows(named=True):
+                    dropped_map[row["symbol"]] = row
+            except Exception:
+                pass
+
+        results: list[tuple[str, str, Any, Any, Any, list[str]]] = []
+
+        # ── 新入选 ──
+        new_list = sorted(new_entries)
+        if len(new_list) > 5:
+            names: list[str] = []
+            for sym in new_list:
+                row = row_map.get(sym, {})
+                name = row.get("name") or self._name_map.get(sym, sym)
+                names.append(str(name))
+            message = f"策略「{sname}」进入 {len(new_entries)} 只：{'、'.join(names)}"
+            results.append(("new_entry", "_batch", message, None, None, []))
+        else:
+            for sym in new_list:
+                row = row_map.get(sym, {})
+                name = row.get("name") or self._name_map.get(sym, sym)
+                price = row.get("close")
+                pct = row.get("change_pct")
+                results.append(("new_entry", sym, name, price, pct, []))
+
+        # ── 已移出 ──
+        dropped_list = sorted(dropped)
+        if len(dropped_list) > 5:
+            names = []
+            for sym in dropped_list:
+                row = dropped_map.get(sym, {})
+                name = row.get("name") or self._name_map.get(sym, sym)
+                names.append(str(name))
+            message = f"策略「{sname}」移出 {len(dropped)} 只：{'、'.join(names)}"
+            results.append(("dropped", "_batch", message, None, None, []))
+        else:
+            for sym in dropped_list:
+                row = dropped_map.get(sym, {})
+                name = row.get("name") or self._name_map.get(sym, sym)
+                price = row.get("close")
+                pct = row.get("change_pct")
+                results.append(("dropped", sym, name, price, pct, []))
+
+        return results
 
     @staticmethod
     def _match_conditions(
@@ -473,12 +577,11 @@ class MonitorRuleEngine:
             results.append((sym, name, price, pct, hit_sigs))
         return results
 
-    def _default_message(self, rule: dict) -> str:
-        """生成默认 message。策略类型带策略名 + 方向 (对齐 demo 模板格式, 让前端可高亮)。"""
+    def _default_message(self, rule: dict, ev_type: str = "", sym: str = "",
+                          name: str = "", pct: Any = None) -> str:
+        """生成默认 message。策略类型按变更方向生成。"""
         rtype = rule.get("type", "signal")
         if rtype == "strategy":
-            direction = rule.get("direction", "entry")
-            action = {"entry": "买入", "exit": "卖出", "both": "买卖"}.get(direction, "买入")
             # 从 StrategyEngine 取策略名; 失败则退化为 rule_name 里截取的部分
             sname = ""
             sid = rule.get("strategy_id")
@@ -491,6 +594,20 @@ class MonitorRuleEngine:
             if not sname:
                 rn = rule.get("name", "")
                 sname = rn.split(" · ", 1)[1] if " · " in rn else (rn or "策略")
-            return f"策略「{sname}」{action}信号"
+
+            if ev_type == "new_entry":
+                pct_text = ""
+                if pct is not None:
+                    sign = "+" if pct >= 0 else ""
+                    pct_text = f" {sign}{pct * 100:.1f}%"
+                return f"策略「{sname}」进入 {name}{pct_text}"
+            elif ev_type == "dropped":
+                pct_text = ""
+                if pct is not None:
+                    sign = "+" if pct >= 0 else ""
+                    pct_text = f" {sign}{pct * 100:.1f}%"
+                return f"策略「{sname}」移出 {name}{pct_text}"
+            return f"策略「{sname}」变更"
+
         name_map = {"signal": "信号触发", "price": "价格触发", "market": "市场异动"}
         return name_map.get(rtype, "监控触发")

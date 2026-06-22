@@ -32,27 +32,13 @@ META = {
         "exclude_new_days": 60,       # 排除上市N天内新股
     },
 
-    # 策略参数 (Stage 2, filter() 使用, 前端渲染为表单)
-    # 用户可能调节的阈值通过 params 暴露；公式常数、固定窗口边界不必强行参数化
+    # 策略参数 (只把用户可能调节的阈值放这里，公式常数不必参数化)
+    # 每个参数含 id/label/type/default/min/max/step；select 类型用 options
     "params": [
-        {
-            "id": "param_id",          # 参数ID, filter() 中 params.get("param_id")
-            "label": "参数显示名",      # 前端显示
-            "type": "float",           # float | int | select
-            "default": 2.0,            # 默认值
-            "min": 0.5,                # 最小值 (float/int)
-            "max": 10.0,               # 最大值 (float/int)
-            "step": 0.1,               # 步长
-            # select 类型用 options:
-            # "options": ["ma5", "ma10", "ma20", "ma60"],
-        },
     ],
 
-    # 评分权重 (用于排序, 权重总和 = 1.0)
+    # 评分权重 (用于排序, 根据策略核心逻辑定制, 权重总和 = 1.0)
     "scoring": {
-        "momentum_60d": 0.4,
-        "vol_ratio_5d": 0.3,
-        "change_pct": 0.3,
     },
 
     "order_by": "score",              # 排序字段, 通常用 "score"
@@ -60,23 +46,20 @@ META = {
     "limit": 100,                      # 最多返回条数
 }
 
-# 买入信号 (回测 + 监控用, 对应 enriched 表的信号列名)
-ENTRY_SIGNALS = ["signal_broken_board_recovery"]
+# 买入信号 (回测 + 监控用, 根据策略逻辑选择合适的信号列)
+ENTRY_SIGNALS = []
 
 # 卖出信号
-EXIT_SIGNALS = ["signal_ma20_breakdown"]
+EXIT_SIGNALS = []
 
-# 止损 (负数, 如 -0.08 = -8%)
-STOP_LOSS = -0.08
+# 止损 (负数, 根据策略类型合理设定, 如做多短线 -0.05~-0.08)
+STOP_LOSS = -0.05
 
-# 最长持有天数
+# 最长持有天数 (短线 5~20, 中线 20~60)
 MAX_HOLD_DAYS = 20
 
 # 提醒条件 (监控用)
-ALERTS = [
-    {"field": "signal_broken_board_recovery", "message": "反包信号"},
-    {"field": "rsi_14", "op": ">", "value": 80, "message": "RSI超买预警"},
-]
+ALERTS = []
 
 
 # 策略规则（人类可读，逐条编号，至少 3 条）
@@ -94,11 +77,10 @@ def filter(df: pl.DataFrame, params: dict) -> pl.Expr:
 
     返回:   Polars 布尔表达式 (pl.Expr)
     """
-    vol_min = params.get("vol_ratio_min", 2.0)
+    # 用 params.get("param_id", 默认值) 读取参数
     return (
-        ((pl.col("close") > pl.col("ma5")) | (pl.col("close") > pl.col("ma10")))
-        & pl.col("signal_broken_board_recovery").fill_null(False)
-        & (pl.col("vol_ratio_5d") >= vol_min)
+        (pl.col("close") > pl.col("ma5"))
+        & (pl.col("rsi_14") < 30)
     )
 ```
 
@@ -164,11 +146,19 @@ def filter_history(df: pl.DataFrame, params: dict) -> pl.DataFrame:
 
 以下列在数据中已预计算，可直接引用。**但如果这些列无法满足策略需求，可以不用，自行在 `filter_history()` 中基于 enriched 表的数据（已复权，含所有指标列和信号列）计算任何需要的字段。**
 
+### 通用列
+
+| 列名 | 类型 | 说明 |
+|------|------|------|
+| symbol | string | 股票代码 (如 600519.SH) |
+| date | date | 交易日期 |
+
 ### 价格相关
 
 | 列名 | 类型 | 说明 |
 |------|------|------|
-| open, high, low, close | float | OHLCV 开高低收 |
+| open, high, low, close | float | OHLCV 开高低收 (前复权) |
+| raw_close, raw_high, raw_low | float | 原始未复权价 |
 | prev_close | float | 昨收价 |
 | change_pct | float | 涨跌幅 (如 0.032 = +3.2%) |
 | change_amount | float | 涨跌额 |
@@ -218,11 +208,19 @@ def filter_history(df: pl.DataFrame, params: dict) -> pl.DataFrame:
 | consecutive_limit_ups | 连续涨停天数 |
 | consecutive_limit_downs | 连续跌停天数 |
 
+### 运行时附加列（由引擎从 instruments 表 JOIN）
+
+| 列名 | 说明 |
+|------|------|
+| name | 股票名称 |
+| total_shares | 总股本 |
+| float_shares | 流通股本 |
+
+（`total_shares` 和 `float_shares` 用于 `basic_filter` 中计算市值：`close * total_shares`）
+
 ## 4. 常用信号列（参考）
 
-信号列是布尔值，使用时用 `.fill_null(False)` 处理空值。同样仅供参考，不要求必须使用。
-
-信号列是布尔值，**必须**使用 `.fill_null(False)` 处理空值。
+信号列是布尔值，**必须**使用 `.fill_null(False)` 处理空值。同样仅供参考，根据策略含义自行选择匹配的。
 
 | 列名 | 方向 | 说明 |
 |------|------|------|
@@ -241,8 +239,23 @@ def filter_history(df: pl.DataFrame, params: dict) -> pl.DataFrame:
 | signal_limit_up | 买入 | 涨停 |
 | signal_limit_down | 卖出 | 跌停 |
 | signal_limit_down_recovery | 买入 | 跌停翘板 |
+| signal_broken_limit_up | 卖出 | 炸板 |
 
-## 5. 规则
+此外，用户自定义信号（`data/user_data/custom_signals/`）以 `csg_` 前缀注入，也可在 filter() 中引用。
+
+## 5. 不可用的数据（重要）
+
+以下数据**不在** enriched DataFrame 中，策略代码中**不能**直接引用：
+
+| 数据 | 说明 |
+|------|------|
+| 财务数据 (PE/PB/ROE/净利润/营收/资产负债等) | 存储在独立 financials 表，未 JOIN |
+| 扩展数据 (概念/行业/人气排名/资金流向等) | 存储在 ext_data 目录，未 JOIN |
+| 盘中实时数据 (分时价/五档盘口等) | 仅前端轮询使用 |
+
+如需财务或扩展数据作为筛选条件，需先在系统层面完成 JOIN 再提供给策略（当前未实现）。
+
+## 6. 规则
 
 1. `filter()` 必须返回 `pl.Expr` (用 `&` `|` 组合布尔表达式)；`filter_history()` 返回筛选后的 `DataFrame`
 2. 信号列使用 `.fill_null(False)` 处理空值
@@ -254,7 +267,7 @@ def filter_history(df: pl.DataFrame, params: dict) -> pl.DataFrame:
 8. **贴合用户需求优先**：第3/4节的指标列和信号列仅供参考，能用则用；如果用户需求需要自定义计算（如"前高""上次涨停价""N日内某个事件后X天"），直接在 `filter_history()` 中自行设计和计算，不需要局限于已有列
 9. `filter_history()` 中优先用 Polars 向量化语法；仅在复杂状态机无法清晰表达时，才用 `partition_by("symbol")` 逐股票分析
 
-## 6. 策略示例
+## 7. 策略示例
 
 ### 强势反包
 
@@ -327,6 +340,6 @@ def filter_history(df: pl.DataFrame, params: dict) -> pl.DataFrame:
     )
 ```
 
-## 7. 完整示例
+## 8. 完整示例
 
 见 [strategy-example.md](./strategy-example.md) — 从零创建强势反包策略的三步完整演示。

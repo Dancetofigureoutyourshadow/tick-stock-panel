@@ -32,13 +32,13 @@ const SOURCE_BADGE_STYLE: Record<string, string> = {
 }
 
 /**
- * 渲染策略类消息 — 策略名黄色、买入红、卖出绿、其余白色。
+ * 渲染策略类消息 — 策略名黄色、新入选绿、移出红、其余白色。
  */
 function renderMessage(source: string, message: string) {
   if (source !== 'strategy') {
     return <span className="text-secondary">{message}</span>
   }
-  const m = message.match(/^(.*?「)([^」]+)(」)(买入|卖出)(信号.*)$/)
+  const m = message.match(/^(策略「)([^」]+)(」)(新入选|移出)( .*)$/)
   if (!m) return <span className="text-foreground">{message}</span>
   const [, pre, strategyName, mid, direction, post] = m
   return (
@@ -46,7 +46,7 @@ function renderMessage(source: string, message: string) {
       <span className="text-foreground/80">{pre}</span>
       <span className="text-amber-400 font-medium">{strategyName}</span>
       <span className="text-foreground/80">{mid}</span>
-      <span className={direction === '买入' ? 'text-danger font-medium' : 'text-bear font-medium'}>{direction}</span>
+      <span className={direction === '新入选' ? 'text-emerald-400 font-medium' : 'text-danger font-medium'}>{direction}</span>
       <span className="text-foreground/80">{post}</span>
     </>
   )
@@ -248,7 +248,9 @@ function AlertsList({ alertsQuery, confirmClear, setConfirmClear, total, enterTs
         />
       ) : (
         <div className="space-y-2">
-              {events.map((ev: any, i: number) => {
+              {events
+                .filter((ev: any) => !(ev.source === 'strategy' && !ev.symbol))
+                .map((ev: any, i: number) => {
             const sev = SEVERITY_CONFIG[ev.severity ?? 'info'] ?? SEVERITY_CONFIG.info
             const SevIcon = sev.icon
             const isNew = ev.ts > enterTs
@@ -272,55 +274,110 @@ function AlertsList({ alertsQuery, confirmClear, setConfirmClear, total, enterTs
                   <SevIcon className="h-4 w-4" />
                 </div>
                 <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    {ev.symbol && (() => {
-                      const board = boardTag(ev.symbol)
-                      return (
-                        <button
-                          onClick={() => setPreviewEv(ev)}
-                          className="inline-flex items-center gap-1.5 rounded hover:bg-elevated/50 px-1 -mx-1 transition-colors cursor-pointer"
-                          title="点击查看日K"
-                        >
-                          <span className="font-mono text-xs font-medium text-foreground hover:text-accent">{ev.symbol}</span>
-                          {board && (
-                            <span className={`inline-flex items-center justify-center h-3.5 w-3.5 rounded text-[8px] font-bold leading-none border ${board.color}`}>
-                              {board.label}
+                  {ev.source === 'strategy' ? (() => {
+                    const sm = ev.message?.match(/策略「([^」]+)」/)
+                    const sname = sm ? sm[1] : ''
+                    const isNew = ev.type === 'new_entry'
+                    const _pct = ev.change_pct ?? 0
+                    return (
+                      <>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          {ev.symbol && (() => {
+                            const board = boardTag(ev.symbol)
+                            return (
+                              <button
+                                onClick={() => setPreviewEv(ev)}
+                                className="inline-flex items-center gap-1.5 rounded hover:bg-elevated/50 px-1 -mx-1 transition-colors cursor-pointer"
+                                title="点击查看日K"
+                              >
+                                <span className="font-mono text-xs font-medium text-foreground hover:text-accent">{ev.symbol}</span>
+                                {board && (
+                                  <span className={`inline-flex items-center justify-center h-3.5 w-3.5 rounded text-[8px] font-bold leading-none border ${board.color}`}>
+                                    {board.label}
+                                  </span>
+                                )}
+                                {ev.name && <span className="text-xs text-secondary truncate max-w-[8rem] hover:text-foreground">{ev.name}</span>}
+                              </button>
+                            )
+                          })()}
+                          {ev.price != null && (
+                            <span className={cn('inline-flex items-center gap-0.5 text-[11px] font-mono', _pct >= 0 ? 'text-danger' : 'text-bear')}>
+                              {_pct >= 0 ? <TrendingUp className="h-2.5 w-2.5" /> : <TrendingDown className="h-2.5 w-2.5" />}
+                              {fmtPrice(ev.price)}
                             </span>
                           )}
-                          {ev.name && <span className="text-xs text-secondary truncate max-w-[8rem] hover:text-foreground">{ev.name}</span>}
-                        </button>
-                      )
-                    })()}
-                    <span className={cn('rounded border px-1.5 py-0.5 text-[9px] font-medium', SOURCE_BADGE_STYLE[ev.source] ?? 'bg-elevated text-muted border-border')}>
-                      {(() => {
-                        // 优先用规则名 (如 "策略监控 · 空中加油" → "空中加油"); 退回到 type 标签
-                        const rn = ev.rule_name ?? ''
-                        const dotIdx = rn.indexOf(' · ')
-                        return dotIdx >= 0 ? rn.slice(dotIdx + 3) : (rn || (TYPE_LABEL[ev.source] ?? ev.source))
-                      })()}
-                    </span>
-                  </div>
-                  <div className="mt-1 flex items-center gap-2">
-                    <span className="text-[11px]">{renderMessage(ev.source, ev.message)}</span>
-                  </div>
-                  <div className="mt-1.5 flex items-center gap-3">
-                    {ev.price != null && (
-                      <span className="text-[11px] font-mono text-foreground/60">{fmtPrice(ev.price)}</span>
-                    )}
-                    {ev.change_pct != null && (
-                      <span className={cn('inline-flex items-center gap-0.5 text-[11px] font-mono font-medium',
-                        ev.change_pct >= 0 ? 'text-danger' : 'text-bear')}>
-                        {ev.change_pct >= 0 ? <TrendingUp className="h-2.5 w-2.5" /> : <TrendingDown className="h-2.5 w-2.5" />}
-                        {fmtPct(ev.change_pct)}
-                      </span>
-                    )}
-                  </div>
-                  {ev.signals && ev.signals.length > 0 && (
-                    <div className="mt-1.5 flex flex-wrap gap-1">
-                      {ev.signals.map((s: string, j: number) => (
-                        <span key={j} className="rounded bg-accent/8 px-1.5 py-0.5 text-[9px] text-accent/70">{cnSignal(s)}</span>
-                      ))}
-                    </div>
+                          {ev.change_pct != null && (
+                            <span className={cn('text-[11px] font-mono font-medium',
+                              _pct >= 0 ? 'text-danger' : 'text-bear')}>
+                              {fmtPct(_pct)}
+                            </span>
+                          )}
+                          <span className={cn('rounded border px-1.5 py-0.5 text-[9px] font-medium', SOURCE_BADGE_STYLE.strategy)}>
+                            {sname}
+                          </span>
+                        </div>
+                        <div className="mt-1 flex items-center gap-1.5">
+                          <span className={cn('text-[11px] font-medium', isNew ? 'text-danger' : 'text-emerald-400')}>
+                            {isNew ? '进入' : '移出'}
+                          </span>
+                          <span className="text-[11px] text-foreground/80">策略</span>
+                          <span className="text-[11px] font-medium text-amber-400">「{sname}」</span>
+                        </div>
+                      </>
+                    )
+                  })() : (
+                    <>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        {ev.symbol && (() => {
+                          const board = boardTag(ev.symbol)
+                          return (
+                            <button
+                              onClick={() => setPreviewEv(ev)}
+                              className="inline-flex items-center gap-1.5 rounded hover:bg-elevated/50 px-1 -mx-1 transition-colors cursor-pointer"
+                              title="点击查看日K"
+                            >
+                              <span className="font-mono text-xs font-medium text-foreground hover:text-accent">{ev.symbol}</span>
+                              {board && (
+                                <span className={`inline-flex items-center justify-center h-3.5 w-3.5 rounded text-[8px] font-bold leading-none border ${board.color}`}>
+                                  {board.label}
+                                </span>
+                              )}
+                              {ev.name && <span className="text-xs text-secondary truncate max-w-[8rem] hover:text-foreground">{ev.name}</span>}
+                            </button>
+                          )
+                        })()}
+                        {ev.price != null && (
+                          <span className={cn('inline-flex items-center gap-0.5 text-[11px] font-mono', (ev.change_pct ?? 0) >= 0 ? 'text-danger' : 'text-bear')}>
+                            {(ev.change_pct ?? 0) >= 0 ? <TrendingUp className="h-2.5 w-2.5" /> : <TrendingDown className="h-2.5 w-2.5" />}
+                            {fmtPrice(ev.price)}
+                          </span>
+                        )}
+                        {ev.change_pct != null && (
+                          <span className={cn('text-[11px] font-mono font-medium',
+                            ev.change_pct >= 0 ? 'text-danger' : 'text-bear')}>
+                            {fmtPct(ev.change_pct)}
+                          </span>
+                        )}
+                        <span className={cn('rounded border px-1.5 py-0.5 text-[9px] font-medium', SOURCE_BADGE_STYLE[ev.source] ?? 'bg-elevated text-muted border-border')}>
+                          {(() => {
+                            // 优先用规则名 (如 "策略监控 · 空中加油" → "空中加油"); 退回到 type 标签
+                            const rn = ev.rule_name ?? ''
+                            const dotIdx = rn.indexOf(' · ')
+                            return dotIdx >= 0 ? rn.slice(dotIdx + 3) : (rn || (TYPE_LABEL[ev.source] ?? ev.source))
+                          })()}
+                        </span>
+                      </div>
+                      <div className="mt-1 flex items-center gap-2">
+                        <span className="text-[11px]">{renderMessage(ev.source, ev.message)}</span>
+                      </div>
+                      {ev.signals && ev.signals.length > 0 && (
+                        <div className="mt-1.5 flex flex-wrap gap-1">
+                          {ev.signals.map((s: string, j: number) => (
+                            <span key={j} className="rounded bg-accent/8 px-1.5 py-0.5 text-[9px] text-accent/70">{cnSignal(s)}</span>
+                          ))}
+                        </div>
+                      )}
+                    </>
                   )}
                 </div>
                 <div className="flex shrink-0 flex-col items-end gap-1">
@@ -407,20 +464,6 @@ function RulesList({ rulesQuery, onEdit }: {
     staleTime: 300000,
   })
   const symbolNames = namesQuery.data?.names ?? {}
-
-  // 查策略详情 (建 strategy_id → {entry, exit} signals 映射)
-  const strategiesQuery = useQuery({
-    queryKey: QK.screenerStrategies,
-    queryFn: () => api.strategyList(),
-    staleTime: 300000,
-  })
-  const strategySignals = useMemo(() => {
-    const m: Record<string, { entry: string[]; exit: string[] }> = {}
-    for (const s of strategiesQuery.data?.strategies ?? []) {
-      m[s.id] = { entry: s.entry_signals ?? [], exit: s.exit_signals ?? [] }
-    }
-    return m
-  }, [strategiesQuery.data])
 
   const del = useMutation({
     mutationFn: api.monitorRuleDelete,
@@ -534,30 +577,10 @@ function RulesList({ rulesQuery, onEdit }: {
                 </div>
               </div>
 
-              {/* 第二行: 触发条件 (策略类型显示买卖信号) */}
+              {/* 第二行: 策略类型显示选股池变更监控 */}
               {r.type === 'strategy' && r.strategy_id ? (
-                <div className="mt-0.5 flex items-center gap-2 pl-0.5 flex-wrap">
-                  {(() => {
-                    const sigs = strategySignals[r.strategy_id]
-                    const entrySigs = (sigs?.entry ?? []).map(s => cnSignal(s))
-                    const exitSigs = (sigs?.exit ?? []).map(s => cnSignal(s))
-                    return (
-                      <>
-                        {(r.direction === 'entry' || r.direction === 'both') && entrySigs.length > 0 && (
-                          <span className="inline-flex items-center gap-1">
-                            <span className="text-[9px] text-danger">买</span>
-                            <span className="text-[9px] text-accent/80">{entrySigs.join('、')}</span>
-                          </span>
-                        )}
-                        {(r.direction === 'exit' || r.direction === 'both') && exitSigs.length > 0 && (
-                          <span className="inline-flex items-center gap-1">
-                            <span className="text-[9px] text-bear">卖</span>
-                            <span className="text-[9px] text-accent/80">{exitSigs.join('、')}</span>
-                          </span>
-                        )}
-                      </>
-                    )
-                  })()}
+                <div className="mt-0.5 flex items-center gap-2 pl-0.5">
+                  <span className="text-[9px] text-secondary">选股池变更监控</span>
                 </div>
               ) : r.conditions.length > 0 && (
                 <div className="mt-0.5 flex items-center gap-1 pl-0.5">

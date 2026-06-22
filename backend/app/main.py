@@ -119,6 +119,7 @@ async def lifespan(app: FastAPI):
     from app.services import preferences
     monitor_engine = MonitorRuleEngine()
     monitor_engine.set_strategy_engine(strategy_engine)
+    monitor_engine.set_data_dir(store.data_dir)
 
     # 自动迁移: 把旧 strategy_monitor_ids 同步为 type=strategy 规则 (统一到监控页)
     try:

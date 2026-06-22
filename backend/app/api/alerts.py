@@ -67,9 +67,14 @@ _DEMO_TEMPLATES = [
     ("market", "涨停封板", ["signal_limit_up"], "critical"),
     ("market", "连板异动", ["signal_limit_up"], "warn"),
     ("market", "炸板", ["signal_broken_limit_up"], "warn"),
-    ("strategy", "策略「趋势突破」买入信号", ["signal_n_day_high", "signal_volume_surge"], "info"),
-    ("strategy", "策略「趋势突破」卖出信号", ["signal_ma20_breakdown"], "info"),
-    ("strategy", "策略「新低反转」买入信号", ["signal_n_day_low"], "warn"),
+    # 新策略变更格式
+    ("strategy", "策略「趋势突破」进入 贵州茅台 +2.3%", ["signal_n_day_high", "signal_volume_surge"], "info"),
+    ("strategy", "策略「趋势突破」移出 五粮液 -1.5%", ["signal_ma20_breakdown"], "info"),
+    ("strategy", "策略「新低反转」进入 平安银行 +1.1%", ["signal_n_day_low"], "warn"),
+    ("strategy", "策略「MACD金叉」移出 比亚迪 -0.8%", ["signal_macd_golden"], "info"),
+    # 批量变更
+    ("strategy", "策略「趋势突破」进入 6 只：平安银行、宁德时代、比亚迪、东方财富、招商银行、立讯精密", [], "info"),
+    ("strategy", "策略「MACD金叉」移出 7 只：京东方A、平安银行、五粮液、立讯精密、招商银行、东方财富、比亚迪", [], "warn"),
 ]
 
 
@@ -87,6 +92,16 @@ def seed_demo_alerts(request: Request, count: int = 12, recent: bool = True):
     for i in range(count):
         source, message, signals, severity = _DEMO_TEMPLATES[i % len(_DEMO_TEMPLATES)]
         sym, name = _DEMO_STOCKS[i % len(_DEMO_STOCKS)]
+        # 策略类型按消息推导 type: new_entry / dropped, 否则沿用 source
+        if source == "strategy":
+            if "进入" in message:
+                ev_type = "new_entry"
+            elif "移出" in message:
+                ev_type = "dropped"
+            else:
+                ev_type = "strategy"
+        else:
+            ev_type = source
         # recent 模式: 时间戳从现在往前每条错开 30 秒 (最新在前)
         ts = now_ms - (i * 30000) if recent else now_ms - random.randint(60, 4320) * 60 * 1000
         events.append({
@@ -94,12 +109,12 @@ def seed_demo_alerts(request: Request, count: int = 12, recent: bool = True):
             "rule_id": f"demo_rule_{i}",
             "rule_name": message,
             "source": source,
-            "type": source,
-            "symbol": sym,
+            "type": ev_type,
+            "symbol": "" if source == "strategy" and ("只：" in message) else sym,
             "name": name,
             "message": message,
-            "price": round(random.uniform(8, 1800), 2),
-            "change_pct": round(random.uniform(-0.06, 0.098), 4),
+            "price": round(random.uniform(8, 1800), 2) if not (source == "strategy" and "只：" in message) else None,
+            "change_pct": round(random.uniform(-0.06, 0.098), 4) if not (source == "strategy" and "只：" in message) else None,
             "signals": signals,
             "severity": severity,
         })

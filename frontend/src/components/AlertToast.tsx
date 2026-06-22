@@ -74,10 +74,12 @@ const SEVERITY_BAR: Record<string, string> = {
   info: 'bg-accent', warn: 'bg-warning', critical: 'bg-danger',
 }
 const SOURCE_BADGE: Record<string, { label: string; cls: string }> = {
-  strategy: { label: '策略', cls: 'bg-amber-400/15 text-amber-400' },
-  signal:   { label: '信号', cls: 'bg-accent/15 text-accent' },
-  price:    { label: '价格', cls: 'bg-emerald-400/15 text-emerald-400' },
-  market:   { label: '异动', cls: 'bg-purple-500/15 text-purple-400' },
+  strategy:  { label: '策略',   cls: 'bg-amber-400/15 text-amber-400' },
+  signal:    { label: '信号',   cls: 'bg-accent/15 text-accent' },
+  price:     { label: '价格',   cls: 'bg-emerald-400/15 text-emerald-400' },
+  market:    { label: '异动',   cls: 'bg-purple-500/15 text-purple-400' },
+  new_entry: { label: '进入',   cls: 'bg-emerald-400/15 text-emerald-400' },
+  dropped:   { label: '移出', cls: 'bg-danger/15 text-danger' },
 }
 
 // ===== 容器 — 挂在 Layout =====
@@ -102,11 +104,18 @@ export function AlertToastContainer() {
   return (
     <div className="fixed bottom-4 right-4 z-[9999] flex flex-col gap-2 w-[320px] pointer-events-none">
       <AnimatePresence>
-        {items.map(item => {
+        {items
+          .filter(item => !(item.alert.source === 'strategy' && !item.alert.symbol))
+          .map(item => {
           const ev = item.alert
           const sev = SEVERITY_BAR[ev.severity ?? 'info'] ?? SEVERITY_BAR.info
-          const badge = SOURCE_BADGE[ev.source] ?? { label: ev.source, cls: 'bg-elevated text-muted' }
+          const badgeKey = (ev.source === 'strategy' && ev.type) ? ev.type : ev.source
+          const badge = SOURCE_BADGE[badgeKey] ?? { label: badgeKey, cls: 'bg-elevated text-muted' }
           const pct = ev.change_pct ?? 0
+          const isStrategy = ev.source === 'strategy'
+          const sm = isStrategy ? ev.message?.match(/策略「([^」]+)」/) : null
+          const sname = sm ? sm[1] : ''
+          const isNew = ev.type === 'new_entry'
           return (
             <motion.div
               key={item.id}
@@ -139,12 +148,25 @@ export function AlertToastContainer() {
                 </button>
               </div>
 
-              {/* 底行: 触发消息 + 价格 */}
-              <div className="mt-1 flex items-center gap-2 pl-0.5">
-                <Bell className={cn('h-3 w-3 shrink-0', sev.replace('bg-', 'text-'))} />
-                {ev.message && <span className="text-[11px] text-foreground/70 truncate flex-1">{ev.message}</span>}
-                {ev.price != null && <span className="text-[10px] font-mono text-muted shrink-0">{fmtPrice(ev.price)}</span>}
-              </div>
+              {/* 底行: 策略类型走新格式, 其他走旧格式 */}
+              {isStrategy ? (
+                <div className="mt-1 flex items-center gap-1.5 pl-0.5">
+                  <Bell className={cn('h-3 w-3 shrink-0', sev.replace('bg-', 'text-'))} />
+                  <span className={cn('text-[11px] font-medium', isNew ? 'text-danger' : 'text-emerald-400')}>
+                    {isNew ? '进入' : '移出'}
+                  </span>
+                  <span className="text-[11px] text-foreground/70">策略</span>
+                  <span className="text-[11px] font-medium text-amber-400">「{sname}」</span>
+                  <span className="flex-1" />
+                  {ev.price != null && <span className="text-[10px] font-mono text-muted shrink-0">{fmtPrice(ev.price)}</span>}
+                </div>
+              ) : (
+                <div className="mt-1 flex items-center gap-2 pl-0.5">
+                  <Bell className={cn('h-3 w-3 shrink-0', sev.replace('bg-', 'text-'))} />
+                  {ev.message && <span className="text-[11px] text-foreground/70 truncate flex-1">{ev.message}</span>}
+                  {ev.price != null && <span className="text-[10px] font-mono text-muted shrink-0">{fmtPrice(ev.price)}</span>}
+                </div>
+              )}
             </motion.div>
           )
         })}

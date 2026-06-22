@@ -562,7 +562,7 @@ export function Screener() {
             <button
               onClick={() => { setBuilderMode('create'); setShowBuilder(true) }}
               className="inline-flex items-center gap-1.5 h-7 px-3 rounded-btn
-                border border-amber-400/30 bg-amber-400/8 text-xs font-medium text-amber-400
+                text-xs font-medium text-amber-400 border border-amber-400/20 bg-amber-400/5
                 hover:bg-amber-400/15 transition-colors cursor-pointer"
             >
               <Sparkles className="h-3.5 w-3.5" />

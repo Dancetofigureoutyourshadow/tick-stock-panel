@@ -161,8 +161,9 @@ from datetime import datetime, timezone
 
 def _demo_rule(rule_id: str, name: str, rtype: str, scope: str, symbols: list[str],
                conditions: list[dict], logic: str = "or", cooldown: int = 3600,
-               severity: str = "info", message: str = "") -> dict:
-    return monitor_rules.normalize({
+               severity: str = "info", message: str = "",
+               strategy_id: str | None = None, direction: str = "entry") -> dict:
+    rule = monitor_rules.normalize({
         "id": rule_id,
         "name": name,
         "type": rtype,
@@ -175,6 +176,10 @@ def _demo_rule(rule_id: str, name: str, rtype: str, scope: str, symbols: list[st
         "message": message,
         "enabled": True,
     })
+    if rtype == "strategy":
+        rule["strategy_id"] = strategy_id
+        rule["direction"] = direction
+    return rule
 
 
 _DEMO_RULES_TEMPLATE = [
@@ -197,16 +202,34 @@ _DEMO_RULES_TEMPLATE = [
      [{"field": "signal_ma20_breakdown", "op": "truth"}], "or", "info"),
 ]
 
+# 策略类型单独声明 (格式不同: 含 strategy_id + direction)
+_DEMO_STRATEGY_RULES: list[dict] = [
+    {"name": "策略监控 · 趋势突破", "strategy_id": "trend_breakout", "direction": "entry"},
+    {"name": "策略监控 · MACD金叉", "strategy_id": "macd_golden", "direction": "both"},
+]
+
 
 @router.post("/seed")
 def seed_demo_rules(request: Request):
-    """生成演示监控规则 (Dev 页用)。覆盖 signal/price/market 三类。"""
+    """生成演示监控规则 (Dev 页用)。覆盖 signal/price/market/strategy 四类。"""
     ts = int(_time.time() * 1000)
     created = []
-    for i, (name, rtype, scope, symbols, conditions, logic, severity, sev) in enumerate(_DEMO_RULES_TEMPLATE):
+    i = 0
+    for (name, rtype, scope, symbols, conditions, logic, severity, sev) in _DEMO_RULES_TEMPLATE:
         rule_id = f"demo_{ts}_{i}"
         rule = _demo_rule(rule_id, name, rtype, scope, symbols, conditions, logic, 3600, sev)
         monitor_rules.save_one(_data_dir(request), rule)
         created.append(rule_id)
+        i += 1
+    # 策略类型规则
+    for sr in _DEMO_STRATEGY_RULES:
+        rule_id = f"demo_{ts}_{i}"
+        rule = _demo_rule(
+            rule_id, sr["name"], "strategy", "all", [], [], "and", 3600, "info",
+            strategy_id=sr["strategy_id"], direction=sr.get("direction", "entry"),
+        )
+        monitor_rules.save_one(_data_dir(request), rule)
+        created.append(rule_id)
+        i += 1
     _sync_engine(request)
     return {"ok": True, "generated": len(created), "ids": created}

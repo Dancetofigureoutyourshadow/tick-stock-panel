@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { X, Sparkles, Save, Loader2, ChevronLeft, ChevronRight, AlertTriangle, Settings2 } from 'lucide-react'
+import { X, Sparkles, Save, Loader2, ChevronLeft, ChevronRight, AlertTriangle, Settings2, FileText, Copy, Check, Terminal } from 'lucide-react'
 import { api } from '@/lib/api'
 import { storage } from '@/lib/storage'
+import { cn } from '@/lib/cn'
 
 // ===== 工具函数 =====
 
@@ -76,12 +77,55 @@ const DIRECTIONS = [
 
 // ===== 组件 =====
 
+const CUSTOM_TEMPLATE = `"""策略简短描述"""
+import polars as pl
+
+META = {
+    "id": "custom_my_strategy",
+    "name": "我的策略",
+    "description": "策略描述",
+    "tags": ["自定义"],
+    "basic_filter": {
+        "price_min": 3, "price_max": 200,
+        "market_cap_min": 10e8, "amount_min": 0.5e8,
+        "exclude_st": True, "exclude_new_days": 30,
+    },
+    "params": [],
+    "scoring": {
+        "change_pct": 0.5, "vol_ratio_5d": 0.5,
+    },
+    "order_by": "score",
+    "descending": True,
+    "limit": 100,
+}
+
+ENTRY_SIGNALS = ["signal_n_day_high"]
+EXIT_SIGNALS = ["signal_ma20_breakdown"]
+STOP_LOSS = -0.05
+MAX_HOLD_DAYS = 20
+ALERTS = []
+
+RULES = """
+1. 规则一
+2. 规则二
+3. 规则三
+"""
+
+def filter(df: pl.DataFrame, params: dict) -> pl.Expr:
+    return (
+        (pl.col("close") > pl.col("ma20"))
+        & (pl.col("volume") > pl.col("vol_ma5") * 1.5)
+    )
+`
+
 interface Props { open: boolean; onClose: () => void; onSavedId?: (id: string) => void | Promise<void>; mode?: 'create' | 'modify' }
 
 export function StrategyBuilderDialog({ open, onClose, onSavedId, mode = 'create' }: Props) {
   // 根据 mode 选择存储 key
   const draftStore = mode === 'modify' ? storage.strategyModify : storage.strategyDraft
   const [step, setStep] = useState(1)
+  const [tab, setTab] = useState<'ai' | 'custom'>('ai')
+  const [customCopied, setCustomCopied] = useState(false)
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
   const [direction, setDirection] = useState('long')
@@ -217,23 +261,51 @@ export function StrategyBuilderDialog({ open, onClose, onSavedId, mode = 'create
           className="w-[820px] max-h-[88vh] bg-surface/95 backdrop-blur-xl border border-border/50 rounded-2xl shadow-2xl flex flex-col overflow-hidden">
 
           {/* 标题 */}
-          <div className="flex items-center justify-between px-5 py-3 border-b border-border/50">
-            <div className="flex items-center gap-2.5">
-              <Sparkles className="h-4 w-4 text-amber-400" />
-              <span className="text-sm font-semibold text-foreground">
-                {strategyId ? '修改策略 · ' + (parseMetaField(code, 'name') || strategyId) : '创建策略'}
-              </span>
+          <div className="grid grid-cols-[1fr_auto_1fr] items-center px-5 py-2.5 border-b border-border/50">
+            {/* 左侧：Tab 切换 */}
+            <div className="flex rounded-lg bg-elevated p-0.5 w-fit">
+              <button onClick={() => setTab('ai')} className={cn('px-3 py-1 rounded-md text-xs font-medium transition-all cursor-pointer', tab === 'ai' ? 'bg-amber-400/15 text-amber-400' : 'text-muted hover:text-foreground')}>
+                <Sparkles className="h-3 w-3 inline mr-1" />AI 生成
+              </button>
+              <button onClick={() => setTab('custom')} className={cn('px-3 py-1 rounded-md text-xs font-medium transition-all cursor-pointer', tab === 'custom' ? 'bg-accent/15 text-accent' : 'text-muted hover:text-foreground')}>
+                <FileText className="h-3 w-3 inline mr-1" />自定义编写
+              </button>
             </div>
-            <div className="flex items-center gap-1.5">
-              <span className={'w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold ' + (step === 1 ? 'bg-amber-400/20 text-amber-400' : 'bg-emerald-400/20 text-emerald-400')}>1</span>
-              <span className="text-muted/30">—</span>
-              <span className={'w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold ' + (step === 2 ? 'bg-amber-400/20 text-amber-400' : 'bg-border/50 text-muted')}>2</span>
+            {/* 中间：标题 */}
+            <span className="text-sm font-semibold text-foreground">
+              {strategyId ? '修改策略' : '创建策略'}
+            </span>
+            {/* 右侧：步骤 + 关闭 */}
+            <div className="flex items-center justify-end gap-2">
+              {tab === 'ai' && (
+                <div className="flex items-center gap-1">
+                  <span className={'w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold ' + (step === 1 ? 'bg-amber-400/20 text-amber-400' : 'bg-emerald-400/20 text-emerald-400')}>1</span>
+                  <span className="text-muted/20 text-[10px]">—</span>
+                  <span className={'w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold ' + (step === 2 ? 'bg-amber-400/20 text-amber-400' : 'bg-border/50 text-muted')}>2</span>
+                </div>
+              )}
+              <button onClick={handleClose} className="p-1.5 rounded-lg hover:bg-elevated"><X className="h-4 w-4 text-muted" /></button>
             </div>
-            <button onClick={handleClose} className="p-1.5 rounded-lg hover:bg-elevated"><X className="h-4 w-4 text-muted" /></button>
+          </div>
+
+          {/* Tab 描述 */}
+          <div className="px-5 py-2 border-b border-border/30 bg-elevated/30">
+            {tab === 'ai' ? (
+              <div className="flex items-center gap-2 text-[11px]">
+                <Sparkles className="h-3.5 w-3.5 text-amber-400 shrink-0" />
+                <span className="text-amber-400/80">步骤 1 描述策略规则 → 步骤 2 预览代码 → 保存</span>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 text-[11px]">
+                <Terminal className="h-3.5 w-3.5 text-accent shrink-0" />
+                <span className="text-muted">适合有 Python 基础的开发者，手动编写策略文件进行深度定制和二次开发</span>
+              </div>
+            )}
           </div>
 
           {/* 内容 */}
           <div className="flex-1 overflow-y-auto px-5 py-5 space-y-4">
+            {tab === 'ai' ? (<>
             {aiStatus && !aiStatus.configured && (
               <div className="rounded-xl border border-amber-400/30 bg-amber-400/5 px-4 py-3 flex items-center gap-3">
                 <AlertTriangle className="h-4 w-4 text-amber-400 shrink-0" />
@@ -370,9 +442,47 @@ export function StrategyBuilderDialog({ open, onClose, onSavedId, mode = 'create
                 <p className="text-[10px] text-muted/40">修改指令可调整参数、信号、告警、评分等任意内容。确认无误后点击「保存策略」。</p>
               </>
             )}
+            </>
+            ) : (
+              /* 自定义编写 */
+              <div className="space-y-4">
+                <div className="rounded-xl border border-border/40 bg-elevated/50 p-4 space-y-2.5">
+                  <div className="flex items-center gap-2">
+                    <Terminal className="h-4 w-4 text-accent" />
+                    <span className="text-sm font-medium text-foreground">自定义策略开发方式</span>
+                  </div>
+                  <div className="space-y-1.5 text-[11px] text-secondary leading-relaxed">
+                    <p>在项目目录 <code className="px-1 py-0.5 rounded bg-base text-xs font-mono text-foreground/80">data/strategies/custom/</code> 下创建 <code className="px-1 py-0.5 rounded bg-base text-xs font-mono text-foreground/80">.py</code> 文件。支持两种模式：</p>
+                    <div className="space-y-1 pl-1">
+                      <div className="flex items-start gap-1.5">
+                        <span className="mt-0.5 h-1.5 w-1.5 rounded-full bg-accent/60 shrink-0" />
+                        <span><strong className="text-foreground/80">模式 A：单日过滤</strong> — <code className="text-[10px] font-mono text-foreground/80">filter(df, params) → pl.Expr</code></span>
+                      </div>
+                      <div className="flex items-start gap-1.5">
+                        <span className="mt-0.5 h-1.5 w-1.5 rounded-full bg-amber-400/60 shrink-0" />
+                        <span><strong className="text-foreground/80">模式 B：历史窗口</strong> — <code className="text-[10px] font-mono text-foreground/80">filter_history(df, params) → pl.DataFrame</code> + <code className="text-[10px] font-mono text-foreground/80">LOOKBACK_DAYS</code></span>
+                      </div>
+                    </div>
+                    <p>完整规范见 <span className="text-accent">docs/strategy-guide.md</span></p>
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-medium text-foreground">快速模板</span>
+                    <button onClick={() => { navigator.clipboard.writeText(CUSTOM_TEMPLATE); setCustomCopied(true); setTimeout(() => setCustomCopied(false), 2000) }}
+                      className={cn('inline-flex items-center gap-1 px-2 py-1 rounded text-[10px] font-medium transition-all cursor-pointer', customCopied ? 'bg-emerald-400/10 text-emerald-400' : 'bg-elevated text-muted hover:text-foreground hover:bg-accent/10')}>
+                      {customCopied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+                      {customCopied ? '已复制' : '复制模板'}
+                    </button>
+                  </div>
+                  <pre className="rounded-xl border border-border/40 bg-base p-4 text-[10px] leading-relaxed font-mono text-foreground/70 overflow-auto max-h-[400px]">{CUSTOM_TEMPLATE}</pre>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* 底部 */}
+          {tab === 'ai' && (
           <div className="flex items-center justify-between px-5 py-3 border-t border-border/50 bg-surface/50">
             <button onClick={clearDraft} className="text-[10px] text-muted/40 hover:text-danger transition-colors">重新创建</button>
             <div className="flex items-center gap-2">
@@ -395,6 +505,7 @@ export function StrategyBuilderDialog({ open, onClose, onSavedId, mode = 'create
               )}
             </div>
           </div>
+          )}
         </motion.div>
       </motion.div>
     </AnimatePresence>

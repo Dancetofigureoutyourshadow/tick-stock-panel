@@ -287,7 +287,7 @@ function SeedPanel() {
         <div>
           <h3 className="text-sm font-medium text-foreground">监控规则</h3>
           <p className="mt-0.5 text-xs text-muted">
-            生成多种类型的演示监控规则 (个股信号/价格/市场异动),用于测试监控中心规则列表展示。
+            生成多种类型的演示监控规则 (个股信号/价格/市场异动/策略变更),用于测试监控中心规则列表展示。
           </p>
         </div>
         <div className="flex flex-wrap gap-2">

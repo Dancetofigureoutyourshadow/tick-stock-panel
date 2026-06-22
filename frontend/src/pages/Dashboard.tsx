@@ -110,9 +110,15 @@ function MonitorWidget() {
   return (
     <>
       <div className="mt-1 space-y-1.5">
-        {events.map((ev, i) => {
+        {events
+          .filter((ev: AlertEvent) => !(ev.source === 'strategy' && !ev.symbol))
+          .map((ev, i) => {
           const sev = _SEVERITY_BAR[ev.severity ?? 'info'] ?? _SEVERITY_BAR.info
           const pct = ev.change_pct ?? 0
+          const isStrategy = ev.source === 'strategy'
+          const sm = isStrategy ? ev.message?.match(/策略「([^」]+)」/) : null
+          const sname = sm ? sm[1] : ''
+          const isNew = ev.type === 'new_entry'
           return (
             <motion.div
               key={`${ev.ts}-${i}`}
@@ -150,25 +156,40 @@ function MonitorWidget() {
                   </span>
                 )}
               </div>
-              {/* 第二行: 分类标签 + 触发消息 + 时间 */}
-              <div className="mt-0.5 flex items-center gap-1.5">
-                <span className={cn('shrink-0 rounded px-1 py-px text-[8px] font-medium', _SOURCE_BADGE[ev.source] ?? 'bg-elevated text-muted')}>
-                  {_SOURCE_LABEL[ev.source] ?? ev.source}
-                </span>
-                {ev.message && (
-                  <span className="text-[9px] text-muted truncate flex-1">{ev.message}</span>
-                )}
-                <span className="text-[8px] text-muted/50 shrink-0 font-mono">
-                  {ev.ts ? new Date(ev.ts).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : ''}
-                </span>
-              </div>
-              {/* 第三行: 命中信号 (买入/卖出触发器) */}
-              {ev.signals && ev.signals.length > 0 && (
-                <div className="mt-1 flex flex-wrap gap-1">
-                  {ev.signals.map((s, j) => (
-                    <span key={j} className="rounded bg-accent/8 px-1 py-px text-[8px] text-accent/80">{cnSignal(s)}</span>
-                  ))}
+              {/* 第二行: 策略类型走新格式, 其他走旧格式 */}
+              {isStrategy ? (
+                <div className="mt-0.5 flex items-center gap-1.5">
+                  <span className={cn('text-[9px] font-medium', isNew ? 'text-danger' : 'text-emerald-400')}>
+                    {isNew ? '进入' : '移出'}
+                  </span>
+                  <span className="text-[9px] text-muted">策略</span>
+                  <span className="text-[9px] font-medium text-amber-400">「{sname}」</span>
+                  <span className="flex-1" />
+                  <span className="text-[8px] text-muted/50 shrink-0 font-mono">
+                    {ev.ts ? new Date(ev.ts).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : ''}
+                  </span>
                 </div>
+              ) : (
+                <>
+                  <div className="mt-0.5 flex items-center gap-1.5">
+                    <span className={cn('shrink-0 rounded px-1 py-px text-[8px] font-medium', _SOURCE_BADGE[ev.source] ?? 'bg-elevated text-muted')}>
+                      {_SOURCE_LABEL[ev.source] ?? ev.source}
+                    </span>
+                    {ev.message && (
+                      <span className="text-[9px] text-muted truncate flex-1">{ev.message}</span>
+                    )}
+                    <span className="text-[8px] text-muted/50 shrink-0 font-mono">
+                      {ev.ts ? new Date(ev.ts).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : ''}
+                    </span>
+                  </div>
+                  {ev.signals && ev.signals.length > 0 && (
+                    <div className="mt-1 flex flex-wrap gap-1">
+                      {ev.signals.map((s, j) => (
+                        <span key={j} className="rounded bg-accent/8 px-1 py-px text-[8px] text-accent/80">{cnSignal(s)}</span>
+                      ))}
+                    </div>
+                  )}
+                </>
               )}
             </motion.div>
           )

@@ -18,12 +18,17 @@ GUIDE_PATH = Path(__file__).resolve().parent.parent.parent.parent / "docs" / "st
 
 _SYSTEM_PREFIX = """你是A股量化策略设计专家。根据用户描述的需求，参考下方的《策略开发指南》生成一个完整的策略Python文件。
 
+核心约束:
+- 只创建这一个 .py 文件，不要修改任何现有文件，不要跨文件引用
+- 只 import polars as pl，不 import 其他模块
+
 要求:
 1. 用户可能调整的策略阈值通过 META["params"] 暴露；公式常数、固定窗口边界、布尔开关不必强行参数化
-2. 遵循指南中的文件结构模板，但优先贴合用户规则，不要为了套模板歪曲策略含义
-3. 优先使用 Polars 表达式、窗口函数、聚合和 with_columns/filter 实现，避免逐行/逐股 Python 循环；只有表达式难以描述的复杂状态机才使用 partition_by/to_dicts
-4. 只 import polars as pl，不 import 其他模块
-5. 直接输出Python代码，不要输出其他内容
+2. 遵循指南中的文件结构，但优先贴合用户规则，不要为了套模板歪曲策略含义
+3. ENTRY_SIGNALS/EXIT_SIGNALS 根据策略逻辑自行选择匹配的信号列，不要照搬示例
+4. scoring 权重根据策略核心逻辑定制，总和 = 1.0
+5. 优先使用 Polars 表达式、窗口函数、聚合和 with_columns/filter 实现，避免逐行/逐股 Python 循环；只有表达式难以描述的复杂状态机才使用 partition_by/to_dicts
+6. 直接输出Python代码，不要输出其他内容
 
 --- 策略开发指南 ---
 

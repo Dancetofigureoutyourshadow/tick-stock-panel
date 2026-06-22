@@ -292,7 +292,12 @@ function AlertsList({ alertsQuery, confirmClear, setConfirmClear, total, enterTs
                       )
                     })()}
                     <span className={cn('rounded border px-1.5 py-0.5 text-[9px] font-medium', SOURCE_BADGE_STYLE[ev.source] ?? 'bg-elevated text-muted border-border')}>
-                      {TYPE_LABEL[ev.source] ?? ev.source}
+                      {(() => {
+                        // 优先用规则名 (如 "策略监控 · 空中加油" → "空中加油"); 退回到 type 标签
+                        const rn = ev.rule_name ?? ''
+                        const dotIdx = rn.indexOf(' · ')
+                        return dotIdx >= 0 ? rn.slice(dotIdx + 3) : (rn || (TYPE_LABEL[ev.source] ?? ev.source))
+                      })()}
                     </span>
                   </div>
                   <div className="mt-1 flex items-center gap-2">

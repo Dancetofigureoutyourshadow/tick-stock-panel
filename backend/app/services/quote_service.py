@@ -462,6 +462,17 @@ class QuoteService:
             if self._app_state:
                 engine = getattr(self._app_state, "monitor_engine", None)
                 if engine and engine.rule_count > 0:
+                    # 预构建 symbol → name 映射 (enriched 已 drop name 列, 引擎触发时回填用)
+                    try:
+                        inst_df = self._app_state.repo.get_instruments()
+                        if not inst_df.is_empty() and "symbol" in inst_df.columns and "name" in inst_df.columns:
+                            engine.set_name_map({
+                                row["symbol"]: row["name"]
+                                for row in inst_df.select(["symbol", "name"]).iter_rows(named=True)
+                                if row.get("name")
+                            })
+                    except Exception as e:  # noqa: BLE001
+                        logger.debug("name_map 构建失败 (不影响监控): %s", e)
                     rule_events = engine.evaluate(enriched_today)
                     if rule_events:
                         # 落盘到 alerts.jsonl

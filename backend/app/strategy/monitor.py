@@ -268,10 +268,20 @@ class MonitorRuleEngine:
         # (rule_id, symbol) → 上次触发时间戳(秒)。用于 cooldown 去重。
         self._last_fire: dict[tuple[str, str], float] = {}
         self._strategy_engine = None  # 延迟注入, type=strategy 规则用它读策略信号
+        # symbol → 股票名 (enriched DataFrame 已 drop name 列, 触发时从此映射回填)
+        self._name_map: dict[str, str] = {}
 
     def set_strategy_engine(self, engine) -> None:
         """注入 StrategyEngine, type=strategy 规则据此读策略的 entry/exit_signals。"""
         self._strategy_engine = engine
+
+    def set_name_map(self, name_map: dict[str, str]) -> None:
+        """注入 symbol → 股票名 映射, 用于在告警事件里回填 name 字段。
+
+        enriched DataFrame 在 pipeline 计算后不含 name 列 (见 indicators/pipeline.py),
+        触发时从 instruments 表预构建此映射, 保证 AlertEvent.name 有值。
+        """
+        self._name_map = name_map or {}
 
     # ── 规则管理 ───────────────────────────────────────
     def set_rules(self, rules: list[dict]) -> None:
@@ -363,6 +373,8 @@ class MonitorRuleEngine:
             if last is not None and (now - last) < cooldown:
                 continue  # 冷却期内, 跳过
             self._last_fire[key] = now
+            # enriched DataFrame 已 drop name 列 → 从注入的 name_map 回填 (instruments 表)
+            resolved_name = name if name else self._name_map.get(sym)
             ev = {
                 "ts": int(now * 1000),
                 "rule_id": rule["id"],
@@ -370,7 +382,7 @@ class MonitorRuleEngine:
                 "source": source,
                 "type": ev_type,
                 "symbol": sym,
-                "name": name,
+                "name": resolved_name,
                 "message": message,
                 "price": price,
                 "change_pct": pct,
@@ -461,8 +473,24 @@ class MonitorRuleEngine:
             results.append((sym, name, price, pct, hit_sigs))
         return results
 
-    @staticmethod
-    def _default_message(rule: dict) -> str:
+    def _default_message(self, rule: dict) -> str:
+        """生成默认 message。策略类型带策略名 + 方向 (对齐 demo 模板格式, 让前端可高亮)。"""
         rtype = rule.get("type", "signal")
-        name_map = {"signal": "信号触发", "price": "价格触发", "market": "市场异动", "strategy": "策略触发"}
+        if rtype == "strategy":
+            direction = rule.get("direction", "entry")
+            action = {"entry": "买入", "exit": "卖出", "both": "买卖"}.get(direction, "买入")
+            # 从 StrategyEngine 取策略名; 失败则退化为 rule_name 里截取的部分
+            sname = ""
+            sid = rule.get("strategy_id")
+            if sid and self._strategy_engine is not None:
+                try:
+                    s = self._strategy_engine.get(sid)
+                    sname = s.meta.get("name", "") or s.meta.get("id", "")
+                except Exception:  # noqa: BLE001
+                    sname = ""
+            if not sname:
+                rn = rule.get("name", "")
+                sname = rn.split(" · ", 1)[1] if " · " in rn else (rn or "策略")
+            return f"策略「{sname}」{action}信号"
+        name_map = {"signal": "信号触发", "price": "价格触发", "market": "市场异动"}
         return name_map.get(rtype, "监控触发")

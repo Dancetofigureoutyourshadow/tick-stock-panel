@@ -9,7 +9,10 @@ import { QK } from '@/lib/queryKeys'
 import { fmtBigNum, fmtPct } from '@/lib/format'
 import { useDataStatus, useCapabilities } from '@/lib/useSharedQueries'
 import { SealedBadge } from '@/components/SealedBadge'
+import { StockPreviewDialog } from '@/components/StockPreviewDialog'
 import { cn } from '@/lib/cn'
+import { cnSignal } from '@/lib/signals'
+import { boardTag } from '@/components/stock-table/primitives'
 
 function n(v: number | null | undefined) {
   return typeof v === 'number' && Number.isFinite(v) ? v : null
@@ -89,6 +92,7 @@ const _SEVERITY_BAR: Record<string, string> = {
 }
 
 function MonitorWidget() {
+  const [previewEv, setPreviewEv] = useState<AlertEvent | null>(null)
   const alerts = useQuery({
     queryKey: ['alerts', ''],
     queryFn: () => api.alertsList({ days: 7, limit: 10 }),
@@ -104,48 +108,86 @@ function MonitorWidget() {
   }
 
   return (
-    <div className="mt-1 space-y-1.5">
-      {events.map((ev, i) => {
-        const sev = _SEVERITY_BAR[ev.severity ?? 'info'] ?? _SEVERITY_BAR.info
-        const pct = ev.change_pct ?? 0
-        return (
-          <motion.div
-            key={`${ev.ts}-${i}`}
-            initial={{ opacity: 0, y: -8, scale: 0.98 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            transition={{ duration: 0.3, delay: Math.min(i * 0.03, 0.3) }}
-            className="relative overflow-hidden rounded-md border border-border/40 bg-surface/60 pl-2.5 pr-2 py-1.5 hover:border-border hover:bg-surface transition-colors"
-          >
-            <div className={cn('absolute left-0 top-0 h-full w-0.5', sev)} />
-            {/* 第一行: 代码 + 名称 + 价格 + 涨跌幅 */}
-            <div className="flex items-center gap-1.5">
-              <span className="font-mono text-[10px] font-medium text-foreground/80 shrink-0">{ev.symbol?.replace(/\.(SH|SZ|BJ)$/, '')}</span>
-              {ev.name && <span className="text-[10px] text-secondary truncate flex-1">{ev.name}</span>}
-              {ev.price != null && (
-                <span className="text-[10px] font-mono text-foreground/60 shrink-0">{fmtPrice(ev.price)}</span>
-              )}
-              {ev.change_pct != null && (
-                <span className={cn('text-[10px] font-mono font-medium shrink-0 w-12 text-right', pct >= 0 ? 'text-danger' : 'text-bear')}>
-                  {pct >= 0 ? '+' : ''}{fmtPct(pct)}
+    <>
+      <div className="mt-1 space-y-1.5">
+        {events.map((ev, i) => {
+          const sev = _SEVERITY_BAR[ev.severity ?? 'info'] ?? _SEVERITY_BAR.info
+          const pct = ev.change_pct ?? 0
+          return (
+            <motion.div
+              key={`${ev.ts}-${i}`}
+              initial={{ opacity: 0, y: -8, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              transition={{ duration: 0.3, delay: Math.min(i * 0.03, 0.3) }}
+              className="relative overflow-hidden rounded-md border border-border/40 bg-surface/60 pl-2.5 pr-2 py-1.5 hover:border-border hover:bg-surface transition-colors"
+            >
+              <div className={cn('absolute left-0 top-0 h-full w-0.5', sev)} />
+              {/* 第一行: 代码 + 名称 + 价格 + 涨跌幅 (点击代码/名称弹日K) */}
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={() => ev.symbol && setPreviewEv(ev)}
+                  title={ev.symbol ? `查看 ${ev.symbol} 日K` : undefined}
+                  className="inline-flex items-center gap-1 min-w-0 shrink-0 rounded hover:bg-elevated/60 transition-colors -mx-0.5 px-0.5 cursor-pointer"
+                >
+                  <span className="font-mono text-[10px] font-medium text-foreground/80 hover:text-accent">{ev.symbol?.replace(/\.(SH|SZ|BJ)$/, '')}</span>
+                  {ev.symbol && (() => {
+                    const board = boardTag(ev.symbol)
+                    return board && (
+                      <span className={`inline-flex items-center justify-center h-3 w-3 rounded text-[7px] font-bold leading-none border ${board.color}`}>
+                        {board.label}
+                      </span>
+                    )
+                  })()}
+                  {ev.name && <span className="text-[10px] text-secondary truncate max-w-[5rem] hover:text-foreground">{ev.name}</span>}
+                </button>
+                <span className="flex-1" />
+                {ev.price != null && (
+                  <span className="text-[10px] font-mono text-foreground/60 shrink-0">{fmtPrice(ev.price)}</span>
+                )}
+                {ev.change_pct != null && (
+                  <span className={cn('text-[10px] font-mono font-medium shrink-0 w-12 text-right', pct >= 0 ? 'text-danger' : 'text-bear')}>
+                    {fmtPct(pct)}
+                  </span>
+                )}
+              </div>
+              {/* 第二行: 分类标签 + 触发消息 + 时间 */}
+              <div className="mt-0.5 flex items-center gap-1.5">
+                <span className={cn('shrink-0 rounded px-1 py-px text-[8px] font-medium', _SOURCE_BADGE[ev.source] ?? 'bg-elevated text-muted')}>
+                  {_SOURCE_LABEL[ev.source] ?? ev.source}
                 </span>
+                {ev.message && (
+                  <span className="text-[9px] text-muted truncate flex-1">{ev.message}</span>
+                )}
+                <span className="text-[8px] text-muted/50 shrink-0 font-mono">
+                  {ev.ts ? new Date(ev.ts).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : ''}
+                </span>
+              </div>
+              {/* 第三行: 命中信号 (买入/卖出触发器) */}
+              {ev.signals && ev.signals.length > 0 && (
+                <div className="mt-1 flex flex-wrap gap-1">
+                  {ev.signals.map((s, j) => (
+                    <span key={j} className="rounded bg-accent/8 px-1 py-px text-[8px] text-accent/80">{cnSignal(s)}</span>
+                  ))}
+                </div>
               )}
-            </div>
-            {/* 第二行: 分类标签 + 触发消息 + 时间 */}
-            <div className="mt-0.5 flex items-center gap-1.5">
-              <span className={cn('shrink-0 rounded px-1 py-px text-[8px] font-medium', _SOURCE_BADGE[ev.source] ?? 'bg-elevated text-muted')}>
-                {_SOURCE_LABEL[ev.source] ?? ev.source}
-              </span>
-              {ev.message && (
-                <span className="text-[9px] text-muted truncate flex-1">{ev.message}</span>
-              )}
-              <span className="text-[8px] text-muted/50 shrink-0 font-mono">
-                {ev.ts ? new Date(ev.ts).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : ''}
-              </span>
-            </div>
-          </motion.div>
-        )
-      })}
-    </div>
+            </motion.div>
+          )
+        })}
+      </div>
+
+      <StockPreviewDialog
+        symbol={previewEv?.symbol ?? null}
+        name={previewEv?.name ?? undefined}
+        triggerInfo={previewEv ? {
+          price: previewEv.price ?? null,
+          changePct: previewEv.change_pct ?? null,
+          ts: previewEv.ts,
+          signals: previewEv.signals,
+          message: previewEv.message,
+        } : null}
+        onClose={() => setPreviewEv(null)}
+      />
+    </>
   )
 }
 

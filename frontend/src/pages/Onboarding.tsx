@@ -19,6 +19,9 @@ import {
   ScanSearch,
   Flame,
   Zap,
+  Radar,
+  ShieldCheck,
+  BellRing,
 } from 'lucide-react'
 import { api } from '@/lib/api'
 import { useCapabilities, useSettings } from '@/lib/useSharedQueries'
@@ -27,15 +30,19 @@ import { CAP_LABELS } from '@/lib/capability-labels'
 import { Logo } from '@/components/Logo'
 
 // ===== 引导页:4 步向导 =====
-// 1. 欢迎  2. 输入 Key(可跳过)  3. 能力探测结果  4. 完成 → 写标记 → 进面板
+// 0. 欢迎  1. 输入 Key(可跳过)  2. 能力探测结果  3. 完成 → 写标记 → 进面板
 
 const STEPS = ['欢迎', '配置 Key', '能力探测', '完成'] as const
 
+const BRAND = '#8B5CF6'
+
 const HIGHLIGHTS = [
-  { icon: LineChart, title: '看板与自选', desc: '实时行情、MA/MACD 指标、自定义自选列表' },
-  { icon: ScanSearch, title: '策略选股', desc: '内置多套选股策略,一键扫描全市场命中' },
-  { icon: Flame, title: '连板梯队', desc: '涨停板梯队、概念行业热度、市场情绪一览' },
-  { icon: Zap, title: '回测验证', desc: '策略历史回测、因子分析,用数据说话' },
+  { icon: LineChart, title: '看板与自选', desc: '实时行情、MA/MACD 指标、自定义自选列表', tint: 'text-accent' },
+  { icon: ScanSearch, title: '策略选股', desc: '内置多套选股策略,一键扫描全市场命中', tint: 'text-bull' },
+  { icon: Flame, title: '连板梯队', desc: '涨停板梯队、概念行业热度、市场情绪一览', tint: 'text-warning' },
+  { icon: Radar, title: '实时监控', desc: '自定义条件 / 策略监控,触发即推送告警', tint: 'text-bear' },
+  { icon: ShieldCheck, title: '回测验证', desc: '策略历史回测、因子分析,用数据说话', tint: 'text-accent' },
+  { icon: BellRing, title: '本地优先', desc: '数据本地存储,隐私可控,断网仍可查阅', tint: 'text-bull' },
 ]
 
 export function Onboarding() {
@@ -47,7 +54,12 @@ export function Onboarding() {
   // 完成向导 —— 写后端标记,使守卫放行
   const complete = useMutation({
     mutationFn: api.completeOnboarding,
-    onSuccess: () => {
+    onSuccess: (data) => {
+      // 用接口返回值同步更新缓存,确保跳转时守卫立即看到 onboarding_completed: true
+      // (避免 invalidate 后台重取未返回时, 守卫用旧缓存 false 误重定向回引导页)
+      qc.setQueryData(QK.settings, (old: any) =>
+        old ? { ...old, onboarding_completed: data.onboarding_completed } : old,
+      )
       qc.invalidateQueries({ queryKey: QK.settings })
       navigate('/', { replace: true })
     },
@@ -60,34 +72,68 @@ export function Onboarding() {
   const finish = () => complete.mutate()
 
   return (
-    <div className="min-h-screen bg-base flex flex-col">
+    <div className="relative min-h-screen bg-base overflow-hidden flex flex-col">
+      {/* 背景光晕 —— 品牌 + 主色渐变 */}
+      <div className="pointer-events-none absolute inset-0 overflow-hidden">
+        <div
+          className="absolute -top-40 -left-40 h-[28rem] w-[28rem] rounded-full blur-[120px] opacity-20"
+          style={{ background: `radial-gradient(circle, ${BRAND}, transparent 70%)` }}
+        />
+        <div
+          className="absolute -bottom-40 -right-32 h-[26rem] w-[26rem] rounded-full blur-[120px] opacity-15"
+          style={{ background: 'radial-gradient(circle, hsl(var(--accent)), transparent 70%)' }}
+        />
+        {/* 极淡网格底纹 */}
+        <div
+          className="absolute inset-0 opacity-[0.025]"
+          style={{
+            backgroundImage:
+              'linear-gradient(hsl(var(--fg-primary)) 1px, transparent 1px), linear-gradient(90deg, hsl(var(--fg-primary)) 1px, transparent 1px)',
+            backgroundSize: '40px 40px',
+          }}
+        />
+      </div>
+
       {/* 顶栏:logo + 进度指示 */}
-      <header className="flex items-center justify-between px-6 py-4 border-b border-border">
-        <div className="flex items-center gap-2 text-foreground">
-          <Logo size={22} />
-          <span className="text-sm font-medium">TickFlow Stock Panel</span>
+      <header className="relative z-10 flex items-center justify-between px-6 py-4 border-b border-border">
+        <div className="flex items-center gap-2.5 text-foreground">
+          <Logo
+            size={24}
+            className="shrink-0"
+            style={{ color: BRAND, filter: `drop-shadow(0 0 8px ${BRAND}55)` }}
+          />
+          <span className="text-sm font-semibold tracking-tight">TickFlow Stock Panel</span>
         </div>
+        {/* 步骤进度条 —— 胶囊式 */}
         <div className="flex items-center gap-1.5">
           {STEPS.map((label, i) => (
             <div key={label} className="flex items-center gap-1.5">
-              <div
-                className={`h-1.5 rounded-full transition-all duration-300 ${
-                  i === step ? 'w-6 bg-accent' : i < step ? 'w-1.5 bg-accent' : 'w-1.5 bg-border'
-                }`}
+              {i > 0 && <div className="h-px w-3 bg-border" />}
+              <motion.div
+                animate={{
+                  width: i === step ? 64 : 24,
+                  backgroundColor: i === step
+                    ? 'hsl(var(--accent))'
+                    : i < step
+                      ? 'hsl(var(--accent) / 0.6)'
+                      : 'hsl(var(--border))',
+                }}
+                transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
+                className="h-1.5 rounded-full"
               />
             </div>
           ))}
         </div>
         <div className="w-[88px] text-right">
-          <span className="text-xs text-muted">
+          <span className="text-xs text-muted tabular">
             {step + 1} / {STEPS.length}
           </span>
         </div>
       </header>
 
       {/* 步骤内容 */}
-      <main className="flex-1 flex items-center justify-center px-6 py-10">
-        <div className="w-full max-w-lg">
+      <main className="relative z-10 flex-1 flex items-center justify-center px-6 py-10">
+        <div className="w-full max-w-xl">
           <AnimatePresence mode="wait">
             <motion.div
               key={step}
@@ -100,7 +146,8 @@ export function Onboarding() {
               {step === 1 && (
                 <KeyStep onNext={() => setStep(2)} onSkip={() => setStep(2)} onBack={() => setStep(0)} />
               )}
-              {step === 2 && <ResultStep onNext={finish} onBack={() => setStep(1)} />}
+              {step === 2 && <ResultStep onNext={() => setStep(3)} onBack={() => setStep(1)} />}
+              {step === 3 && <FinishStep onNext={finish} onBack={() => setStep(2)} pending={complete.isPending} />}
             </motion.div>
           </AnimatePresence>
         </div>
@@ -114,36 +161,54 @@ export function Onboarding() {
 function WelcomeStep({ onNext, onSkip }: { onNext: () => void; onSkip: () => void }) {
   return (
     <div className="text-center">
-      <div className="mx-auto w-fit rounded-2xl bg-accent/10 p-4">
-        <Sparkles className="h-8 w-8 text-accent" />
-      </div>
-      <h1 className="mt-6 text-2xl font-bold text-foreground">欢迎使用 TickFlow Stock Panel</h1>
+      {/* 品牌 badge */}
+      <motion.div
+        initial={{ scale: 0.85, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
+        className="mx-auto w-fit rounded-2xl p-4 border border-border"
+        style={{ background: `linear-gradient(135deg, ${BRAND}22, transparent)` }}
+      >
+        <Sparkles className="h-8 w-8" style={{ color: BRAND }} />
+      </motion.div>
+
+      <h1 className="mt-6 text-3xl font-bold text-foreground tracking-tight">
+        欢迎使用 TickFlow Stock Panel
+      </h1>
       <p className="mt-3 text-sm text-secondary leading-relaxed max-w-md mx-auto">
-        一个本地化的 A 股量化分析面板 —— 行情、选股、回测、财务一体化。
+        一个本地化的 A 股量化分析面板 —— 行情、选股、回测、监控、财务一体化。
         花一分钟配置,即可开始使用。
       </p>
 
-      <div className="mt-8 grid grid-cols-2 gap-3 text-left">
-        {HIGHLIGHTS.map((h) => (
-          <div key={h.title} className="rounded-card border border-border bg-surface p-4">
-            <h.icon className="h-5 w-5 text-accent" />
+      {/* 6 个特性卡片 */}
+      <div className="mt-8 grid grid-cols-2 sm:grid-cols-3 gap-3 text-left">
+        {HIGHLIGHTS.map((h, i) => (
+          <motion.div
+            key={h.title}
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.3, delay: 0.05 * i + 0.1 }}
+            whileHover={{ y: -2 }}
+            className="group rounded-card border border-border bg-surface/80 backdrop-blur-sm p-3.5 transition-colors hover:border-accent/30"
+          >
+            <h.icon className={`h-5 w-5 ${h.tint} transition-transform group-hover:scale-110`} />
             <div className="mt-2 text-sm font-medium text-foreground">{h.title}</div>
             <div className="mt-1 text-xs text-muted leading-relaxed">{h.desc}</div>
-          </div>
+          </motion.div>
         ))}
       </div>
 
       <div className="mt-8 flex items-center justify-center gap-3">
         <button
           onClick={onNext}
-          className="inline-flex items-center gap-2 px-5 h-10 rounded-xl bg-accent text-white text-sm font-semibold hover:bg-accent/90 transition-colors"
+          className="inline-flex items-center gap-2 px-6 h-11 rounded-xl bg-accent text-white text-sm font-semibold shadow-lg shadow-accent/20 hover:bg-accent/90 hover:shadow-accent/30 transition-all"
         >
           开始配置
           <ArrowRight className="h-4 w-4" />
         </button>
         <button
           onClick={onSkip}
-          className="px-4 h-10 rounded-xl text-sm text-secondary hover:text-foreground transition-colors"
+          className="px-4 h-11 rounded-xl text-sm text-secondary hover:text-foreground hover:bg-elevated transition-colors"
         >
           稍后再说
         </button>
@@ -178,20 +243,25 @@ function KeyStep({ onNext, onSkip, onBack }: { onNext: () => void; onSkip: () =>
 
   return (
     <div>
-      <h2 className="text-xl font-bold text-foreground">配置 TickFlow API Key</h2>
-      <p className="mt-2 text-sm text-secondary leading-relaxed">
+      <div className="flex items-center gap-2.5">
+        <div className="rounded-lg bg-accent/10 p-2">
+          <ShieldCheck className="h-4 w-4 text-accent" />
+        </div>
+        <h2 className="text-xl font-bold text-foreground">配置 TickFlow API Key</h2>
+      </div>
+      <p className="mt-2.5 text-sm text-secondary leading-relaxed">
         Key 决定你能使用的数据范围。没有 Key 也能以 <span className="font-medium text-foreground">Free</span> 模式试用基础功能;
         配置后可解锁概念行业、财务数据等扩展能力。
       </p>
 
       {/* 注册引导 */}
-      <div className="mt-5 rounded-card border border-border bg-surface p-4 text-xs text-secondary leading-relaxed">
+      <div className="mt-5 rounded-card border border-border bg-surface/80 backdrop-blur-sm p-4 text-xs text-secondary leading-relaxed">
         还没有 Key?前往{' '}
         <a
           href="https://tickflow.org/auth/register?ref=V3KDKGXPEA"
           target="_blank"
           rel="noreferrer"
-          className="text-accent hover:underline inline-flex items-baseline gap-0.5"
+          className="text-accent hover:underline inline-flex items-baseline gap-0.5 font-medium"
         >
           tickflow.org
           <ExternalLink className="h-3 w-3 self-center" />
@@ -245,12 +315,12 @@ function KeyStep({ onNext, onSkip, onBack }: { onNext: () => void; onSkip: () =>
               setKeyInput(e.target.value)
               if (saved) setSaved(false)
             }}
-            className="w-full px-3 py-2 pr-9 rounded-input bg-base border border-border text-sm font-mono focus:outline-none focus:border-accent transition-colors"
+            className="w-full px-3 py-2.5 pr-9 rounded-input bg-base border border-border text-sm font-mono focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/30 transition-all"
           />
           <button
             type="button"
             onClick={() => setRevealing((v) => !v)}
-            className="absolute right-2 top-1/2 -translate-y-1/2 text-muted hover:text-foreground transition-colors"
+            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted hover:text-foreground transition-colors"
             tabIndex={-1}
             aria-label={revealing ? '隐藏' : '显示'}
           >
@@ -319,17 +389,22 @@ function ResultStep({ onNext, onBack }: { onNext: () => void; onBack: () => void
 
   return (
     <div>
-      <h2 className="text-xl font-bold text-foreground">能力探测结果</h2>
+      <div className="flex items-center gap-2.5">
+        <div className="rounded-lg bg-accent/10 p-2">
+          <ScanSearch className="h-4 w-4 text-accent" />
+        </div>
+        <h2 className="text-xl font-bold text-foreground">能力探测结果</h2>
+      </div>
 
       {hasKey ? (
         <>
-          <p className="mt-2 text-sm text-secondary leading-relaxed">
+          <p className="mt-2.5 text-sm text-secondary leading-relaxed">
             Key 已生效,以下是你当前可用的全部能力。后续可在
-            <span className="text-foreground"> 设置 → 账户 </span>
+            <span className="text-foreground font-medium"> 设置 → 账户 </span>
             中重新检测或更换 Key。
           </p>
 
-          <div className="mt-5 rounded-card border border-border bg-surface p-5">
+          <div className="mt-5 rounded-card border border-border bg-surface/80 backdrop-blur-sm p-5">
             <div className="flex items-baseline justify-between">
               <span className="text-[10px] uppercase tracking-widest text-muted">订阅档位</span>
               <span className="font-mono text-2xl font-bold tracking-tight text-foreground">
@@ -363,14 +438,14 @@ function ResultStep({ onNext, onBack }: { onNext: () => void; onBack: () => void
           </div>
         </>
       ) : (
-        <div className="mt-5 rounded-card border border-border bg-surface p-6 text-center">
+        <div className="mt-5 rounded-card border border-border bg-surface/80 backdrop-blur-sm p-6 text-center">
           <div className="mx-auto w-fit rounded-xl bg-elevated p-3">
             <Zap className="h-6 w-6 text-warning" />
           </div>
           <div className="mt-3 text-sm font-medium text-foreground">将以 Free 模式继续</div>
           <p className="mt-2 text-xs text-muted leading-relaxed max-w-sm mx-auto">
             你可以立即试用基础行情与选股功能。需要扩展数据时,随时在
-            <span className="text-foreground"> 设置 → 账户 </span>
+            <span className="text-foreground font-medium"> 设置 → 账户 </span>
             配置 Key。
           </p>
         </div>
@@ -389,8 +464,85 @@ function ResultStep({ onNext, onBack }: { onNext: () => void; onBack: () => void
           onClick={onNext}
           className="inline-flex items-center gap-2 px-5 h-9 rounded-xl bg-accent text-white text-sm font-semibold hover:bg-accent/90 transition-colors"
         >
-          进入面板
+          下一步
           <ArrowRight className="h-4 w-4" />
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// ===== Step 3: 完成 =====
+
+function FinishStep({ onNext, onBack, pending }: { onNext: () => void; onBack: () => void; pending: boolean }) {
+  const tips = [
+    { icon: ScanSearch, text: '在「选股」页用内置策略一键扫描全市场' },
+    { icon: BellRing, text: '在「监控」页设置条件或策略告警,盘中实时推送' },
+    { icon: ShieldCheck, text: '在「回测」页用历史数据验证策略表现' },
+  ]
+
+  return (
+    <div className="text-center">
+      <motion.div
+        initial={{ scale: 0.85, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
+        className="mx-auto w-fit"
+      >
+        <div
+          className="relative rounded-2xl p-5 border border-border"
+          style={{ background: `linear-gradient(135deg, ${BRAND}22, transparent)` }}
+        >
+          <CheckCircle2 className="h-12 w-12 text-bear" />
+          {/* 光晕脉冲 */}
+          <motion.div
+            animate={{ scale: [1, 1.4], opacity: [0.4, 0] }}
+            transition={{ duration: 1.8, repeat: Infinity, ease: 'easeOut' }}
+            className="absolute inset-5 rounded-full bg-bear/30"
+          />
+        </div>
+      </motion.div>
+
+      <h1 className="mt-6 text-2xl font-bold text-foreground">一切就绪!</h1>
+      <p className="mt-2.5 text-sm text-secondary leading-relaxed max-w-md mx-auto">
+        配置已完成。下面几个入口帮你快速上手,有任何问题随时在
+        <span className="text-foreground font-medium"> 设置 </span>里调整。
+      </p>
+
+      {/* 快速上手提示 */}
+      <div className="mt-6 space-y-2 text-left">
+        {tips.map((t, i) => (
+          <motion.div
+            key={i}
+            initial={{ opacity: 0, x: -10 }}
+            animate={{ opacity: 1, x: 0 }}
+            transition={{ duration: 0.3, delay: 0.1 * i + 0.2 }}
+            className="flex items-center gap-3 rounded-card border border-border bg-surface/80 backdrop-blur-sm px-3.5 py-2.5"
+          >
+            <div className="rounded-lg bg-accent/10 p-1.5 shrink-0">
+              <t.icon className="h-3.5 w-3.5 text-accent" />
+            </div>
+            <span className="text-xs text-secondary">{t.text}</span>
+          </motion.div>
+        ))}
+      </div>
+
+      {/* 底部操作 */}
+      <div className="mt-8 flex items-center justify-between">
+        <button
+          onClick={onBack}
+          className="inline-flex items-center gap-1.5 px-3 h-10 rounded-btn text-sm text-secondary hover:text-foreground transition-colors"
+        >
+          <ArrowLeft className="h-4 w-4" />
+          上一步
+        </button>
+        <button
+          onClick={onNext}
+          disabled={pending}
+          className="inline-flex items-center gap-2 px-6 h-10 rounded-xl bg-accent text-white text-sm font-semibold shadow-lg shadow-accent/20 hover:bg-accent/90 hover:shadow-accent/30 disabled:opacity-60 transition-all"
+        >
+          {pending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+          {pending ? '正在进入…' : '进入面板'}
         </button>
       </div>
     </div>

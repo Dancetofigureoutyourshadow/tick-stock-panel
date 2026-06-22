@@ -81,7 +81,9 @@ function fmtIndexPct(v: number | null | undefined) {
 
 function indexPctClass(v: number | null | undefined) {
   if (v == null || Number.isNaN(Number(v))) return 'text-muted'
-  return Number(v) >= 0 ? 'text-bull' : 'text-bear'
+  const n = Number(v)
+  if (n === 0) return 'text-foreground'
+  return n > 0 ? 'text-bull' : 'text-bear'
 }
 
 /** 监控中心未读徽标 — 仅在非监控页且有未读时显示。 */

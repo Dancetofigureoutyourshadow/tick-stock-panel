@@ -41,7 +41,7 @@ jobs:
       - id: filter
         run: |
           REQUESTED="${{ github.event.inputs.platforms }}"
-          ALL='[{"os":"windows-latest","artifact":"TickFlowStockPanel-win-x64.zip","platform":"windows"},{"os":"macos-latest","artifact":"TickFlowStockPanel-macos.zip","platform":"macos"},{"os":"ubuntu-latest","artifact":"TickFlowStockPanel-linux-x64.tar.gz","platform":"linux"}]'
+          ALL='[{"os":"windows-latest","artifact":"TickFlowStockPanel-Setup-x64.exe","platform":"windows"},{"os":"macos-latest","artifact":"TickFlowStockPanel-macos.zip","platform":"macos"},{"os":"ubuntu-latest","artifact":"TickFlowStockPanel-linux-x64.tar.gz","platform":"linux"}]'
           # 按 input 过滤平台
           python3 -c "
           import json, sys
@@ -103,12 +103,21 @@ jobs:
       - name: 打包 (PyInstaller)
         run: uv run pyinstaller packaging/tickflow.spec --noconfirm
 
-      - name: 压缩产物 (Windows)
+      - name: 安装 Inno Setup (仅 Windows)
         if: matrix.platform == 'windows'
+        # Inno Setup 6: 把 PyInstaller 产出封装成单文件安装包
+        run: choco install innosetup -y --no-progress
+
+      - name: 生成 Windows 安装包 (Inno Setup)
+        if: matrix.platform == 'windows'
+        # 从 frontend/package.json 读版本号传给 ISCC, 保持与 Release tag 一致
         run: |
-          cd dist
-          7z a -tzip ../${{ matrix.artifact }} TickFlowStockPanel
-        shell: bash
+          $ver = (Get-Content frontend/package.json | ConvertFrom-Json).version
+          echo "版本号: $ver"
+          ISCC.exe "/DMyAppVersion=$ver" packaging/tickflow.iss
+          # 把生成的 Setup.exe 移到工作区根 (Release 上传用)
+          Move-Item packaging/Output/TickFlowStockPanel-Setup-$ver.exe ${{ matrix.artifact }} -Force
+        shell: pwsh
 
       - name: 压缩产物 (macOS)
         if: matrix.platform == 'macos'
@@ -140,11 +149,11 @@ jobs:
             ## 桌面客户端 ${{ github.event.inputs.version }}
 
             ### 下载
-            选择对应平台的安装包, 解压后双击运行:
+            选择对应平台的安装包:
 
             | 平台 | 文件 |
             | :--- | :--- |
-            | **Windows** | `TickFlowStockPanel-win-x64.zip` → 解压运行 `TickFlowStockPanel.exe` |
+            | **Windows** | `TickFlowStockPanel-Setup-x64.exe` → 双击安装向导,自动创建桌面/开始菜单快捷方式 |
             | **macOS** | `TickFlowStockPanel-macos.zip` → 解压后右键打开 (绕过 Gatekeeper) |
             | **Linux** | `TickFlowStockPanel-linux-x64.tar.gz` → 解压运行 |
 

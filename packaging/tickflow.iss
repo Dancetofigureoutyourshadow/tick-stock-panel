@@ -1,0 +1,121 @@
+; ===========================================================================
+; TickFlow Stock Panel — Inno Setup 安装包脚本
+; ===========================================================================
+; 用途: 把 PyInstaller 产出的 dist/TickFlowStockPanel/ 文件夹封装成
+;       单个 Setup.exe 安装程序 (双击→安装向导→快捷方式→可卸载)。
+;
+; 构建 (本地):
+;   1. 先跑 PyInstaller: cd backend && uv run pyinstaller ../packaging/tickflow.spec
+;   2. 再跑 Inno Setup:   ISCC.exe packaging\tickflow.iss
+;   3. 产物: packaging\Output\TickFlowStockPanel-Setup-x.x.x.exe
+;
+; 设计决策:
+;   - 装到用户目录 {localappdata}\Programs\ (不弹 UAC, 不需管理员)
+;   - 卸载时询问是否删除用户数据 (%LOCALAPPDATA%\TickFlowStockPanel\)
+;   - 桌面 + 开始菜单快捷方式
+;   - 卸载入口 (控制面板可见)
+; ===========================================================================
+
+#define MyAppName          "TickFlow 股票面板"
+#define MyAppNameEN       "TickFlow Stock Panel"
+#define MyAppExeName      "TickFlowStockPanel.exe"
+#define MyAppPublisher    "TickFlow"
+
+; 版本号: 从 frontend/package.json 读取, 与 Release tag 保持一致
+; 手动指定更可靠 (CI 传入 /DMyAppVersion)
+#ifndef MyAppVersion
+  #define MyAppVersion     "0.0.0"
+#endif
+
+[Setup]
+; 基本信息
+AppName={#MyAppName}
+AppVerName={#MyAppName} {#MyAppVersion}
+AppVersion={#MyAppVersion}
+AppPublisher={#MyAppPublisher}
+DefaultDirName={localappdata}\Programs\TickFlowStockPanel
+DefaultGroupName={#MyAppName}
+DisableProgramGroupPage=yes
+OutputDir=Output
+OutputBaseFilename=TickFlowStockPanel-Setup-{#MyAppVersion}
+
+; 关键: 不需要管理员权限 (用户目录安装)
+; PrivilegesRequired=lowest 固定走用户安装, 永不弹 UAC
+; 不用 PrivilegesRequiredOverridesAllowed (它在静默模式下路径解析不确定)
+PrivilegesRequired=lowest
+
+; 压缩
+Compression=lzma2/ultra64
+SolidCompression=yes
+LZMAUseSeparateProcess=yes
+
+; 界面
+WizardStyle=modern
+DisableWelcomePage=no
+DisableReadyPage=no
+SetupIconFile=icon.ico
+UninstallDisplayIcon={app}\{#MyAppExeName}
+
+; 卸载相关
+Uninstallable=yes
+CreateUninstallRegKey=yes
+
+[Languages]
+; 简中语言包内置在 packaging/ 下 (从 Inno Setup 官方仓库获取),
+; 不依赖安装目录是否含该文件 (CI 友好)。
+Name: "chinesesimp"; MessagesFile: "ChineseSimplified.isl"
+Name: "english"; MessagesFile: "compiler:Default.isl"
+
+[Tasks]
+Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: checkedonce
+
+[Files]
+; 把 PyInstaller 产出的整个文件夹搬进安装目录
+; Source 路径相对于 .iss 文件所在目录
+Source: "..\backend\dist\TickFlowStockPanel\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+[Icons]
+; 开始菜单
+Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
+Name: "{group}\卸载 {#MyAppName}"; Filename: "{uninstallexe}"
+
+; 桌面 (可选, 由 Task 控制)
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+
+[Run]
+; 安装完成后启动应用
+Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: nowait postinstall skipifsilent
+
+[UninstallRun]
+; 卸载前先关闭正在运行的应用 (否则 exe 被占用删不掉)
+Filename: "{cmd}"; Parameters: "/C taskkill /F /IM {#MyAppExeName}"; Flags: runhidden; RunOnceId: "KillApp"
+
+[UninstallDelete]
+; 清理安装目录下的残留 (日志等)
+Type: filesandordirs; Name: "{app}"
+
+[Code]
+// ── 卸载时询问是否删除用户数据 ─────────────────────────────────
+// 用户数据在 %LOCALAPPDATA%\TickFlowStockPanel\ (策略/选股/回测/监控)
+// 默认保留 (重装不丢), 但给用户彻底清除的选项
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  DataDir: String;
+begin
+  if CurUninstallStep = usPostUninstall then
+  begin
+    DataDir := ExpandConstant('{localappdata}\TickFlowStockPanel');
+    if DirExists(DataDir) then
+    begin
+      if SuppressibleMsgBox(
+          '是否同时删除用户数据?' + #13#10 + #13#10 +
+          '位置: ' + DataDir + #13#10 +
+          '内容: 策略、选股结果、回测记录、监控规则等' + #13#10 + #13#10 +
+          '选「是」彻底卸载, 选「否」保留数据(重装后可恢复)。',
+          mbConfirmation, MB_YESNO or MB_DEFBUTTON2, IDNO) = IDYES then
+      begin
+        DelTree(DataDir, True, True, True);
+      end;
+    end;
+  end;
+end;

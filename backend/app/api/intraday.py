@@ -1,9 +1,10 @@
 """行情状态 / SSE 推送 API。
 
 盘中选股相关端点已迁移至策略页面，此处仅保留全局行情基础设施。
-SSE 推送两种事件 (使用标准 SSE event 字段):
+SSE 推送三种事件 (使用标准 SSE event 字段):
   - quotes_updated: 行情数据刷新，前端 invalidate 对应 query
   - strategy_alert: 策略监控/告警触发，前端弹通知
+  - depth_updated: 五档盘口修正完成，前端刷新连板梯队/看板封单数据
 """
 from __future__ import annotations
 
@@ -113,7 +114,7 @@ def index_quotes(
 
 @router.get("/stream")
 async def quote_stream(request: Request):
-    """SSE 端点: 行情更新 + 告警推送。
+    """SSE 端点: 行情更新 + 告警推送 + 五档修正。
 
     使用 sse-starlette EventSourceResponse:
     - 标准 SSE event 字段，前端按 event name 监听
@@ -124,16 +125,21 @@ async def quote_stream(request: Request):
 
     async def event_generator():
         while True:
-            # 同时等待行情更新和告警
-            update_task = asyncio.ensure_future(
-                asyncio.to_thread(qs.wait_for_update, timeout=5.0) if qs else asyncio.sleep(5)
-            )
-            alert_task = asyncio.ensure_future(
-                asyncio.to_thread(qs.wait_for_alert, timeout=5.0) if qs else asyncio.sleep(5)
-            )
+            # 同时等待三类信号: 行情更新 / 告警 / 五档修正
+            tasks: dict[str, asyncio.Future] = {
+                "quote": asyncio.ensure_future(
+                    asyncio.to_thread(qs.wait_for_update, timeout=5.0) if qs else asyncio.sleep(5)
+                ),
+                "alert": asyncio.ensure_future(
+                    asyncio.to_thread(qs.wait_for_alert, timeout=5.0) if qs else asyncio.sleep(5)
+                ),
+                "depth": asyncio.ensure_future(
+                    asyncio.to_thread(qs.wait_for_depth_update, timeout=5.0) if qs else asyncio.sleep(5)
+                ),
+            }
 
             done, pending = await asyncio.wait(
-                [update_task, alert_task],
+                list(tasks.values()),
                 timeout=30.0,
                 return_when=asyncio.FIRST_COMPLETED,
             )
@@ -154,22 +160,34 @@ async def quote_stream(request: Request):
                             }, ensure_ascii=False),
                         }
 
-            # 推送行情更新
-            update_result = None
-            for t in done:
+            # 推送行情更新 (行情信号触发)
+            if tasks["quote"] in done:
                 try:
-                    update_result = t.result()
+                    update_result = tasks["quote"].result()
                 except Exception:  # noqa: BLE001
-                    pass
+                    update_result = False
+                if update_result:
+                    yield {
+                        "event": "quotes_updated",
+                        "data": json.dumps({
+                            "ts": int(time.time() * 1000),
+                            "symbol_count": qs._symbol_count if qs else 0,
+                        }),
+                    }
 
-            if update_result:
-                yield {
-                    "event": "quotes_updated",
-                    "data": json.dumps({
-                        "ts": int(time.time() * 1000),
-                        "symbol_count": qs._symbol_count if qs else 0,
-                    }),
-                }
+            # 推送五档修正完成 (depth 信号触发) — 前端刷新连板梯队封单数据
+            if tasks["depth"] in done:
+                try:
+                    depth_result = tasks["depth"].result()
+                except Exception:  # noqa: BLE001
+                    depth_result = False
+                if depth_result:
+                    yield {
+                        "event": "depth_updated",
+                        "data": json.dumps({
+                            "ts": int(time.time() * 1000),
+                        }),
+                    }
 
     return EventSourceResponse(event_generator())
 

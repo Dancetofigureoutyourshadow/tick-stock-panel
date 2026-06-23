@@ -255,6 +255,9 @@ class DepthService:
                     len(new_cache), len(syms_up), len(syms_down),
                     enriched_date, " → 落盘" if persist else "")
 
+        # 缓存已更新: 通知 SSE 推 depth_updated, 触发连板梯队刷新封单数据。
+        self._notify_depth_updated(len(new_cache))
+
         if persist and enriched_date:
             self._persist(enriched_date)
 
@@ -532,6 +535,18 @@ class DepthService:
             qs._alert_event.set()
         except Exception as e:  # noqa: BLE001
             logger.debug("depth 接管通知推送失败: %s", e)
+
+    def _notify_depth_updated(self, count: int) -> None:
+        """修正完成通知: set quote_service._depth_update_event, SSE 推 depth_updated 刷新连板梯队。"""
+        if not self._app_state:
+            return
+        qs = getattr(self._app_state, "quote_service", None)
+        if not qs:
+            return
+        try:
+            qs.notify_depth_updated()
+        except Exception as e:  # noqa: BLE001
+            logger.debug("depth 更新通知推送失败: %s", e)
 
     # ================================================================
     # 工具

@@ -762,7 +762,21 @@ function TierGroup({ tier, defaultOpen, extFields, filterKeys, bf, onStockClick,
                     if (s === 'broken' || s === 'recovery') return 1
                     return 2
                   }
-                  return ord(a.status ?? '') - ord(b.status ?? '')
+                  const oa = ord(a.status ?? '')
+                  const ob = ord(b.status ?? '')
+                  if (oa !== ob) return oa - ob
+                  // 同状态(主状态=涨停/跌停)内: 按封单从高到低排, 无封单排末尾。
+                  // 封单额 = sealed_vol(手) × 100 × close, 与展示口径一致。
+                  if (oa === 0) {
+                    const sealVal = (s: typeof a) => {
+                      if (s.sealed_vol == null) return -1
+                      return sealMode === 'amount' && s.close
+                        ? s.sealed_vol * 100 * s.close
+                        : s.sealed_vol
+                    }
+                    return sealVal(b) - sealVal(a)
+                  }
+                  return 0
                 }).map(s => (
                 <StockCard
                   key={`${s.symbol}-${s.status}`}

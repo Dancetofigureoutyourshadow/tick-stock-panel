@@ -56,6 +56,7 @@ class QuoteService:
         self._repo = None          # 延迟注入, 避免循环导入
         self._update_event = threading.Event()  # SSE 通知: 行情更新后 set
         self._alert_event = threading.Event()   # SSE 通知: 有告警时 set
+        self._depth_update_event = threading.Event()  # SSE 通知: depth 五档修正后 set (刷新连板梯队)
         self._pending_alerts: list[dict] = []    # 待推送的告警
         self._max_pending_alerts: int = 1000     # 背压上限: 超出丢弃最旧
         self._strategy_monitor = None            # 延迟注入
@@ -151,6 +152,18 @@ class QuoteService:
         """阻塞等待告警 (供 SSE 线程使用)。"""
         self._alert_event.clear()
         return self._alert_event.wait(timeout=timeout)
+
+    def notify_depth_updated(self) -> None:
+        """五档盘口修正完成后调用: 通知 SSE 推送 depth_updated, 触发连板梯队刷新。
+
+        与行情/告警通道独立 — 只刷新连板梯队, 不连带刷新 watchlist 等。
+        """
+        self._depth_update_event.set()
+
+    def wait_for_depth_update(self, timeout: float = 30.0) -> bool:
+        """阻塞等待 depth 修正 (供 SSE 线程使用)。"""
+        self._depth_update_event.clear()
+        return self._depth_update_event.wait(timeout=timeout)
 
     def pop_alerts(self) -> list[dict]:
         """取走所有待推送的告警 (线程安全)。"""

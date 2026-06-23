@@ -148,17 +148,21 @@ jobs:
           body: |
             ## 桌面客户端 ${{ github.event.inputs.version }}
 
-            ### 下载
-            选择对应平台的安装包:
+            ### ⬇️ 下载
 
-            | 平台 | 文件 |
-            | :--- | :--- |
-            | **Windows** | `TickFlowStockPanel-Setup-x64.exe` → 双击安装向导,自动创建桌面/开始菜单快捷方式 |
-            | **macOS** | `TickFlowStockPanel-macos.zip` → 解压后右键打开 (绕过 Gatekeeper) |
-            | **Linux** | `TickFlowStockPanel-linux-x64.tar.gz` → 解压运行 |
+            | 平台 | 文件 | 下载 |
+            | :--- | :--- | :--- |
+            | **Windows x64** | `TickFlowStockPanel-Setup-x64.exe` | [⬇️ 立即下载](https://github.com/${{ github.repository }}/releases/download/${{ github.event.inputs.version }}/TickFlowStockPanel-Setup-x64.exe) |
+            | **macOS** | `TickFlowStockPanel-macos.zip` | [⬇️ 立即下载](https://github.com/${{ github.repository }}/releases/download/${{ github.event.inputs.version }}/TickFlowStockPanel-macos.zip) |
+            | **Linux** | `TickFlowStockPanel-linux-x64.tar.gz` | [⬇️ 立即下载](https://github.com/${{ github.repository }}/releases/download/${{ github.event.inputs.version }}/TickFlowStockPanel-linux-x64.tar.gz) |
 
-            ### 说明
-            - 数据存储在用户目录 (Windows `%LOCALAPPDATA%`、mac `~/Library`、Linux `~/.local/share`), 卸载重装不丢数据
-            - 含纯 Polars 回测引擎; 不含 vectorbt 回测 (为控制体积)
+            > 💡 点击「立即下载」直接获取, 无需滚动到底部附件区。
+
+            ### 📋 使用说明
+            - **Windows**: 下载后双击运行, 按安装向导操作(无需管理员权限), 自动创建桌面/开始菜单快捷方式
+            - **macOS**: 解压后右键打开(首次绕过 Gatekeeper)
+            - **Linux**: 解压后运行可执行文件
+            - 数据存储在用户目录 (`%LOCALAPPDATA%`), 卸载重装不丢数据
+            - 含纯 Polars 回测引擎; 不含 vectorbt 回测(为控制体积)
             - 系统通知: 设置 → 实时监控 → 系统通知
             - 检查更新: 设置 → 系统设置 → 关于

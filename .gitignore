@@ -98,5 +98,6 @@ backend/TickFlowStockPanel-macos.zip
 backend/TickFlowStockPanel-linux-x64.tar.gz
 packaging/Output/
 packaging/icon_preview.png
+packaging/designs/
 packaging/install.log
 packaging/installed_run.log

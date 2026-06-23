@@ -124,6 +124,8 @@ export function startBacktest(params: {
   start?: string | null
   end?: string | null
   matching?: string
+  entry_fill?: string
+  exit_fill?: string
   fees_pct?: number
   slippage_bps?: number
   max_positions?: number
@@ -151,6 +153,8 @@ export function startBacktest(params: {
     start: params.start ?? undefined,
     end: params.end ?? undefined,
     matching: params.matching,
+    entry_fill: params.entry_fill,
+    exit_fill: params.exit_fill,
     fees_pct: params.fees_pct,
     slippage_bps: params.slippage_bps,
     max_positions: params.max_positions,

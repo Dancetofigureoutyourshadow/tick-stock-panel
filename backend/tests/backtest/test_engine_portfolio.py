@@ -310,3 +310,113 @@ def test_independent_candidates_apply_stop_loss():
     assert len(result.trades) == 1
     assert result.trades[0].exit_reason == "stop_loss"
     assert result.trades[0].exit_price == 9.0
+
+
+def test_signal_exit_takes_priority_over_max_hold():
+    """同一日既有卖点信号又到期 → 应按 signal 平仓 (卖点优先于 max_hold 兜底)。"""
+    panel = _panel(
+        ["A"],
+        days=4,
+        overrides={
+            # day1 次日开盘买入 (open_t+1), 价 10
+            ("A", 1): {"open": 10, "high": 10, "low": 10, "close": 10},
+            # day2 持有 (hold_days 计到 1)
+            ("A", 2): {"open": 11, "high": 11, "low": 11, "close": 11},
+            # day3: 既到期 (hold_days=2 >= max_hold_days=2) 又有卖点信号 → signal 优先
+            ("A", 3): {"open": 12, "high": 12, "low": 12, "close": 12},
+        },
+    )
+    entries = _mask(panel, {("A", 0)})  # day0 收盘确认 → day1 开盘买
+    exits = _mask(panel, {("A", 2)})    # day2 收盘确认卖点 → day3 开盘卖
+
+    result = _engine().simulate_portfolio(
+        panel,
+        entries,
+        exits,
+        MatcherConfig(
+            matching="open_t+1",
+            fees_pct=0,
+            slippage_bps=0,
+            max_positions=1,
+            max_hold_days=2,
+            initial_capital=100_000,
+        ),
+    )
+
+    assert len(result.trades) == 1
+    trade = result.trades[0]
+    assert trade.exit_reason == "signal"
+    assert trade.exit_price == 12.0  # 卖点用 day3 开盘 (exit_fill 跟随 matching=open_t+1)
+
+
+def test_stop_loss_triggers_even_when_expired_in_open_mode():
+    """open_t+1 模式下仓位到期且当日破止损 → 应按 stop_loss 平仓 (风控优先于 max_hold)。"""
+    panel = _panel(
+        ["A"],
+        days=4,
+        overrides={
+            ("A", 1): {"open": 10, "high": 10, "low": 10, "close": 10},
+            # day3 开盘跳空跌破止损 (-10%): open=8.9 < 9.0 止损线, low=8.5
+            ("A", 3): {"open": 8.9, "high": 8.9, "low": 8.5, "close": 8.7},
+        },
+    )
+    entries = _mask(panel, {("A", 0)})
+    exits = _mask(panel, set())
+
+    result = _engine().simulate_portfolio(
+        panel,
+        entries,
+        exits,
+        MatcherConfig(
+            matching="open_t+1",
+            fees_pct=0,
+            slippage_bps=0,
+            max_positions=1,
+            max_hold_days=2,
+            stop_loss_pct=0.1,
+            initial_capital=100_000,
+        ),
+    )
+
+    assert len(result.trades) == 1
+    trade = result.trades[0]
+    assert trade.exit_reason == "stop_loss"
+    # 风控盘中触发: 开盘价 8.9 <= 止损线 9.0 → 按开盘价 8.9 成交
+    assert trade.exit_price == 8.9
+
+
+def test_default_fill_is_buy_open_sell_close():
+    """拆分口径: 建仓=次日开盘, 清仓=收盘。entry_price 用次日 open, exit_price 用收盘价。"""
+    panel = _panel(
+        ["A"],
+        days=4,
+        overrides={
+            # day1: 次日开盘买入, 开盘 10
+            ("A", 1): {"open": 10, "high": 10.5, "low": 9.5, "close": 10.2},
+            # day2: 到期 (max_hold_days=1), 收盘卖
+            ("A", 2): {"open": 11, "high": 11, "low": 10, "close": 10.8},
+        },
+    )
+    entries = _mask(panel, {("A", 0)})  # day0 收盘确认
+    exits = _mask(panel, set())
+
+    result = _engine().simulate_portfolio(
+        panel,
+        entries,
+        exits,
+        MatcherConfig(
+            entry_fill="open_t+1",
+            exit_fill="close_t",
+            fees_pct=0,
+            slippage_bps=0,
+            max_positions=1,
+            max_hold_days=1,
+            initial_capital=100_000,
+        ),
+    )
+
+    assert len(result.trades) == 1
+    trade = result.trades[0]
+    assert trade.entry_price == 10.0   # 次日开盘
+    assert trade.exit_price == 10.8    # 到期日收盘
+    assert trade.exit_reason == "max_hold"

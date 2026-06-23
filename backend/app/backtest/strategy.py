@@ -30,7 +30,10 @@ class StrategyBacktestConfig:
     end: date
     params: dict | None = None
     overrides: dict | None = None
+    # matching 为向后兼容入口; 显式传 entry_fill/exit_fill 时以二者为准。
     matching: Literal["close_t", "open_t+1"] = "open_t+1"
+    entry_fill: Literal["close_t", "open_t+1"] | None = None
+    exit_fill: Literal["close_t", "open_t+1"] | None = None
     fees_pct: float = 0.0002
     slippage_bps: float = 5.0
     max_positions: int = 10
@@ -39,6 +42,12 @@ class StrategyBacktestConfig:
     position_sizing: Literal["equal", "score_weight"] = "equal"
     mode: Literal["position", "full"] = "position"
     holding_days: int = 5
+
+    def __post_init__(self) -> None:
+        if self.entry_fill is None:
+            self.entry_fill = self.matching
+        if self.exit_fill is None:
+            self.exit_fill = self.matching
 
 
 @dataclass
@@ -181,6 +190,8 @@ class StrategyBacktestService:
         t_sim = time.perf_counter()
         matcher_config = MatcherConfig(
             matching=config.matching,
+            entry_fill=config.entry_fill,
+            exit_fill=config.exit_fill,
             fees_pct=config.fees_pct,
             slippage_bps=config.slippage_bps,
             stop_loss_pct=stop_loss,
@@ -632,6 +643,8 @@ class StrategyBacktestService:
             "score_min": score_min,
             "score_max": score_max,
             "matching": c.matching,
+            "entry_fill": c.entry_fill,
+            "exit_fill": c.exit_fill,
             "fees_pct": c.fees_pct,
             "slippage_bps": c.slippage_bps,
             "max_positions": c.max_positions,

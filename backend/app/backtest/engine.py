@@ -29,7 +29,11 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class MatcherConfig:
+    # matching 为向后兼容入口: 仅传 matching 时, entry_fill/exit_fill 都取 matching 的值。
+    # 显式传入 entry_fill/exit_fill 时以二者为准 (允许建仓/清仓口径不同)。
     matching: Literal["close_t", "open_t+1"] = "close_t"
+    entry_fill: Literal["close_t", "open_t+1"] | None = None
+    exit_fill: Literal["close_t", "open_t+1"] | None = None
     fees_pct: float = 0.0002
     slippage_bps: float = 5.0
     stop_loss_pct: float | None = None
@@ -44,6 +48,13 @@ class MatcherConfig:
     initial_capital: float = 1_000_000.0
     position_sizing: Literal["equal", "score_weight"] = "equal"
 
+    def __post_init__(self) -> None:
+        # 解析最终口径: 优先 entry_fill/exit_fill, 否则回退到 matching (向后兼容)。
+        if self.entry_fill is None:
+            self.entry_fill = self.matching
+        if self.exit_fill is None:
+            self.exit_fill = self.matching
+
 
 @dataclass
 class TradeRecord:
@@ -55,6 +66,7 @@ class TradeRecord:
     pnl_pct: float
     duration: int
     exit_reason: str  # "signal" | "stop_loss" | "trailing_stop" | "trailing_take_profit" | "max_hold" | "end"
+    # 退出优先级 (高→低): pending_exit(历史挂单) > 风控(止损/移动止损/移动止盈) > signal(卖点) > max_hold(到期) > end
     name: str = ""
     shares: float = 0.0
     lots: float = 0.0
@@ -255,20 +267,26 @@ class BacktestEngine:
         if not ent.any():
             return self._empty_result()
 
-        # T+1: 信号右移 1 天 + 使用开盘价撮合
-        if config.matching == "open_t+1":
-            price_col = "open"
-            ent_s = np.zeros(n, dtype=bool)
-            ext_s = np.zeros(n, dtype=bool)
-            ent_s[1:] = ent[:-1]
-            ext_s[1:] = ext[:-1]
-            ent = ent_s
-            ext = ext_s
-        else:
-            price_col = "close"
-
-        prices = panel[price_col].to_numpy()
+        # 成交口径: entry/exit 可分别配置 close_t (信号当日收盘) 或 open_t+1 (次日开盘)。
+        # open_t+1 时信号右移 1 天 (用前一根的信号 + 当根的 open 成交)。
+        open_prices = panel["open"].to_numpy()
         close_prices = panel["close"].to_numpy()
+
+        # 同一 symbol 内相邻行掩码, 跨 symbol 边界不允许 shift (避免错配)。
+        same_prev_symbol = np.zeros(n, dtype=bool)
+        same_prev_symbol[1:] = panel_symbols[1:] == panel_symbols[:-1]
+
+        entry_prices = open_prices if config.entry_fill == "open_t+1" else close_prices
+        exit_prices = open_prices if config.exit_fill == "open_t+1" else close_prices
+
+        if config.entry_fill == "open_t+1":
+            ent_s = np.zeros(n, dtype=bool)
+            ent_s[1:] = ent[:-1] & same_prev_symbol
+            ent = ent_s
+        if config.exit_fill == "open_t+1":
+            ext_s = np.zeros(n, dtype=bool)
+            ext_s[1:] = ext[:-1] & same_prev_symbol
+            ext = ext_s
 
         # 逐 symbol 撮合
         trades: list[TradeRecord] = []
@@ -278,7 +296,8 @@ class BacktestEngine:
             mask = panel_symbols == sym
             sym_ent = ent[mask]
             sym_ext = ext[mask]
-            sym_prices = prices[mask]
+            sym_entry_prices = entry_prices[mask]
+            sym_exit_prices = exit_prices[mask]
             sym_close = close_prices[mask]
             sym_dates = panel_dates[mask]
 
@@ -292,33 +311,33 @@ class BacktestEngine:
                     if sym_ent[i]:
                         holding = True
                         entry_idx = i
-                        entry_price = float(sym_prices[i])
+                        entry_price = float(sym_entry_prices[i])
                         hold_days = 0
                 else:
                     hold_days += 1
                     exit_triggered = False
                     exit_reason = ""
 
-                    # 止损 — 用当日 close 检测
+                    # 止损 — 用当日 close 检测 (优先级最高)
                     if config.stop_loss_pct is not None:
                         pnl = (float(sym_close[i]) - entry_price) / entry_price
                         if pnl <= -abs(config.stop_loss_pct):
                             exit_triggered = True
                             exit_reason = "stop_loss"
 
-                    # 最大持仓天数
+                    # 信号退出 (优先于 max_hold: 卖点信号是策略主动离场)
+                    if not exit_triggered and sym_ext[i]:
+                        exit_triggered = True
+                        exit_reason = "signal"
+
+                    # 最大持仓天数 (兜底: 无信号/未止损时强制平仓)
                     if not exit_triggered and config.max_hold_days is not None:
                         if hold_days >= config.max_hold_days:
                             exit_triggered = True
                             exit_reason = "max_hold"
 
-                    # 信号退出
-                    if not exit_triggered and sym_ext[i]:
-                        exit_triggered = True
-                        exit_reason = "signal"
-
                     if exit_triggered:
-                        exit_price = float(sym_prices[i])
+                        exit_price = float(sym_exit_prices[i])
                         pnl_pct = (exit_price - entry_price) / entry_price if entry_price > 0 else 0.0
                         fee_cost = config.fees_pct * 2 + config.slippage_bps / 10000.0 * 2
                         pnl_pct -= fee_cost
@@ -386,37 +405,44 @@ class BacktestEngine:
 
         entry_signal_dates = np.array([None] * n, dtype=object)
         exit_signal_dates = np.array([None] * n, dtype=object)
-        if config.matching == "open_t+1":
-            price_col = "open"
-            ent = np.zeros(n, dtype=bool)
-            ext = np.zeros(n, dtype=bool)
-            same_prev_symbol = panel_symbols[1:] == panel_symbols[:-1]
+        same_prev_symbol = panel_symbols[1:] == panel_symbols[:-1]
+
+        # 建仓口径: close_t 用信号日收盘, open_t+1 右移到次日 open 成交。
+        ent = np.zeros(n, dtype=bool)
+        if config.entry_fill == "open_t+1":
             ent[1:] = ent_raw[:-1] & same_prev_symbol
-            ext[1:] = ext_raw[:-1] & same_prev_symbol
             for idx in np.flatnonzero(ent):
                 entry_signal_dates[idx] = self._date_str(panel_dates[idx - 1])
+        else:
+            ent = ent_raw
+            for idx in np.flatnonzero(ent):
+                entry_signal_dates[idx] = self._date_str(panel_dates[idx])
+
+        # 清仓口径: 独立于建仓, close_t 用信号日收盘, open_t+1 右移到次日 open。
+        ext = np.zeros(n, dtype=bool)
+        if config.exit_fill == "open_t+1":
+            ext[1:] = ext_raw[:-1] & same_prev_symbol
             for idx in np.flatnonzero(ext):
                 exit_signal_dates[idx] = self._date_str(panel_dates[idx - 1])
         else:
-            price_col = "close"
-            ent = ent_raw
             ext = ext_raw
-            for idx in np.flatnonzero(ent):
-                entry_signal_dates[idx] = self._date_str(panel_dates[idx])
             for idx in np.flatnonzero(ext):
                 exit_signal_dates[idx] = self._date_str(panel_dates[idx])
 
-        prices = panel[price_col].to_numpy()
         open_prices = panel["open"].to_numpy()
         high_prices = panel["high"].to_numpy() if "high" in panel.columns else open_prices
         low_prices = panel["low"].to_numpy()
         close_prices = panel["close"].to_numpy()
+        # 撮合价: 建仓/清仓各自独立选列。
+        entry_prices = open_prices if config.entry_fill == "open_t+1" else close_prices
+        exit_prices = open_prices if config.exit_fill == "open_t+1" else close_prices
         has_volume = "volume" in panel.columns
         volumes = panel["volume"].fill_null(0).to_numpy() if has_volume else np.ones(n, dtype=float)
         names = panel["name"].fill_null("").to_numpy() if "name" in panel.columns else np.array([""] * n)
         scores = panel["score"].fill_null(0).to_numpy() if "score" in panel.columns else np.zeros(n, dtype=float)
         trade_scores = scores.copy()
-        if config.matching == "open_t+1":
+        # 评分跟随建仓口径 shift (评分在买入日生效)。
+        if config.entry_fill == "open_t+1":
             trade_scores[1:] = np.where(panel_symbols[1:] == panel_symbols[:-1], scores[:-1], trade_scores[1:])
         limit_up_flags = (
             panel["signal_limit_up"].fill_null(False).to_numpy().astype(bool)
@@ -439,7 +465,6 @@ class BacktestEngine:
         sell_cost_pct = config.fees_pct + config.slippage_bps / 10000.0
         score_min = getattr(config, "score_min", None)
         score_max = getattr(config, "score_max", None)
-        close_mode = config.matching == "close_t"
         trades: list[TradeRecord] = []
         execution_stats: dict[str, int] = {
             "buy_invalid_price": 0,
@@ -495,7 +520,7 @@ class BacktestEngine:
         def _can_buy(idx: int) -> tuple[bool, str]:
             if _is_suspended(idx):
                 return False, "buy_suspended"
-            if not _valid_price(prices[idx]):
+            if not _valid_price(entry_prices[idx]):
                 return False, "buy_invalid_price"
             if _is_one_price_limit(idx, "up"):
                 return False, "buy_limit_up"
@@ -504,7 +529,7 @@ class BacktestEngine:
         def _can_sell(idx: int, exit_price_override: float | None = None) -> tuple[bool, str]:
             if _is_suspended(idx):
                 return False, "sell_suspended"
-            exit_price = exit_price_override if exit_price_override is not None else prices[idx]
+            exit_price = exit_price_override if exit_price_override is not None else exit_prices[idx]
             if not _valid_price(exit_price):
                 return False, "sell_invalid_price"
             if _is_one_price_limit(idx, "down"):
@@ -555,7 +580,7 @@ class BacktestEngine:
                 _count(block_reason)
                 return False
 
-            exit_price = float(exit_price_override) if exit_price_override is not None else float(prices[idx])
+            exit_price = float(exit_price_override) if exit_price_override is not None else float(exit_prices[idx])
             shares = 100.0
             entry_value = shares * float(pos["entry_price"]) * (1 + buy_cost_pct)
             exit_value = shares * exit_price * (1 - sell_cost_pct)
@@ -619,7 +644,7 @@ class BacktestEngine:
                 _count("sell_no_future")
                 continue
 
-            entry_price = float(prices[entry_idx])
+            entry_price = float(entry_prices[entry_idx])
             pos = {
                 "symbol": sym,
                 "name": str(names[entry_idx] or ""),
@@ -648,32 +673,25 @@ class BacktestEngine:
                 def _scheduled_reason() -> tuple[str | None, str]:
                     if pos.get("pending_exit_reason"):
                         return str(pos["pending_exit_reason"]), str(pos.get("pending_exit_signal_date") or d_str)
-                    if config.max_hold_days is not None and pos["hold_days"] >= config.max_hold_days:
-                        return "max_hold", d_str
+                    # 卖点信号优先于到期: 策略主动离场先于 max_hold 兜底。
                     if ext[idx]:
                         return "signal", str(exit_signal_dates[idx] or d_str)
+                    if config.max_hold_days is not None and pos["hold_days"] >= config.max_hold_days:
+                        return "max_hold", d_str
                     if idx == rows[-1]:
                         return "end", d_str
                     return None, d_str
 
-                if close_mode:
-                    reason, override_price = _risk_exit(pos, idx)
-                    if reason and _try_close(pos, idx, reason, d_str, override_price):
-                        closed = True
-                        break
-                    reason, signal_date = _scheduled_reason()
-                    if reason and _try_close(pos, idx, reason, signal_date):
-                        closed = True
-                        break
-                else:
-                    reason, signal_date = _scheduled_reason()
-                    if reason and _try_close(pos, idx, reason, signal_date):
-                        closed = True
-                        break
-                    reason, override_price = _risk_exit(pos, idx)
-                    if reason and _try_close(pos, idx, reason, d_str, override_price):
-                        closed = True
-                        break
+                # 统一退出顺序: 风控(止损/移动止损/止盈)先于计划出场 (signal/max_hold/end)。
+                # 无论 entry/exit 口径如何, 风控都是保护性离场, 必须最高优先级。
+                reason, override_price = _risk_exit(pos, idx)
+                if reason and _try_close(pos, idx, reason, d_str, override_price):
+                    closed = True
+                    break
+                reason, signal_date = _scheduled_reason()
+                if reason and _try_close(pos, idx, reason, signal_date):
+                    closed = True
+                    break
 
                 hi = float(high_prices[idx])
                 if _valid_price(hi):
@@ -715,31 +733,37 @@ class BacktestEngine:
 
         entry_signal_dates = np.array([None] * n, dtype=object)
         exit_signal_dates = np.array([None] * n, dtype=object)
-        if config.matching == "open_t+1":
-            price_col = "open"
-            ent = np.zeros(n, dtype=bool)
-            ext = np.zeros(n, dtype=bool)
-            same_prev_symbol = panel_symbols[1:] == panel_symbols[:-1]
+        same_prev_symbol = panel_symbols[1:] == panel_symbols[:-1]
+
+        # 建仓口径: close_t 用信号日收盘, open_t+1 右移到次日 open 成交。
+        ent = np.zeros(n, dtype=bool)
+        if config.entry_fill == "open_t+1":
             ent[1:] = ent_raw[:-1] & same_prev_symbol
-            ext[1:] = ext_raw[:-1] & same_prev_symbol
             for idx in np.flatnonzero(ent):
                 entry_signal_dates[idx] = self._date_str(panel_dates[idx - 1])
+        else:
+            ent = ent_raw
+            for idx in np.flatnonzero(ent):
+                entry_signal_dates[idx] = self._date_str(panel_dates[idx])
+
+        # 清仓口径: 独立于建仓。
+        ext = np.zeros(n, dtype=bool)
+        if config.exit_fill == "open_t+1":
+            ext[1:] = ext_raw[:-1] & same_prev_symbol
             for idx in np.flatnonzero(ext):
                 exit_signal_dates[idx] = self._date_str(panel_dates[idx - 1])
         else:
-            price_col = "close"
-            ent = ent_raw
             ext = ext_raw
-            for idx in np.flatnonzero(ent):
-                entry_signal_dates[idx] = self._date_str(panel_dates[idx])
             for idx in np.flatnonzero(ext):
                 exit_signal_dates[idx] = self._date_str(panel_dates[idx])
 
-        prices = panel[price_col].to_numpy()
         open_prices = panel["open"].to_numpy()
         high_prices = panel["high"].to_numpy() if "high" in panel.columns else open_prices
         low_prices = panel["low"].to_numpy()
         close_prices = panel["close"].to_numpy()
+        # 撮合价: 建仓/清仓各自独立选列。
+        entry_prices = open_prices if config.entry_fill == "open_t+1" else close_prices
+        exit_prices = open_prices if config.exit_fill == "open_t+1" else close_prices
         has_volume = "volume" in panel.columns
         volumes = panel["volume"].fill_null(0).to_numpy() if has_volume else np.ones(n, dtype=float)
         names = (
@@ -751,7 +775,8 @@ class BacktestEngine:
             if "score" in panel.columns else np.zeros(n, dtype=float)
         )
         trade_scores = scores.copy()
-        if config.matching == "open_t+1":
+        # 评分跟随建仓口径 shift (评分在买入日生效)。
+        if config.entry_fill == "open_t+1":
             trade_scores[1:] = np.where(panel_symbols[1:] == panel_symbols[:-1], scores[:-1], trade_scores[1:])
         limit_up_flags = (
             panel["signal_limit_up"].fill_null(False).to_numpy().astype(bool)
@@ -847,7 +872,7 @@ class BacktestEngine:
         def _can_buy(idx: int) -> tuple[bool, str]:
             if _is_suspended(idx):
                 return False, "buy_suspended"
-            if not _valid_price(prices[idx]):
+            if not _valid_price(entry_prices[idx]):
                 return False, "buy_invalid_price"
             if _is_one_price_limit(idx, "up"):
                 return False, "buy_limit_up"
@@ -856,7 +881,7 @@ class BacktestEngine:
         def _can_sell(idx: int, exit_price_override: float | None = None) -> tuple[bool, str]:
             if _is_suspended(idx):
                 return False, "sell_suspended"
-            exit_price = exit_price_override if exit_price_override is not None else prices[idx]
+            exit_price = exit_price_override if exit_price_override is not None else exit_prices[idx]
             if not _valid_price(exit_price):
                 return False, "sell_invalid_price"
             if _is_one_price_limit(idx, "down"):
@@ -881,7 +906,7 @@ class BacktestEngine:
         ) -> None:
             nonlocal cash
             pos = positions.pop(sym)
-            exit_price = float(exit_price_override) if exit_price_override is not None else float(prices[idx])
+            exit_price = float(exit_price_override) if exit_price_override is not None else float(exit_prices[idx])
             exit_value = pos["shares"] * exit_price * (1 - sell_cost_pct)
             cash += exit_value
             pnl_amount = exit_value - pos["entry_value"]
@@ -945,11 +970,12 @@ class BacktestEngine:
                 if pos.get("pending_exit_reason"):
                     reason = str(pos["pending_exit_reason"])
                     signal_date = str(pos.get("pending_exit_signal_date") or d_str)
-                elif config.max_hold_days is not None and pos["hold_days"] >= config.max_hold_days:
-                    reason = "max_hold"
+                # 卖点信号优先于到期: 策略主动离场先于 max_hold 兜底。
                 elif idx is not None and ext[idx]:
                     reason = "signal"
                     signal_date = str(exit_signal_dates[idx] or d_str)
+                elif config.max_hold_days is not None and pos["hold_days"] >= config.max_hold_days:
+                    reason = "max_hold"
                 elif d_idx == len(all_dates) - 1:
                     reason = "end"
                 if reason:
@@ -1067,7 +1093,7 @@ class BacktestEngine:
                 if allocation <= 0:
                     _count("buy_exposure")
                     continue
-                entry_price = float(prices[idx])
+                entry_price = float(entry_prices[idx])
                 shares = np.floor(allocation / (entry_price * (1 + buy_cost_pct)) / 100) * 100
                 entry_value = shares * entry_price * (1 + buy_cost_pct)
                 if shares <= 0:
@@ -1098,7 +1124,6 @@ class BacktestEngine:
                     "blocked_exit_days": 0,
                 }
 
-        close_mode = config.matching == "close_t"
         for d_idx, d_str in enumerate(all_dates):
             if d_idx % 20 == 0:
                 if cancel_event is not None and cancel_event.is_set():
@@ -1122,16 +1147,13 @@ class BacktestEngine:
             for pos in positions.values():
                 pos["hold_days"] += 1
 
-            if close_mode:
-                _process_risk_exits(d_str, row_by_symbol, sold_today)
-                _process_scheduled_exits(d_idx, d_str, row_by_symbol, sold_today)
-                if d_idx < len(all_dates) - 1:
-                    _process_entries(d_str, idxs, sold_today)
-            else:
-                _process_scheduled_exits(d_idx, d_str, row_by_symbol, sold_today)
-                if d_idx < len(all_dates) - 1:
-                    _process_entries(d_str, idxs, sold_today)
-                _process_risk_exits(d_str, row_by_symbol, sold_today)
+            # 统一执行顺序 (不分口径): 风控(止损/移动止损/止盈) → 计划出场(signal/max_hold/end) → 建仓。
+            # 风控是保护性离场, 必须最先; 计划出场次之; 建仓最后 (卖出释放的现金/仓位先用于满足新买)。
+            # 当天新建仓不会被风控误杀 (_process_risk_exits 跳过 entry_date == d_str 的仓位)。
+            _process_risk_exits(d_str, row_by_symbol, sold_today)
+            _process_scheduled_exits(d_idx, d_str, row_by_symbol, sold_today)
+            if d_idx < len(all_dates) - 1:
+                _process_entries(d_str, idxs, sold_today)
 
             for sym, pos in positions.items():
                 idx = row_by_symbol.get(sym)

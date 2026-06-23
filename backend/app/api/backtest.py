@@ -186,7 +186,10 @@ class StrategyBacktestRequest(BaseModel):
     end: date | None = None
     params: dict | None = None
     overrides: dict | None = None
+    # matching 向后兼容; 显式传 entry_fill/exit_fill 时以二者为准。
     matching: Literal["close_t", "open_t+1"] = "open_t+1"
+    entry_fill: Literal["close_t", "open_t+1"] | None = None
+    exit_fill: Literal["close_t", "open_t+1"] | None = None
     fees_pct: float = 0.0002
     slippage_bps: float = 5.0
     max_positions: int = 10
@@ -218,6 +221,8 @@ def strategy_run(req: StrategyBacktestRequest, request: Request):
         params=req.params,
         overrides=req.overrides,
         matching=req.matching,
+        entry_fill=req.entry_fill,
+        exit_fill=req.exit_fill,
         fees_pct=req.fees_pct,
         slippage_bps=req.slippage_bps,
         max_positions=req.max_positions,
@@ -267,12 +272,13 @@ def _cleanup_stale_jobs():
 
 def _make_job_key(
     strategy_id: str, symbols: str | None, start: str | None, end: str | None,
-    matching: str, fees_pct: float, slippage_bps: float,
+    matching: str, entry_fill: str | None, exit_fill: str | None,
+    fees_pct: float, slippage_bps: float,
     max_positions: int, max_exposure_pct: float, initial_capital: float, position_sizing: str,
     params: str | None, overrides: str | None,
     mode: str = "position", holding_days: int = 5,
 ) -> str:
-    raw = f"{strategy_id}|{symbols}|{start}|{end}|{matching}|{fees_pct}|{slippage_bps}|{max_positions}|{max_exposure_pct}|{initial_capital}|{position_sizing}|{params}|{overrides}|{mode}|{holding_days}"
+    raw = f"{strategy_id}|{symbols}|{start}|{end}|{matching}|{entry_fill}|{exit_fill}|{fees_pct}|{slippage_bps}|{max_positions}|{max_exposure_pct}|{initial_capital}|{position_sizing}|{params}|{overrides}|{mode}|{holding_days}"
     return hashlib.md5(raw.encode()).hexdigest()[:12]
 
 
@@ -284,6 +290,8 @@ async def strategy_stream(
     start: str | None = None,
     end: str | None = None,
     matching: str = "open_t+1",
+    entry_fill: str | None = None,
+    exit_fill: str | None = None,
     fees_pct: float = 0.0002,
     slippage_bps: float = 5.0,
     max_positions: int = 10,
@@ -329,7 +337,8 @@ async def strategy_stream(
 
     job_key = _make_job_key(
         strategy_id, symbols, start, end,
-        matching, fees_pct, slippage_bps, max_positions, max_exposure_pct, initial_capital, position_sizing,
+        matching, entry_fill, exit_fill,
+        fees_pct, slippage_bps, max_positions, max_exposure_pct, initial_capital, position_sizing,
         params, overrides,
         mode, holding_days,
     )
@@ -362,6 +371,8 @@ async def strategy_stream(
                 params=json.loads(params) if params else None,
                 overrides=json.loads(overrides) if overrides else None,
                 matching=matching,
+                entry_fill=entry_fill,
+                exit_fill=exit_fill,
                 fees_pct=fees_pct,
                 slippage_bps=slippage_bps,
                 max_positions=int(max_positions),
@@ -442,6 +453,8 @@ async def strategy_cancel(request: Request):
         _get("start") or None,
         _get("end") or None,
         _get("matching", "open_t+1"),
+        _get("entry_fill") or None,
+        _get("exit_fill") or None,
         float(_get("fees_pct", "0.0002")),
         float(_get("slippage_bps", "5")),
         int(_get("max_positions", "10")),

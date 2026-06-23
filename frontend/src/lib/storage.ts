@@ -88,6 +88,8 @@ export const storage = {
     start: string
     end: string
     matching: 'close_t' | 'open_t+1'
+    entryFill: 'close_t' | 'open_t+1'
+    exitFill: 'close_t' | 'open_t+1'
     fees: string
     maxPositions: string
     maxExposure: string

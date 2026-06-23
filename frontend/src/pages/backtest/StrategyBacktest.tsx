@@ -600,7 +600,10 @@ export function StrategyBacktest() {
   const [symbols, setSymbols] = useState(saved?.symbols ?? '')
   const [start, setStart] = useState(saved?.start ?? THREE_MONTHS_AGO)
   const [end, setEnd] = useState(saved?.end ?? TODAY)
-  const [matching, setMatching] = useState<'close_t' | 'open_t+1'>(saved?.matching ?? 'open_t+1')
+  // 成交口径: 建仓/清仓可独立配置。向后兼容老 matching (派生为 entry=exit=matching)。
+  const [matching] = useState<'close_t' | 'open_t+1'>(saved?.matching ?? 'open_t+1')
+  const [entryFill, setEntryFill] = useState<'close_t' | 'open_t+1'>(saved?.entryFill ?? saved?.matching ?? 'open_t+1')
+  const [exitFill, setExitFill] = useState<'close_t' | 'open_t+1'>(saved?.exitFill ?? saved?.matching ?? 'close_t')
   const [fees, setFees] = useState(saved?.fees ?? '2')
   const [maxPositions, setMaxPositions] = useState(saved?.maxPositions ?? '10')
   const [maxExposure, setMaxExposure] = useState(saved?.maxExposure ?? '100')
@@ -704,6 +707,8 @@ export function StrategyBacktest() {
         start,
         end,
         matching,
+        entryFill,
+        exitFill,
         fees,
         maxPositions,
         maxExposure,
@@ -726,6 +731,8 @@ export function StrategyBacktest() {
       start: start || null,
       end: end || undefined,
       matching,
+      entry_fill: entryFill,
+      exit_fill: exitFill,
       fees_pct: Number(fees) / 10000,
       max_positions: Number(maxPositions),
       max_exposure_pct: Number(maxExposure) / 100,
@@ -1182,14 +1189,23 @@ export function StrategyBacktest() {
           )}
         </div>
 
-        <div>
-          <label className="text-xs font-medium text-secondary block mb-1.5">成交口径</label>
-          <select value={matching} onChange={e => setMatching(e.target.value as any)} className={INPUT_CLS}>
-            <option value="open_t+1">收盘确认 → 次日开盘成交（推荐）</option>
-            <option value="close_t">收盘确认 → 信号日收盘成交（偏理想，仅作对照）</option>
-          </select>
-          <div className="mt-1 text-[10px] leading-4 text-muted">买卖点由策略触发器决定；这里只决定日线信号确认后按哪个价格成交。</div>
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <label className="text-xs font-medium text-secondary block mb-1.5">建仓口径</label>
+            <select value={entryFill} onChange={e => setEntryFill(e.target.value as any)} className={INPUT_CLS}>
+              <option value="open_t+1">次日开盘成交（推荐）</option>
+              <option value="close_t">信号日收盘成交</option>
+            </select>
+          </div>
+          <div>
+            <label className="text-xs font-medium text-secondary block mb-1.5">清仓口径</label>
+            <select value={exitFill} onChange={e => setExitFill(e.target.value as any)} className={INPUT_CLS}>
+              <option value="close_t">到期/信号日收盘成交（推荐）</option>
+              <option value="open_t+1">次日开盘成交</option>
+            </select>
+          </div>
         </div>
+        <div className="mt-1 text-[10px] leading-4 text-muted">建仓默认次日开盘（避免未来函数），清仓默认当日收盘（持仓中可盘中/收盘卖）；买卖点由策略触发器决定，这里只决定成交价。</div>
 
         {simMode === 'position' && (
         <div className="grid grid-cols-2 gap-2">
@@ -1841,7 +1857,8 @@ export function StrategyBacktest() {
               <div className="mb-4 rounded-btn border border-accent/25 bg-accent/5 px-3 py-2.5 text-[11px] leading-5 text-secondary">
                 <div className="font-medium text-foreground">触发 / 成交 / 仓位关系</div>
                 <div className="mt-1">触发器决定什么时候产生买卖信号；评分只在多个买点同时出现时排序。</div>
-                <div>默认按日线收盘确认，次日开盘成交；信号日收盘成交为偏理想对照口径。</div>
+                <div>成交口径可分别设置建仓/清仓：默认建仓次日开盘（避免未来函数）、清仓当日收盘（持仓中可盘中/收盘卖）。</div>
+                <div>退出优先级：止损/移动止损 &gt; 卖点信号 &gt; 到期平仓；到期只作兜底，不抢占卖点或风控。</div>
                 <div>最大持仓数控制同时持股数量，最大总仓位控制资金投入比例；剩余现金不等于可新增持仓名额。</div>
               </div>
 

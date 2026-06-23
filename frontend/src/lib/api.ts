@@ -962,6 +962,8 @@ export const api = {
     params?: Record<string, any> | null
     overrides?: Record<string, any> | null
     matching?: 'close_t' | 'open_t+1'
+    entry_fill?: 'close_t' | 'open_t+1' | null
+    exit_fill?: 'close_t' | 'open_t+1' | null
     fees_pct?: number
     slippage_bps?: number
     max_positions?: number

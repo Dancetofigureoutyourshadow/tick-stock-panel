@@ -102,7 +102,8 @@ def filter_history(df: pl.DataFrame, params: dict) -> pl.DataFrame:
     """df 包含目标日期之前 LOOKBACK_DAYS 个交易日的数据（所有股票混合）。
     每行包含 symbol, date 及所有指标列/信号列。
 
-    返回值: 筛选后的 DataFrame，引擎会最终保留目标日期行。
+    返回值: 筛选后的 DataFrame。
+    重要: 返回所有匹配的行，不要只过滤最新日期，否则回测只有最后一天有信号。
     """
     if df.is_empty() or "date" not in df.columns:
         return df
@@ -110,7 +111,6 @@ def filter_history(df: pl.DataFrame, params: dict) -> pl.DataFrame:
     down_pct = float(params.get("prev_down_pct", -0.02))
     vol_ratio = float(params.get("volume_ratio", 1.2))
     tolerance = float(params.get("reversal_tolerance", 0.005))
-    latest = df["date"].max()
 
     # 示例: 前日明显阴线下跌，今日放量阳线反包前日实体
     hist = (
@@ -124,7 +124,7 @@ def filter_history(df: pl.DataFrame, params: dict) -> pl.DataFrame:
         ])
     )
 
-    return hist.filter(pl.col("date") == latest).filter(
+    return hist.filter(
         (pl.col("_prev_close") < pl.col("_prev_open"))
         & (pl.col("_prev_change_pct") <= down_pct)
         & (pl.col("close") > pl.col("open"))
@@ -139,7 +139,7 @@ def filter_history(df: pl.DataFrame, params: dict) -> pl.DataFrame:
 - `LOOKBACK_DAYS` 决定引擎加载多少天的数据，设为策略逻辑需要的最大回看天数
 - 优先使用 Polars 的 `with_columns`、`over("symbol")`、`group_by`、`join`、`filter` 实现历史逻辑，避免把数据转成 Python list/dict 循环
 - 只有遇到表达式难以描述的复杂状态机时，才使用 `partition_by("symbol")` + `to_dicts()` 逐股票分析
-- 返回的 DataFrame 必须只包含目标日期行，通过 `pl.col("date") == latest` 过滤
+- **返回所有匹配行，不要过滤 `latest`**；选股引擎会自动取最新日，回测引擎需要全区间命中
 - 未声明 `filter_history()` 的策略走普通 `filter()` 路径，不受影响
 
 ## 3. 常用指标列（参考，可直接使用）
@@ -236,10 +236,12 @@ def filter_history(df: pl.DataFrame, params: dict) -> pl.DataFrame:
 | signal_boll_breakout_upper | 中性 | 突破布林上轨 |
 | signal_boll_breakdown_lower | 中性 | 跌破布林下轨 |
 | signal_volume_surge | 中性 | 放量 |
-| signal_limit_up | 买入 | 涨停 |
-| signal_limit_down | 卖出 | 跌停 |
-| signal_limit_down_recovery | 买入 | 跌停翘板 |
-| signal_broken_limit_up | 卖出 | 炸板 |
+| signal_limit_up | 买入 | 涨停 (依赖 instruments 表，部分环境不生成) |
+| signal_limit_down | 卖出 | 跌停 (依赖 instruments 表，部分环境不生成) |
+| signal_limit_down_recovery | 买入 | 跌停翘板 (依赖 instruments 表，部分环境不生成) |
+| signal_broken_limit_up | 卖出 | 炸板 (依赖 instruments 表，部分环境不生成) |
+
+> **注意**：涨跌停类信号需要 instruments 表（板块代码）才能计算。如果策略只用涨停判断，优先用 `consecutive_limit_ups >= 1`（稳定列，始终可用）。
 
 此外，用户自定义信号（`data/user_data/custom_signals/`）以 `csg_` 前缀注入，也可在 filter() 中引用。
 
@@ -329,7 +331,7 @@ def filter_history(df: pl.DataFrame, params: dict) -> pl.DataFrame:
             pl.col("change_pct").shift(1).over("symbol").alias("_prev_change_pct"),
         ])
     )
-    return hist.filter(pl.col("date") == latest).filter(
+    return hist.filter(
         (pl.col("_prev_close") < pl.col("_prev_open"))
         & (pl.col("_prev_change_pct") <= down_pct)
         & (pl.col("close") > pl.col("open"))

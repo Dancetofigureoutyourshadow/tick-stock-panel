@@ -146,8 +146,8 @@ def filter_history(df: pl.DataFrame, params: dict) -> pl.DataFrame:
     if df.is_empty() or "date" not in df.columns:
         return df
 
-    latest = df["date"].max()
     # 用 shift/over 回溯历史数据，或用 group_by 计算窗口聚合
+    # 重要: 返回所有匹配行，不要只过滤 latest，否则回测只有最后一天有信号
     hist = (
         df.sort(["symbol", "date"])
         .with_columns([
@@ -155,7 +155,7 @@ def filter_history(df: pl.DataFrame, params: dict) -> pl.DataFrame:
             # ... 根据策略需要添加更多回溯列
         ])
     )
-    return hist.filter(pl.col("date") == latest).filter(
+    return hist.filter(
         # 在此编写筛选条件
     )
 ```

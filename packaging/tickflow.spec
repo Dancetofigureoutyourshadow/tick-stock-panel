@@ -29,6 +29,7 @@ ROOT = Path(SPECPATH).parent
 FRONTEND_DIST = str(ROOT / "frontend" / "dist")
 TIERS_YAML = str(ROOT / "tiers.yaml")
 BUILTIN_STRATEGIES = str(ROOT / "backend" / "app" / "strategy" / "builtin")
+APP_ICON = str(ROOT / "packaging" / "icon.ico")
 
 # ── 收集带原生库的依赖 (.libs/ 目录必须完整, 否则启动崩) ─────────────
 # polars / pyarrow / duckdb / fastexcel 都自带共享库子目录
@@ -151,7 +152,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=None,           # TODO: 添加应用图标 (后续设计后填路径)
+    icon=APP_ICON,      # 应用图标 (与 favicon/logo 一致)
 )
 
 coll = COLLECT(

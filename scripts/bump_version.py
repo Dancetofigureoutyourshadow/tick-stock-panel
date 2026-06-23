@@ -17,6 +17,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 PKG = ROOT / "frontend" / "package.json"
 PYPROJECT = ROOT / "backend" / "pyproject.toml"
+APP_INIT = ROOT / "backend" / "app" / "__init__.py"  # __version__ 写在这里, health 接口读它
 
 
 def parse_version(v: str) -> tuple[int, int, int]:
@@ -54,6 +55,19 @@ def write_pyproject_version(v: str) -> None:
     PYPROJECT.write_text(text, encoding="utf-8")
 
 
+def write_app_init_version(v: str) -> None:
+    """更新 backend/app/__init__.py 的 __version__ (health 接口读这里)。"""
+    text = APP_INIT.read_text(encoding="utf-8")
+    text = re.sub(
+        r'^(__version__\s*=\s*)"[^"]+"',
+        rf'\1"{v}"',
+        text,
+        count=1,
+        flags=re.MULTILINE,
+    )
+    APP_INIT.write_text(text, encoding="utf-8")
+
+
 def main() -> int:
     # 环境变量跳过
     if __import__("os").environ.get("SKIP_VERSION_BUMP") == "1":
@@ -62,13 +76,14 @@ def main() -> int:
     cur = read_pkg_version()
     new = bump(cur)
 
-    # 两个文件版本可能不一致, 统一用 pkg 的为准
+    # 三个文件版本可能不一致, 统一用 pkg 的为准
     write_pkg_version(new)
     write_pyproject_version(new)
+    write_app_init_version(new)
 
     # 暂存版本文件改动(并入本次 commit)
     import subprocess
-    subprocess.run(["git", "add", str(PKG), str(PYPROJECT)], check=True, cwd=str(ROOT))
+    subprocess.run(["git", "add", str(PKG), str(PYPROJECT), str(APP_INIT)], check=True, cwd=str(ROOT))
 
     # 输出新版本号供 hook 读用
     print(f"[bump] {cur} -> {new}")

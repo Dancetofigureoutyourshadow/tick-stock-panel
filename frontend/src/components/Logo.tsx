@@ -3,7 +3,7 @@
 // 概念:
 //   - 外层 brackets:终端 / 代码 / 引用边界 — 赛博 + quant 气质
 //   - 中央 wick+body:一根标准 K 线 — 直接的金融指代
-//   - body 在垂直中线偏下:体重感,bullish 暗示(上影长 > 下影)
+//   - body 偏上 + 下影长:bullish 站稳感 (上影短 / 下影长)
 //
 // 用 currentColor,继承父级 color 设定,方便切换品牌色。
 interface LogoProps {
@@ -48,9 +48,9 @@ export function Logo({ className, size = 32, style }: LogoProps) {
         strokeLinecap="round"
         strokeOpacity="0.6"
       />
-      {/* K 线 body — 偏下,意味"上影长 / 反弹站住" */}
+      {/* K 线 body — 偏上,上影短/下影长, bullish 站稳感 */}
       <rect
-        x="13" y="12" width="6" height="10"
+        x="13" y="9" width="6" height="10"
         fill="currentColor"
         rx="0.5"
       />

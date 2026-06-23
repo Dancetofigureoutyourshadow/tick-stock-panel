@@ -7,6 +7,7 @@ import {
   BarChart3,
   Flame,
   Zap,
+  Bell,
 } from 'lucide-react'
 import {
   usePreferences,
@@ -48,6 +49,7 @@ export function SettingsMonitoringPanel({ highlight }: { highlight?: string } = 
   const realtimeEnabled = prefs?.realtime_quotes_enabled ?? false
   const refreshPages = prefs?.sse_refresh_pages ?? {}
   const limitLadderMonitor = prefs?.limit_ladder_monitor_enabled ?? false
+  const systemNotify = prefs?.system_notify_enabled ?? false
   const hasDepth = !!caps?.capabilities?.['depth5.batch']
   const sidebarIndexSymbols = prefs?.sidebar_index_symbols ?? SIDEBAR_INDEX_OPTIONS.map(i => i.symbol)
   const indicesPinned = prefs?.indices_nav_pinned ?? true
@@ -88,6 +90,11 @@ export function SettingsMonitoringPanel({ highlight }: { highlight?: string } = 
 
   const toggleLimitLadderMonitor = useCallback(async (enabled: boolean) => {
     await api.updateLimitLadderMonitor(enabled)
+    qc.invalidateQueries({ queryKey: QK.preferences })
+  }, [qc])
+
+  const toggleSystemNotify = useCallback(async (enabled: boolean) => {
+    await api.updateSystemNotify(enabled)
     qc.invalidateQueries({ queryKey: QK.preferences })
   }, [qc])
 
@@ -239,6 +246,15 @@ export function SettingsMonitoringPanel({ highlight }: { highlight?: string } = 
           >
             前往监控中心配置 →
           </a>
+          <div className="mt-3 pt-3 border-t border-border">
+            <ToggleRow
+              icon={Bell}
+              label="系统通知"
+              desc="监控告警同时推送到操作系统通知中心（窗口最小化或后台也能收到）"
+              checked={systemNotify}
+              onChange={toggleSystemNotify}
+            />
+          </div>
         </Card>
 
         {/* 连板梯队降级修正 */}
@@ -300,17 +316,22 @@ function ToggleRow({
   desc,
   checked,
   onChange,
+  icon: Icon,
 }: {
   label: string
   desc: string
   checked: boolean
   onChange: (v: boolean) => void
+  icon?: React.ComponentType<{ className?: string }>
 }) {
   return (
     <div className="flex items-center justify-between gap-4 py-2">
-      <div className="min-w-0">
-        <div className="text-sm text-foreground">{label}</div>
-        <div className="text-[11px] text-muted truncate">{desc}</div>
+      <div className="min-w-0 flex items-start gap-2">
+        {Icon && <Icon className="h-3.5 w-3.5 text-secondary shrink-0 mt-0.5" />}
+        <div className="min-w-0">
+          <div className="text-sm text-foreground">{label}</div>
+          <div className="text-[11px] text-muted truncate">{desc}</div>
+        </div>
       </div>
       <button
         onClick={() => onChange(!checked)}

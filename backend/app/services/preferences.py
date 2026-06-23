@@ -205,6 +205,17 @@ def get_strategy_monitor_enabled() -> bool:
     return load().get("strategy_monitor_enabled", False)
 
 
+def get_system_notify_enabled() -> bool:
+    """系统通知开关 — 开启后监控告警同时推送到操作系统通知中心。"""
+    return load().get("system_notify_enabled", False)
+
+
+def set_system_notify_enabled(enabled: bool) -> bool:
+    """保存系统通知开关。"""
+    save({"system_notify_enabled": bool(enabled)})
+    return bool(enabled)
+
+
 def get_screener_auto_run() -> bool:
     """选股页进入时是否自动运行所有策略 (获取命中数)。默认开。"""
     return load().get("screener_auto_run", True)

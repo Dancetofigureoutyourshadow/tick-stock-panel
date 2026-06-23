@@ -583,6 +583,7 @@ export interface Preferences {
   sse_refresh_pages: Record<string, boolean>
   strategy_monitor_enabled: boolean
   strategy_monitor_ids: string[]
+  system_notify_enabled: boolean
   sidebar_index_symbols: string[]
   nav_order: string[]
   nav_hidden: string[]
@@ -685,6 +686,11 @@ export const api = {
     }>('/api/settings/preferences/realtime-monitor', {
       method: 'PUT',
       body: JSON.stringify(cfg),
+    }),
+  updateSystemNotify: (enabled: boolean) =>
+    request<{ system_notify_enabled: boolean }>('/api/settings/preferences/system-notify', {
+      method: 'PUT',
+      body: JSON.stringify({ enabled }),
     }),
   updatePipelineSchedule: (hour: number, minute: number) =>
     request<{ hour: number; minute: number }>('/api/settings/preferences/pipeline-schedule', {

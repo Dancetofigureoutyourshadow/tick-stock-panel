@@ -527,8 +527,50 @@ class QuoteService:
                 self._alert_event.set()
                 logger.info("监控评估完成: %d 条通知", len(all_alerts))
 
+                # 系统通知 (可选通道, 由 preferences 开关控制)。
+                # cooldown 去重已在 MonitorRuleEngine 做过, 这里只负责转发。
+                self._maybe_send_system_notifications(all_alerts)
+
         except Exception as e:  # noqa: BLE001
             logger.warning("监控评估失败: %s", e)
+
+    def _maybe_send_system_notifications(self, all_alerts: list[dict]) -> None:
+        """把告警转发到操作系统通知中心 (由 preferences 开关控制)。
+
+        - 开关关闭: 直接返回
+        - 开关开启: 逐条发系统通知; 失败静默, 不阻断主流程
+        - 去重: 复用 MonitorRuleEngine 的 cooldown, 此处不重复去重
+        - 批量策略事件 (symbol="") 聚合为一条通知, 避免刷屏
+        """
+        try:
+            from app.services import preferences
+            from app.services import notify_adapter
+
+            if not preferences.get_system_notify_enabled():
+                return
+
+            for ev in all_alerts:
+                # 通知标题: 用 source 分类 (策略/信号/价格/异动)
+                source = ev.get("source", "")
+                source_label = {
+                    "strategy": "策略", "signal": "信号",
+                    "price": "价格", "market": "异动",
+                }.get(source, source or "通知")
+
+                name = ev.get("name") or ""
+                symbol = ev.get("symbol") or ""
+                message = ev.get("message") or ""
+
+                # 正文: 优先用现成 message, 拼上 symbol/name 让用户一眼定位
+                if symbol:
+                    body = f"{symbol} {name} {message}".strip()
+                else:
+                    body = message or name
+
+                title = f"TickFlow · {source_label}"
+                notify_adapter.notify(title, body)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("系统通知发送异常 (不影响告警主流程): %s", e)
 
     def _refresh_strategy_cache(self, enriched_today: pl.DataFrame, enriched_date: date | None) -> None:
         """利用已计算好的 enriched 数据，运行策略池并写入缓存。"""

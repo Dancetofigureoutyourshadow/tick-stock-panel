@@ -5,8 +5,8 @@
  */
 import { useState, useCallback } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { Settings2, Trash2, RefreshCw, Bell, Volume2 } from 'lucide-react'
-import { usePreferences } from '@/lib/useSharedQueries'
+import { Settings2, Trash2, RefreshCw, Bell, Volume2, Info } from 'lucide-react'
+import { usePreferences, useVersion } from '@/lib/useSharedQueries'
 import { api } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
 import { PageHeader } from '@/components/PageHeader'
@@ -16,6 +16,7 @@ import { SOUND_OPTIONS, previewSound } from '@/lib/notificationSound'
 export function SettingsSystemPanel() {
   const qc = useQueryClient()
   const { data: prefs } = usePreferences()
+  const { data: versionData } = useVersion()
   const [saving, setSaving] = useState(false)
 
   const screenerAutoRun = prefs?.screener_auto_run ?? true
@@ -189,6 +190,40 @@ export function SettingsSystemPanel() {
             )}
             {clearing ? '清理中…' : '清理并刷新'}
           </button>
+        </div>
+      </section>
+
+      <section className="rounded-card border border-border bg-surface p-5 mt-6">
+        <div className="flex items-center gap-2 mb-4">
+          <Info className="h-4 w-4 text-accent" />
+          <h3 className="text-sm font-medium text-foreground">关于</h3>
+        </div>
+
+        <div className="flex items-center justify-between gap-4 py-2">
+          <div className="min-w-0">
+            <div className="text-sm text-foreground">版本</div>
+            <div className="text-[11px] text-muted truncate">当前安装的应用版本</div>
+          </div>
+          <span className="font-mono text-xs text-secondary shrink-0">
+            {versionData?.version ?? '—'}
+          </span>
+        </div>
+
+        <div className="flex items-center justify-between gap-4 py-2">
+          <div className="min-w-0">
+            <div className="text-sm text-foreground">检查更新</div>
+            <div className="text-[11px] text-muted truncate">前往 GitHub Releases 下载最新版本</div>
+          </div>
+          <a
+            href="https://github.com/shy3130/tickflow-stock-panel/releases/latest"
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-btn text-xs
+                       bg-elevated text-secondary hover:text-foreground transition-colors shrink-0"
+          >
+            <RefreshCw className="h-3.5 w-3.5" />
+            检查更新
+          </a>
         </div>
       </section>
     </>

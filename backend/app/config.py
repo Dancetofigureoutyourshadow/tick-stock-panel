@@ -1,19 +1,63 @@
 """全局配置 — 从环境变量 / .env 读取。"""
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# 项目根目录 = backend/ 的父目录
-_BACKEND_DIR = Path(__file__).resolve().parent.parent
-_PROJECT_ROOT = _BACKEND_DIR.parent
+# ── 运行环境检测 ──────────────────────────────────────────
+# PyInstaller 打包后: __file__ 指向临时解压目录 _MEIPASS, 不能作为路径基准。
+# 此时:
+#   - 只读资源 (tiers.yaml / 前端 dist) 放在 _MEIPASS 内
+#   - 可写用户数据 (data_dir) 放在可执行文件旁的用户目录
+# 非 frozen 模式 (开发/Docker): 保持原有 __file__ 推导, 行为完全不变。
+_IS_FROZEN = getattr(sys, "frozen", False)
+
+
+def _user_data_root() -> Path:
+    """桌面版用户数据根目录 (跨平台持久可写)。
+
+    Windows: %LOCALAPPDATA%/TickFlowStockPanel/TickFlowStockPanel
+    macOS:   ~/Library/Application Support/TickFlowStockPanel
+    Linux:   ~/.local/share/TickFlowStockPanel
+
+    注意: platformdirs 已含应用名, 切勿再拼一层。
+    """
+    try:
+        from platformdirs import user_data_dir
+
+        return Path(user_data_dir("TickFlowStockPanel"))
+    except Exception:  # noqa: BLE001
+        # platformdirs 不可用时兜底: 可执行文件旁的 data/
+        return Path(sys.executable).resolve().parent / "data"
+
+
+def _resource_root() -> Path:
+    """只读资源根目录。
+
+    frozen: PyInstaller 解压目录 (_MEIPASS)
+    非 frozen: 项目根目录 (源码树)
+    """
+    if _IS_FROZEN:
+        # sys._MEIPASS 是 PyInstaller 注入的解压根
+        return Path(getattr(sys, "_MEIPASS", Path(sys.executable).resolve().parent))
+    return Path(__file__).resolve().parent.parent.parent
+
+
+def _project_root() -> Path:
+    """项目根目录 (非 frozen 用)。"""
+    return Path(__file__).resolve().parent.parent.parent
+
+
+_PROJECT_ROOT = _project_root()
+_RESOURCE_ROOT = _resource_root()
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=str(_PROJECT_ROOT / ".env"),
+        env_file=str(_RESOURCE_ROOT / ".env") if not _IS_FROZEN else ".env",
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -34,14 +78,14 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     backtest_range_guard: bool = False
 
-    # Data — 默认使用项目根目录的 data/，可通过 DATA_DIR 环境变量覆盖
-    data_dir: Path = _PROJECT_ROOT / "data"
+    # Data — frozen: 用户数据目录; 非 frozen: 项目根目录的 data/ (可被 DATA_DIR 覆盖)
+    data_dir: Path = _user_data_root() if _IS_FROZEN else (_PROJECT_ROOT / "data")
 
-    # tiers.yaml 路径(项目根目录)
-    tiers_yaml: Path = _PROJECT_ROOT / "tiers.yaml"
+    # tiers.yaml 路径 — frozen: 资源目录内; 非 frozen: 项目根目录
+    tiers_yaml: Path = _RESOURCE_ROOT / "tiers.yaml" if _IS_FROZEN else _PROJECT_ROOT / "tiers.yaml"
 
-    # 静态文件(前端 dist) — 部署时只需 rsync 到 frontend/dist
-    static_dir: Path = _PROJECT_ROOT / "frontend" / "dist"
+    # 静态文件(前端 dist) — frozen: 资源目录的 static/; 非 frozen: frontend/dist
+    static_dir: Path = _RESOURCE_ROOT / "static" if _IS_FROZEN else (_PROJECT_ROOT / "frontend" / "dist")
 
     @model_validator(mode="after")
     def _resolve_paths(self) -> Settings:

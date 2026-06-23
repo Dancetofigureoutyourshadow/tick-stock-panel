@@ -2205,8 +2205,37 @@ wheels = [
 ]
 
 [[package]]
+name = "threadpoolctl"
+version = "3.6.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/b7/4d/08c89e34946fce2aec4fbb45c9016efd5f4d7f24af8e5d93296e935631d8/threadpoolctl-3.6.0.tar.gz", hash = "sha256:8ab8b4aa3491d812b623328249fab5302a68d2d71745c8a4c719a2fcaba9f44e", size = 21274, upload-time = "2025-03-13T13:49:23.031Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/32/d5/f9a850d79b0851d1d4ef6456097579a9005b31fea68726a4ae5f2d82ddd9/threadpoolctl-3.6.0-py3-none-any.whl", hash = "sha256:43a0b8fd5a2928500110039e43a5eed8480b918967083ea48dc3ab9f13c4a7fb", size = 18638, upload-time = "2025-03-13T13:49:21.846Z" },
+]
+
+[[package]]
+name = "tickflow"
+version = "0.1.24"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "httpx" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/aa/56/d911f7d03363a06f69838878df4f92dd01235c899431197f94fb4c0e36ad/tickflow-0.1.24.tar.gz", hash = "sha256:13f6464a9dd1bdf98a312bc8c313fcc24ad0ad83c16d4f83b76bee83df6e11df", size = 36867, upload-time = "2026-06-20T02:39:35.891Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/4c/9d/6c03706054f3bcca8a7113a60258e1a52a762077a555d52a5a84e4f6895f/tickflow-0.1.24-py3-none-any.whl", hash = "sha256:e898867b0e3e668618135c78e3a367542f81b7a289567335d298c707452e5f42", size = 43031, upload-time = "2026-06-20T02:39:34.307Z" },
+]
+
+[package.optional-dependencies]
+all = [
+    { name = "pandas" },
+    { name = "tqdm" },
+    { name = "websockets" },
+]
+
+[[package]]
 name = "tickflow-stock-panel-backend"
-version = "0.1.0"
+version = "0.1.30"
 source = { editable = "." }
 dependencies = [
     { name = "apscheduler" },
@@ -2260,40 +2289,11 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.5" },
     { name = "sse-starlette", specifier = ">=2.0" },
-    { name = "tickflow", extras = ["all"], specifier = ">=0.1.21" },
+    { name = "tickflow", extras = ["all"], specifier = ">=0.1.23" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
     { name = "vectorbt", marker = "extra == 'backtest'", specifier = ">=0.26" },
 ]
 provides-extras = ["backtest", "dev"]
-
-[[package]]
-name = "threadpoolctl"
-version = "3.6.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/b7/4d/08c89e34946fce2aec4fbb45c9016efd5f4d7f24af8e5d93296e935631d8/threadpoolctl-3.6.0.tar.gz", hash = "sha256:8ab8b4aa3491d812b623328249fab5302a68d2d71745c8a4c719a2fcaba9f44e", size = 21274, upload-time = "2025-03-13T13:49:23.031Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/32/d5/f9a850d79b0851d1d4ef6456097579a9005b31fea68726a4ae5f2d82ddd9/threadpoolctl-3.6.0-py3-none-any.whl", hash = "sha256:43a0b8fd5a2928500110039e43a5eed8480b918967083ea48dc3ab9f13c4a7fb", size = 18638, upload-time = "2025-03-13T13:49:21.846Z" },
-]
-
-[[package]]
-name = "tickflow"
-version = "0.1.21"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "httpx" },
-    { name = "typing-extensions" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/0a/80/b808d04f52171abaa7db8f6f9a69fd3e4afe3ca569f0d99964b242d2e70f/tickflow-0.1.21.tar.gz", hash = "sha256:17fcff4fa3d38805923d92e4861c0bb592a89c6e8a08187533fad2853dc50364", size = 37106, upload-time = "2026-04-29T10:15:29.949Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/0b/53/57b629bcee5d9870a034a321c21325535612b9d69228612302e8facdcea7/tickflow-0.1.21-py3-none-any.whl", hash = "sha256:eba424d341b6ed7ba0c2ccd13e18e6d535513349b31ed9adcc5dd02c599980a4", size = 42731, upload-time = "2026-04-29T10:15:28.547Z" },
-]
-
-[package.optional-dependencies]
-all = [
-    { name = "pandas" },
-    { name = "tqdm" },
-    { name = "websockets" },
-]
 
 [[package]]
 name = "tqdm"

@@ -23,7 +23,7 @@ const TABS = [
   { key: 'ai',         label: 'AI 设置',    icon: Sparkles,  panel: SettingsAIPanel },
   { key: 'monitoring', label: '实时监控',   icon: Radio,     panel: SettingsMonitoringPanel },
   { key: 'ext-pages',  label: '扩展页面',   icon: BarChart3, panel: SettingsExtPagesPanel },
-  { key: 'signals',    label: '自定义信号', icon: Zap,       panel: SettingsCustomSignalsPanel },
+  { key: 'signals',    label: '信号库',     icon: Zap,       panel: SettingsCustomSignalsPanel },
   { key: 'menus',      label: '菜单设置',   icon: SlidersHorizontal, panel: SettingsMenuSettingsPanel },
   { key: 'system',     label: '系统设置',   icon: Settings2, panel: SettingsSystemPanel },
 ] as const

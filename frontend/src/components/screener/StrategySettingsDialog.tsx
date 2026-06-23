@@ -5,6 +5,7 @@ import { api, type StrategyDetail, type StrategyParamDef } from '@/lib/api'
 import { BUILTIN_COLUMNS } from '@/lib/watchlist-columns'
 import { color } from '@/lib/colors'
 import { SignalPicker } from './SignalPicker'
+import { SignalTriggerActions } from '@/components/signals/SignalTriggerActions'
 
 // 内置列名 → 中文标签
 const FIELD_LABEL: Record<string, string> = {}
@@ -41,15 +42,17 @@ function Section({ icon: Icon, title, accent, defaultOpen = true, children, extr
   const [open, setOpen] = useState(defaultOpen)
   return (
     <div className="rounded-xl border border-border/15 bg-surface/20 overflow-hidden">
-      <button
-        onClick={() => setOpen(v => !v)}
-        className="w-full flex items-center gap-2 px-3.5 py-2 hover:bg-surface/30 transition-colors cursor-pointer"
-      >
-        <ChevronDown className={`h-3 w-3 text-muted/40 transition-transform duration-200 ${open ? '' : '-rotate-90'}`} />
-        {Icon && <Icon className={`h-3.5 w-3.5 ${accent ?? 'text-muted'}`} />}
-        <span className="text-[11px] font-medium text-foreground/70">{title}</span>
-        <div className="ml-auto">{extra}</div>
-      </button>
+      <div className="flex items-center gap-2 px-3.5 py-2 hover:bg-surface/30 transition-colors">
+        <button
+          onClick={() => setOpen(v => !v)}
+          className="flex min-w-0 flex-1 items-center gap-2 text-left cursor-pointer"
+        >
+          <ChevronDown className={`h-3 w-3 text-muted/40 transition-transform duration-200 ${open ? '' : '-rotate-90'}`} />
+          {Icon && <Icon className={`h-3.5 w-3.5 ${accent ?? 'text-muted'}`} />}
+          <span className="text-[11px] font-medium text-foreground/70">{title}</span>
+        </button>
+        {extra && <div className="ml-auto flex items-center gap-1">{extra}</div>}
+      </div>
       <AnimatePresence initial={false}>
         {open && (
           <motion.div
@@ -68,6 +71,7 @@ function Section({ icon: Icon, title, accent, defaultOpen = true, children, extr
     </div>
   )
 }
+
 
 // ===== 区间字段（最小 ~ 最大） =====
 function RangeField({ label, minVal, maxVal, onMinChange, onMaxChange, unit, step }: {
@@ -491,12 +495,24 @@ export function StrategySettingsDialog({ strategyId, onClose, onSaved, onAiModif
                       </div>
                     </Section>
 
-                    <Section icon={TrendingUp} title="买入触发器" accent="text-accent" defaultOpen={false}>
+                    <Section
+                      icon={TrendingUp}
+                      title="买入触发器"
+                      accent="text-accent"
+                      defaultOpen={false}
+                      extra={<SignalTriggerActions kind="entry" signals={entrySignals} onChange={setEntrySignals} buttonClassName="rounded-md border border-border bg-base p-1 text-muted transition-colors cursor-pointer" iconClassName="h-3 w-3" />}
+                    >
                       <SignalPicker signals={entrySignals} onChange={setEntrySignals} kind="entry" variant="dialog" />
                       <div className="text-[10px] leading-4 text-muted/70">任一买点满足即进入候选。</div>
                     </Section>
 
-                    <Section icon={TrendingUp} title="卖出触发器" accent="text-warning" defaultOpen={false}>
+                    <Section
+                      icon={TrendingUp}
+                      title="卖出触发器"
+                      accent="text-warning"
+                      defaultOpen={false}
+                      extra={<SignalTriggerActions kind="exit" signals={exitSignals} onChange={setExitSignals} buttonClassName="rounded-md border border-border bg-base p-1 text-muted transition-colors cursor-pointer" iconClassName="h-3 w-3" />}
+                    >
                       <SignalPicker signals={exitSignals} onChange={setExitSignals} kind="exit" variant="dialog" />
                       <div className="text-[10px] leading-4 text-muted/70">任一卖点满足即触发卖出。</div>
                     </Section>

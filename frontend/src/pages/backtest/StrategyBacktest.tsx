@@ -22,6 +22,7 @@ import { DatePicker } from '@/components/DatePicker'
 import { StrategyNavChart } from './charts/StrategyNavChart'
 import { ReturnDistributionChart } from './charts/ReturnDistributionChart'
 import { TradeKlineModal } from './components/TradeKlineModal'
+import { SignalTriggerActions } from '@/components/signals/SignalTriggerActions'
 
 const formatDate = (date: Date) => date.toISOString().slice(0, 10)
 const monthsAgo = (months: number) => {
@@ -387,17 +388,21 @@ function Stat({ label, value, color }: { label: ReactNode; value: string; color?
   )
 }
 
-function ConfigSection({ title, hint, children }: { title: string; hint?: ReactNode; children: ReactNode }) {
+function ConfigSection({ title, hint, actions, children }: { title: string; hint?: ReactNode; actions?: ReactNode; children: ReactNode }) {
   return (
     <div className="rounded-btn border border-border bg-surface/70 p-3">
-      <div className="text-xs font-medium text-foreground">
-        {title}
-        {hint && <span className="ml-1 text-[10px] font-normal text-muted">{hint}</span>}
+      <div className="flex items-start justify-between gap-3">
+        <div className="text-xs font-medium text-foreground">
+          {title}
+          {hint && <span className="ml-1 text-[10px] font-normal text-muted">{hint}</span>}
+        </div>
+        {actions && <div className="flex shrink-0 items-center gap-1">{actions}</div>}
       </div>
       <div className="mt-3 space-y-2">{children}</div>
     </div>
   )
 }
+
 
 const scoringToPct = (values: Record<string, number>) => {
   const total = Object.values(values).reduce((a, b) => a + Math.max(0, Number(b) || 0), 0)
@@ -1948,7 +1953,11 @@ export function StrategyBacktest() {
               )}
 
               {settingsTab === 'entry' && (
-                <ConfigSection title="买入触发器" hint="任一买点满足即可进入候选">
+                <ConfigSection
+                  title="买入触发器"
+                  hint="任一买点满足即可进入候选"
+                  actions={<SignalTriggerActions kind="entry" signals={entrySignals} onChange={next => updateOverride('entry_signals', next)} />}
+                >
                   <SignalPicker
                     signals={entrySignals}
                     onChange={next => updateOverride('entry_signals', next)}
@@ -1958,7 +1967,11 @@ export function StrategyBacktest() {
               )}
 
               {settingsTab === 'exit' && (
-                <ConfigSection title="卖出触发器" hint="任一卖点满足即触发卖出">
+                <ConfigSection
+                  title="卖出触发器"
+                  hint="任一卖点满足即触发卖出"
+                  actions={<SignalTriggerActions kind="exit" signals={exitSignals} onChange={next => updateOverride('exit_signals', next)} />}
+                >
                   <SignalPicker
                     signals={exitSignals}
                     onChange={next => updateOverride('exit_signals', next)}

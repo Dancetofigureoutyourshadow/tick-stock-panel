@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { CalendarDays, TrendingUp, FileText, Wallet, Activity } from 'lucide-react'
+import { CalendarDays, TrendingUp, FileText, Wallet, Activity, Sparkles } from 'lucide-react'
 import {
   useFinancialMetrics,
   useFinancialIncome,
@@ -112,6 +112,12 @@ function formatValue(v: number | null | undefined, fmt: FmtType): string {
 
 export function StockFinancialDetail({ symbol, name }: Props) {
   const [tab, setTab] = useState<TabKey>('metrics')
+  // AI 财务分析占位: 功能开发中, 点击提示
+  const [showDevToast, setShowDevToast] = useState(false)
+  const handleAiAnalysis = () => {
+    setShowDevToast(true)
+    setTimeout(() => setShowDevToast(false), 2500)
+  }
 
   const metrics = useFinancialMetrics(symbol)
   const income = useFinancialIncome(symbol)
@@ -137,22 +143,32 @@ export function StockFinancialDetail({ symbol, name }: Props) {
   const latestAnnounce = rows[0]?.announce_date ?? metrics.data?.data?.[0]?.announce_date ?? null
 
   return (
-    <div className="rounded-card border border-border bg-surface overflow-hidden">
+    <div className="relative rounded-card border border-border bg-surface overflow-hidden">
       {/* 头部:标的 + 报告期 */}
       <div className="px-5 py-4 border-b border-border flex items-center gap-3 flex-wrap">
         <div className="flex items-baseline gap-2 min-w-0">
           <span className="text-lg font-semibold text-foreground">{name}</span>
           <span className="text-xs font-mono text-muted">{symbol}</span>
         </div>
-        {latestPeriod && (
-          <div className="flex items-center gap-1.5 text-xs text-secondary ml-auto">
-            <CalendarDays className="h-3.5 w-3.5" />
-            <span>报告期 <span className="font-mono">{latestPeriod}</span></span>
-            {latestAnnounce && (
-              <span className="text-muted">· 披露 {fmtDate(latestAnnounce)}</span>
-            )}
-          </div>
-        )}
+        <div className="flex items-center gap-2 ml-auto">
+          {latestPeriod && (
+            <div className="flex items-center gap-1.5 text-xs text-secondary">
+              <CalendarDays className="h-3.5 w-3.5" />
+              <span>报告期 <span className="font-mono">{latestPeriod}</span></span>
+              {latestAnnounce && (
+                <span className="text-muted">· 披露 {fmtDate(latestAnnounce)}</span>
+              )}
+            </div>
+          )}
+          <button
+            onClick={handleAiAnalysis}
+            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-btn text-[11px] font-medium border border-purple-400/30 bg-purple-400/10 text-purple-300 hover:bg-purple-400/20 transition-colors shrink-0"
+            title="AI 财务分析（开发中）"
+          >
+            <Sparkles className="h-3 w-3" />
+            AI 财务分析
+          </button>
+        </div>
       </div>
 
       {/* 标签页 */}
@@ -224,6 +240,13 @@ export function StockFinancialDetail({ symbol, name }: Props) {
           </div>
         )}
       </div>
+
+      {/* AI 分析开发中提示 */}
+      {showDevToast && (
+        <div className="absolute top-16 right-6 z-50 rounded-btn border border-purple-400/40 bg-purple-400/15 px-3 py-2 text-xs text-purple-200 shadow-lg backdrop-blur-sm animate-pulse">
+          ✨ AI 财务分析功能开发中，敬请期待
+        </div>
+      )}
     </div>
   )
 }

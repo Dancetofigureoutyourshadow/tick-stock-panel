@@ -4,6 +4,7 @@ import { StockInfoBar } from '@/components/StockInfoBar'
 import { StockDailyKChart, getDefaultRange, type StockDailyKChartResult } from '@/components/StockDailyKChart'
 import { StockIntradayChart } from '@/components/StockIntradayChart'
 import { useFinancialMetrics } from '@/lib/useFinancials'
+import { useCapabilities } from '@/lib/useSharedQueries'
 import type { ChartMarker, ChartPriceLine, ChartRange } from '@/components/EChartsCandlestick'
 import {
   loadInfoFields,
@@ -63,13 +64,16 @@ export function StockPanel({
     saveInfoFields(next)
   }, [])
 
-  // 财务指标：仅当信息条配置含可见的财务字段时才请求（避免无谓请求 + 受 Cap.FINANCIAL 门控）
+  // 财务指标：仅当信息条配置含可见的财务字段且用户具备 FINANCIAL 能力 (Expert) 时才请求
+  // 无能力时跳过请求, 避免后端抛 CapabilityDenied (403) 导致 free/starter 档弹错误提示
+  const { data: caps } = useCapabilities()
+  const hasFinancialCap = !!caps?.capabilities?.['financial']
   const hasFinanceField = useMemo(
     () => fields.some(f => f.visible && f.source.type === 'builtin'
       && ['eps', 'bps', 'roe', 'pe_ttm', 'pb', 'gross_margin', 'net_margin', 'debt_ratio', 'revenue_yoy', 'net_income_yoy'].includes(f.source.key)),
     [fields],
   )
-  const financials = useFinancialMetrics(hasFinanceField ? symbol : undefined)
+  const financials = useFinancialMetrics(hasFinanceField && hasFinancialCap ? symbol : undefined)
 
   const dateRange = externalDateRange ?? getDefaultRange()
 

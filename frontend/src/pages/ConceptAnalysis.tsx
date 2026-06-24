@@ -243,7 +243,11 @@ export function ConceptAnalysis() {
 
   const configsQuery = useQuery({ queryKey: QK.extData, queryFn: api.extDataList })
   const availableConfigs = configsQuery.data?.items ?? []
-  const activeConfigId = fieldConfig.configId || pickBestConfig(availableConfigs)
+  // 用户配置的 configId 可能已失效 (扩展数据被删除), 此时回退到自动选择,
+  // 避免用失效 ID 请求接口报错; 用户仍可点配置按钮重新选择。
+  const preferredConfigId = fieldConfig.configId || pickBestConfig(availableConfigs)
+  const preferredConfig = availableConfigs.find(c => c.id === preferredConfigId)
+  const activeConfigId = preferredConfig ? preferredConfigId : pickBestConfig(availableConfigs)
   const activeConfig = availableConfigs.find(c => c.id === activeConfigId)
 
   const rowsQuery = useQuery({
@@ -308,7 +312,14 @@ export function ConceptAnalysis() {
   if (!activeConfig) {
     return (
       <div className="flex h-full flex-col">
-        <PageHeader title="概念分析" />
+        <PageHeader
+          title="概念分析"
+          right={
+            <button onClick={() => setShowConfig(true)} className="p-1.5 text-muted hover:bg-surface hover:text-accent" title="配置数据源">
+              <Settings2 className="h-4 w-4" />
+            </button>
+          }
+        />
         <EmptyState icon={Database} title="暂无概念数据" hint={'请先在"数据"页面创建包含概念/题材字段的扩展数据源'} />
       </div>
     )

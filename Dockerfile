@@ -1,8 +1,21 @@
 # 两阶段构建:前端 dist 拷进后端镜像,单容器运行
+# 可选:构建网络无法直连官方源时,传入 --build-arg USE_CN_MIRROR=1 启用国内镜像
+ARG USE_CN_MIRROR=1
+ARG NPM_REGISTRY=https://registry.npmmirror.com
+ARG PYPI_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
+
 # === Stage 1: 前端构建 ===
 FROM node:20-alpine AS frontend-builder
+ARG USE_CN_MIRROR=1
+ARG NPM_REGISTRY=https://registry.npmmirror.com
 WORKDIR /build
-RUN corepack enable && corepack prepare pnpm@9 --activate
+# 关键:corepack 不读 npm 的 registry 配置,且跨 RUN 不保留环境变量,
+# 因此国内网络下最稳的做法是直接用 npm 安装 pnpm(npm 会读取 .npmrc 镜像源),
+# 彻底绕开 corepack 再次联网下载 pnpm 的问题。
+RUN if [ "$USE_CN_MIRROR" = "1" ]; then npm config set registry "$NPM_REGISTRY"; fi && \
+    npm install -g pnpm@9
+# 让 pnpm 走镜像源安装依赖
+RUN if [ "$USE_CN_MIRROR" = "1" ]; then pnpm config set registry "$NPM_REGISTRY"; fi
 COPY frontend/package.json frontend/pnpm-lock.yaml* ./
 RUN pnpm install --frozen-lockfile || pnpm install
 COPY frontend/ ./
@@ -10,19 +23,32 @@ RUN pnpm build
 
 # === Stage 2: Python 运行时 ===
 FROM python:3.11-slim AS runtime
+ARG USE_CN_MIRROR=1
+ARG PYPI_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
 WORKDIR /app
 
 # 安装 uv(快)
-RUN pip install --no-cache-dir uv
+RUN if [ "$USE_CN_MIRROR" = "1" ]; then \
+      pip install --no-cache-dir uv -i "$PYPI_INDEX"; \
+    else \
+      pip install --no-cache-dir uv; \
+    fi
 
 # Backend deps
 COPY README.md /README.md
 COPY backend/pyproject.toml backend/uv.lock* ./
-RUN uv sync --frozen --no-dev || uv sync --no-dev
+RUN if [ "$USE_CN_MIRROR" = "1" ]; then export UV_DEFAULT_INDEX="$PYPI_INDEX"; fi; \
+    uv sync --frozen --no-dev || uv sync --no-dev
 
 # Backend code
+# 注意:Docker 里 WORKDIR=/app, 而 config.py 的 _PROJECT_ROOT 是按开发布局
+# (<root>/backend/app/) 推导的, 容器内会错算到 /。这里用环境变量显式指定
+# 三个关键路径, 确保 static / tiers / data 都指向容器内正确位置。
 COPY backend/app ./app
 COPY tiers.yaml /app/tiers.yaml
+ENV STATIC_DIR=/app/static \
+    TIERS_YAML=/app/tiers.yaml \
+    DATA_DIR=/app/data
 
 # Frontend 静态产物
 COPY --from=frontend-builder /build/dist ./static

@@ -45,11 +45,10 @@ backend/data/**
 !backend/data/.gitkeep
 data/**
 !data/.gitkeep
-# 扩展数据: 只跟踪 config.json(表结构), 其他数据文件一律忽略
+# 扩展数据: 全部纳入版本控制(含 config.json 表结构 + part.parquet 数据文件)
 # 注意 gitignore 否定规则特性: 需先放行目录才能放行内部文件
 !data/ext_data/
-data/ext_data/**
-!data/ext_data/**/config.json
+!data/ext_data/**
 
 # ===== Secrets =====
 .env

@@ -1,7 +1,7 @@
 {
-  "id": "ext_sxdata_ths",
-  "label": "扩展ths数据",
-  "mode": "timeseries",
+  "id": "ext_kz_ths",
+  "label": "扩展快照ths",
+  "mode": "snapshot",
   "fields": [
     {
       "name": "symbol",
@@ -24,14 +24,14 @@
       "label": "股票简称"
     },
     {
+      "name": "所属概念",
+      "dtype": "string",
+      "label": "所属概念"
+    },
+    {
       "name": "人气排名",
       "dtype": "int",
       "label": "人气排名"
-    },
-    {
-      "name": "个股热度",
-      "dtype": "float",
-      "label": "个股热度"
     },
     {
       "name": "资金流向",
@@ -42,11 +42,6 @@
       "name": "PE",
       "dtype": "float",
       "label": "PE"
-    },
-    {
-      "name": "PE_TTM",
-      "dtype": "float",
-      "label": "PE_TTM"
     },
     {
       "name": "PB",
@@ -67,14 +62,9 @@
       "name": "净利润",
       "dtype": "float",
       "label": "净利润"
-    },
-    {
-      "name": "所属概念",
-      "dtype": "string",
-      "label": "所属概念"
     }
   ],
-  "description": "扩展时序ths数据、实时更、人气、资金流向、财务等",
+  "description": "",
   "symbol_map": {
     "type": "mapped",
     "col": "股票代码"
@@ -84,6 +74,6 @@
     "from": "symbol",
     "method": "strip_exchange"
   },
-  "created_at": "2026-06-19T19:59:15.923591",
-  "updated_at": "2026-06-19T19:59:15.923591"
+  "created_at": "2026-06-05T13:48:50.034495",
+  "updated_at": "2026-06-05T16:02:52.060612"
 }

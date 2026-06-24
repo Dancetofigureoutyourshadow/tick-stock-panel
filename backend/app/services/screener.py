@@ -185,6 +185,14 @@ class ScreenerService:
     def __init__(self, repo: KlineRepository) -> None:
         self.repo = repo
 
+    @staticmethod
+    def clear_history_cache() -> None:
+        """清空进程级 _history_cache (TTL 缓存)。
+
+        清除数据后调用, 避免内存里的旧历史窗口残留导致策略/看板仍命中旧数据。
+        """
+        _history_cache.clear()
+
     def _load_enriched_for_date(self, target_date: date) -> pl.DataFrame:
         """从 enriched parquet 读取指定日期的基础数据并即时计算完整指标+信号。
 

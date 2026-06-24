@@ -2,7 +2,7 @@ import { useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { motion } from 'framer-motion'
-import { Activity, ArrowDownRight, ArrowUpRight, BarChart3, BellRing, Database, Flame, Gauge, LineChart, Loader2, RefreshCw, Sparkles, Target, Timer, ExternalLink, Gift } from 'lucide-react'
+import { Activity, AlertTriangle, ArrowDownRight, ArrowUpRight, BarChart3, BellRing, Check, Copy, Flame, Gauge, LineChart, Loader2, RefreshCw, Sparkles, Target, Timer, ExternalLink } from 'lucide-react'
 import { DatePicker } from '@/components/DatePicker'
 import { api, type MarketSnapshotRow, type OverviewDimensionRankItem, type OverviewMarket, type AlertEvent } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
@@ -471,6 +471,7 @@ function HotRankCard({ title, rank, configUrl }: { title: string; rank?: Overvie
 export function Dashboard() {
   const [selectedDate, setSelectedDate] = useState<string | undefined>()
   const [manualFetching, setManualFetching] = useState(false)
+  const [copiedCode, setCopiedCode] = useState(false)
   const dataStatus = useDataStatus({ staleTime: 60_000 })
   const overview = useQuery({
     queryKey: QK.overviewMarket(selectedDate),
@@ -487,8 +488,11 @@ export function Dashboard() {
   // none 档(无 key / 无效 key)→ 显示升级提示横幅
   const isNoKey = settings.data?.mode === 'none'
   // 无本地数据(enriched/daily 都没有)→ 提示去数据页同步
+  // 注: 后端 status 的 rows 为性能刻意返回 0, 用 trading_days 判断是否有数据
   const ds = dataStatus.data
-  const hasNoData = !!ds && (ds.enriched?.rows ?? 0) === 0 && (ds.daily?.rows ?? 0) === 0
+  const hasNoData = !!ds
+    && (ds.enriched?.trading_days ?? 0) === 0
+    && (ds.daily?.trading_days ?? 0) === 0
 
   // 手动刷新: 显示旋转动画; SSE 自动刷新: 静默, 无体感
   const handleRefresh = () => {
@@ -529,9 +533,9 @@ export function Dashboard() {
       {/* none 档(无 key)提示横幅 —— 引导用户领取免费 Key 解锁完整能力 */}
       {isNoKey && (
         <div className="mb-3 flex items-center gap-2 rounded-card border border-warning/40 bg-warning/10 px-3 py-2 text-xs">
-          <Gift className="h-4 w-4 shrink-0 text-warning" />
+          <AlertTriangle className="h-4 w-4 shrink-0 text-warning" />
           <span className="text-secondary leading-relaxed">
-            当前未配置 API Key,实时行情、批量同步等能力不可用。
+            当前未配置 API Key,批量同步、实时行情等能力不可用。
             <a
               href="https://tickflow.org/auth/register?ref=V3KDKGXPEA"
               target="_blank"
@@ -542,24 +546,41 @@ export function Dashboard() {
               <ExternalLink className="h-3 w-3 self-center" />
             </a>
             免费注册(或填邀请码{' '}
-            <span className="font-mono font-semibold text-warning">V3KDKGXPEA</span>
-            )即可领取免费 API Key,无需付费即可体验完整功能。
+            <span className="font-mono font-semibold text-warning inline-flex items-baseline gap-1">
+              V3KDKGXPEA
+              <button
+                type="button"
+                onClick={() => {
+                  navigator.clipboard?.writeText('V3KDKGXPEA').then(() => {
+                    setCopiedCode(true)
+                    setTimeout(() => setCopiedCode(false), 1500)
+                  })
+                }}
+                className="text-warning/60 hover:text-warning transition-colors self-center"
+                aria-label="复制邀请码"
+                tabIndex={-1}
+              >
+                {copiedCode ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+              </button>
+            </span>
+            )即可领取免费 API Key,无需付费即可体验。
           </span>
         </div>
       )}
-      {/* 无本地数据提示 —— 引导用户去数据页同步 */}
-      {hasNoData && (
-        <div className="mb-3 flex items-center gap-2 rounded-card border border-accent/40 bg-accent/10 px-3 py-2 text-xs">
-          <Database className="h-4 w-4 shrink-0 text-accent" />
+      {/* 无本地数据提示 —— 引导用户去数据页同步 (仅当已配置 Key 时显示, 无 Key 时优先提示配置 Key) */}
+      {hasNoData && !isNoKey && (
+        <div className="mb-3 flex items-center gap-2 rounded-card border border-warning/40 bg-warning/10 px-3 py-2 text-xs">
+          <AlertTriangle className="h-4 w-4 shrink-0 text-warning" />
           <span className="text-secondary leading-relaxed">
-            看板暂无数据,请前往数据页面同步行情数据后查看。
+            当前暂无数据,请前往数据页面同步行情数据完成后查看。
+            <Link
+              to="/data"
+              className="ml-1 shrink-0 inline-flex items-center gap-0.5 font-medium text-warning hover:underline"
+            >
+              前往同步数据
+              <ArrowUpRight className="h-3 w-3 self-center" />
+            </Link>
           </span>
-          <Link
-            to="/data"
-            className="ml-auto shrink-0 inline-flex items-center gap-1 rounded-btn bg-accent px-2.5 py-1 text-[11px] font-medium text-white hover:bg-accent/90 transition-colors"
-          >
-            前往同步
-          </Link>
         </div>
       )}
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-card border border-border bg-surface/85 px-3 py-2">

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
@@ -214,6 +215,8 @@ export function Data() {
   const isRunning = job.data?.status === 'running' || job.data?.status === 'pending'
   const isStarting = startSync.isPending
   const hasData = !!(s?.instruments?.rows || s?.daily?.rows)
+  // none 档(无 key / 无效 key) → 禁用立即同步 (同步依赖付费档的批量端点)
+  const isNoKey = settings.data?.mode === 'none'
   const indexOverviewStats = s ? {
     rows: 0,
     earliest_date: s.index_daily?.earliest_date ?? s.index_enriched?.earliest_date ?? null,
@@ -290,21 +293,31 @@ export function Data() {
         subtitle="本地数据画像 · 同步状态 · 历史记录"
         right={
           <div className="flex items-center gap-3">
-            {!hasData && !isLoading && (
+            {!hasData && !isLoading && !isNoKey && (
               <span className="text-xs text-accent animate-pulse">首次使用请点击右侧按钮同步数据</span>
             )}
-            <button
-              onClick={() => startSync.mutate()}
-              disabled={isStarting}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-btn bg-gradient-to-r from-accent/25 to-accent/10 border border-accent/30 text-accent text-xs font-medium hover:from-accent/35 hover:to-accent/20 disabled:opacity-40 transition-all duration-150"
-            >
-              {(isRunning || isStarting) ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
+            {isNoKey ? (
+              <button
+                disabled
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-btn bg-gradient-to-r from-accent/25 to-accent/10 border border-accent/30 text-accent text-xs font-medium opacity-40 cursor-not-allowed transition-all duration-150"
+              >
                 <Play className="h-3.5 w-3.5" />
-              )}
-              {isStarting ? '启动中…' : isRunning ? '同步中…' : '立即同步'}
-            </button>
+                立即同步
+              </button>
+            ) : (
+              <button
+                onClick={() => startSync.mutate()}
+                disabled={isStarting}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-btn bg-gradient-to-r from-accent/25 to-accent/10 border border-accent/30 text-accent text-xs font-medium hover:from-accent/35 hover:to-accent/20 disabled:opacity-40 transition-all duration-150"
+              >
+                {(isRunning || isStarting) ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Play className="h-3.5 w-3.5" />
+                )}
+                {isStarting ? '启动中…' : isRunning ? '同步中…' : '立即同步'}
+              </button>
+            )}
             <div className="w-px h-4 bg-border" />
             <div className="flex items-center gap-1.5">
               <button
@@ -335,6 +348,20 @@ export function Data() {
       />
 
       <div className="px-8 py-6 space-y-6 max-w-6xl">
+        {/* 未配置 API Key 告警条 —— 引导用户去配置 Key 后才能同步 */}
+        {isNoKey && (
+          <div className="flex items-center gap-2 rounded-card border border-warning/40 bg-warning/10 px-3 py-2 text-xs">
+            <AlertTriangle className="h-4 w-4 shrink-0 text-warning" />
+            <span className="text-secondary leading-relaxed">
+              未配置 API Key,无法同步数据,请前往
+              <Link to="/settings?tab=account" className="mx-0.5 font-medium text-warning hover:underline">
+                配置
+              </Link>
+              。
+            </span>
+          </div>
+        )}
+
         {/* 实时进度 */}
         <AnimatePresence>
           {job.data && (
@@ -643,7 +670,7 @@ export function Data() {
                 { label: '指标', table: 'index_enriched' },
               ] as FieldTab[]}
               onShowFields={(t) => setSchemaTable(t ?? 'index_daily')}
-              onSettings={() => setOpenSettings(v => v === 'index' ? null : 'index')}
+              onSettings={hasData ? () => setOpenSettings(v => v === 'index' ? null : 'index') : undefined}
               settingsOpen={openSettings === 'index'}
             />
             <StatCard

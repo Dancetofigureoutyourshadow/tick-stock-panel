@@ -255,7 +255,7 @@ export function ExtDimensionAnalysis({
       <PageHeader
         title={activeTitle}
         subtitle={menu ? `${menu.template} · ${menu.data_source}` : subtitle}
-        right={!menu && (
+        right={
           <div className="flex items-center gap-2">
             <select
               value={activeConfigId}
@@ -281,7 +281,7 @@ export function ExtDimensionAnalysis({
               ))}
             </select>
           </div>
-        )}
+        }
       />
 
       <div className="px-8 py-6 space-y-6 max-w-7xl">

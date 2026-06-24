@@ -47,8 +47,8 @@ export function SettingsSystemPanel() {
     }
   }, [qc])
 
-  // 清理浏览器缓存: 清除 react-query 缓存 + 强制重载 (绕过浏览器缓存)
-  // 不动 localStorage (用户列配置/策略池等偏好保留)
+  // 刷新前端缓存: 清除 react-query 缓存 + 强制重载 (绕过浏览器缓存)
+  // 不动 localStorage (用户列配置/策略池等偏好保留), 也不影响后端的本地股票数据
   const handleClearCache = useCallback(() => {
     setClearing(true)
     qc.clear()
@@ -171,9 +171,9 @@ export function SettingsSystemPanel() {
 
         <div className="flex items-center justify-between gap-4 py-2">
           <div className="min-w-0">
-            <div className="text-sm text-foreground">清理浏览器缓存</div>
+            <div className="text-sm text-foreground">刷新前端缓存</div>
             <div className="text-[11px] text-muted truncate">
-              清除前端缓存并强制重新加载页面 (不影响你的个人配置)
+              清除页面缓存并强制重新加载 (不影响个人配置和本地股票数据)
             </div>
           </div>
           <button

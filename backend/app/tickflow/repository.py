@@ -152,6 +152,22 @@ class KlineRepository:
         self._refresh_index_instruments()
         self._refresh_enriched()
 
+    def clear_cache(self) -> None:
+        """清空所有 Polars 内存缓存。
+
+        与 refresh_cache 的区别: refresh_cache 在磁盘无数据时会提前 return,
+        导致内存里的旧缓存残留 (clear 数据后看板仍显示旧数据的根因)。
+        本方法无条件清空, 供清除数据/重置场景调用。
+        """
+        self._enriched_cache = None
+        self._enriched_cache_date = None
+        self._enriched_history_cache = None
+        self._enriched_history_start = None
+        self._live_agg_cache = None
+        self._live_agg_cache_date = None
+        self._instruments_cache = None
+        self._index_instruments_cache = None
+
     def _refresh_enriched(self) -> None:
         """从 parquet 加载 enriched 最新日到内存 + 构建聚合表。
 
@@ -163,6 +179,9 @@ class KlineRepository:
         try:
             latest = self._latest_enriched_date_duckdb()
             if not latest:
+                # 磁盘已无数据: 必须清空内存缓存, 否则旧数据会残留
+                # (清数据后看板仍显示旧数据的根因)
+                self.clear_cache()
                 return
 
             # Step 1: 直接读最新日期的分区文件 (仅 14 列)

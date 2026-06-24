@@ -20,6 +20,18 @@ _cache: dict[str, Any] | None = None
 _cache_key: str | None = None
 _cache_ts: float = 0.0
 
+
+def invalidate_overview_cache() -> None:
+    """清空总览聚合结果缓存。
+
+    清除数据后调用, 避免看板在 TTL 窗口内继续返回旧的聚合结果。
+    """
+    global _cache, _cache_key, _cache_ts
+    _cache = None
+    _cache_key = None
+    _cache_ts = 0.0
+
+
 CORE_INDEX_NAMES = {
     "000001.SH": "上证指数",
     "399001.SZ": "深证成指",

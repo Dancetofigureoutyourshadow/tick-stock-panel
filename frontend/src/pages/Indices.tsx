@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Activity, Loader2, RefreshCw, Search } from 'lucide-react'
+import { Activity, Loader2, Lock, RefreshCw, Search } from 'lucide-react'
 import { api, type IndexInstrument, type KlineRow, type MinuteKlineRow } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
+import { useCapabilities } from '@/lib/useSharedQueries'
 import { EChartsCandlestick, type OHLC } from '@/components/EChartsCandlestick'
 import { EChartsIntraday } from '@/components/EChartsIntraday'
 
@@ -74,6 +75,10 @@ export function Indices() {
   const [selectedDate, setSelectedDate] = useState<string | null>(null)
   const [linkedPrice, setLinkedPrice] = useState<number | null>(null)
 
+  // 分时数据需 Pro+ (kline.minute.batch) 能力
+  const caps = useCapabilities()
+  const hasMinuteCap = !!caps.data?.capabilities?.['kline.minute.batch']
+
   const list = useQuery({
     queryKey: QK.indexList,
     queryFn: api.indexList,
@@ -123,7 +128,7 @@ export function Indices() {
   const minute = useQuery({
     queryKey: QK.indexMinute(selectedSymbol, selectedDate ?? ''),
     queryFn: () => api.indexMinute(selectedSymbol, selectedDate ?? undefined),
-    enabled: !!selectedSymbol && !!selectedDate,
+    enabled: !!selectedSymbol && !!selectedDate && hasMinuteCap,
     placeholderData: (prev) => prev,
   })
 
@@ -307,23 +312,33 @@ export function Indices() {
                 />
               </div>
               <div className="min-w-0 flex-1 border-l border-border pl-3" style={{ height: 620 }}>
-                {minute.isLoading && <div className="py-2 text-xs text-muted">分时加载中…</div>}
-                {!minute.isLoading && minuteRows.length === 0 && (
-                  <div className="flex h-full items-center justify-center text-xs text-muted">
-                    暂无分时数据
+                {!hasMinuteCap ? (
+                  <div className="flex h-full flex-col items-center justify-center gap-2 text-center">
+                    <Lock className="h-5 w-5 text-muted" />
+                    <div className="text-xs text-secondary">分时数据权限需 Pro+</div>
+                    <div className="text-[10px] text-muted">升级套餐后可查看指数分时走势</div>
                   </div>
-                )}
-                {minuteRows.length > 0 && (
-                  <EChartsIntraday
-                    data={minuteRows}
-                    height={620}
-                    prevClose={prevClose}
-                    date={selectedDate ?? undefined}
-                    symbol={selectedSymbol}
-                    showLimitLines={false}
-                    showAvgLine={false}
-                    onPriceHover={setLinkedPrice}
-                  />
+                ) : (
+                  <>
+                    {minute.isLoading && <div className="py-2 text-xs text-muted">分时加载中…</div>}
+                    {!minute.isLoading && minuteRows.length === 0 && (
+                      <div className="flex h-full items-center justify-center text-xs text-muted">
+                        暂无分时数据
+                      </div>
+                    )}
+                    {minuteRows.length > 0 && (
+                      <EChartsIntraday
+                        data={minuteRows}
+                        height={620}
+                        prevClose={prevClose}
+                        date={selectedDate ?? undefined}
+                        symbol={selectedSymbol}
+                        showLimitLines={false}
+                        showAvgLine={false}
+                        onPriceHover={setLinkedPrice}
+                      />
+                    )}
+                  </>
                 )}
               </div>
             </div>

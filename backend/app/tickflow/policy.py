@@ -19,6 +19,7 @@ from typing import Any
 import yaml
 
 from app.config import settings
+from app import secrets_store
 
 from .capabilities import Cap, CapabilityLimits, CapabilitySet
 
@@ -109,11 +110,21 @@ def _call_with_retry(fn, attempts: int = 3, backoff: float = 0.6) -> None:
 def _probe_real(tiers: dict) -> tuple[CapabilitySet, list[str]]:
     """逐 capability 试探。需要 API key。
 
+    **关键**:探测始终在付费端点(api.tickflow.org)上进行,用 key 鉴权验证有效性。
+    绝不能读旧 capabilities 缓存的档位来选服务器 —— 否则首次保存 key 时,
+    旧缓存是 none 档 → get_client() 返回 free 服务器 → free 服务器忽略 key →
+    乱填 key 也能拿到日K → 误判成 free 档(鸡生蛋蛋生鸡的循环依赖 bug)。
+
     返回 (capset, probe_log)。
     """
-    from .client import get_client
+    from tickflow import TickFlow
+    from .client import _base_url, PAID_ENDPOINT
 
-    tf = get_client()
+    key = secrets_store.get_tickflow_key()
+    # 探测专用客户端:强制走付费端点验证 key。
+    # base_url 用用户自定义端点(若已配置测速切换),否则默认 api.tickflow.org。
+    probe_base = _base_url() or PAID_ENDPOINT
+    tf = TickFlow(api_key=key, base_url=probe_base)
     available: dict[Cap, CapabilityLimits] = {}
     log: list[str] = []
 

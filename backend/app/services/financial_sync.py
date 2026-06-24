@@ -270,10 +270,14 @@ class FinancialScheduler:
                 self._last_sync[table] = datetime.now(timezone.utc).isoformat()
                 return {table: rows}
             else:
-                result = sync_all(self._data_dir, self._capset)
-                now = datetime.now(timezone.utc).isoformat()
-                for t in result:
-                    self._last_sync[t] = now
+                # 全部同步: 逐表执行, 每张完成立即更新 last_sync,
+                # 让前端轮询 /status 能看到进度递增 (而非等全部完成才一次性更新)。
+                symbols = _get_symbols(self._data_dir)
+                result: dict[str, int] = {}
+                for t in FINANCIAL_TABLES:
+                    result[t] = _sync_table(t, symbols, self._data_dir, self._capset, latest_only=True)
+                    self._last_sync[t] = datetime.now(timezone.utc).isoformat()
+                _refresh_financials_views(self._data_dir)
                 return result
         finally:
             with self._lock:

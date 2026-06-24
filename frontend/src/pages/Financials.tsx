@@ -1,11 +1,12 @@
-import { useState } from 'react'
-import { RefreshCw, Lock, Loader2, X, Search } from 'lucide-react'
+import { useState, useRef } from 'react'
+import { RefreshCw, Lock, Loader2, X, Search, FileText, Database, Clock, CheckCircle2, Hourglass } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
 import { EmptyState } from '@/components/EmptyState'
 import { useCapabilities } from '@/lib/useSharedQueries'
 import { useFinancialStatus, useFinancialSync } from '@/lib/useFinancials'
 import { StockFinancialSearch } from '@/components/financials/StockFinancialSearch'
 import { StockFinancialDetail } from '@/components/financials/StockFinancialDetail'
+import { fmtBigNum } from '@/lib/format'
 
 const TABLE_LABELS: Record<string, string> = {
   metrics: '核心指标',
@@ -14,25 +15,43 @@ const TABLE_LABELS: Record<string, string> = {
   cash_flow: '现金流量表',
 }
 
+const TABLE_ICON: Record<string, typeof FileText> = {
+  metrics: Database,
+  income: FileText,
+  balance_sheet: FileText,
+  cash_flow: FileText,
+}
+
 export function Financials() {
   const { data: caps } = useCapabilities()
   const hasFinancial = caps?.capabilities?.['financial'] != null
   const { data: status, isLoading } = useFinancialStatus()
   const syncMut = useFinancialSync()
-  // 用服务端 syncing 真值驱动 UI(而非本地状态),刷新后仍正确,且天然防重复点击
-  const syncing = status?.syncing ?? false
+  // 同步状态: 服务端 syncing 真值优先, 兜底本地 mutation pending
+  const syncing = (status?.syncing ?? false) || syncMut.isPending
+  // 本次同步开始时间戳(ms): 用于判断每张表的 last_sync 是否属于本次同步
+  // (后端每张表完成即更新 last_sync, 前端轮询时对比时间戳得到精确进度)
+  const syncStartedAtRef = useRef<number | null>(null)
+  // 单表同步时记录表名 (null = 全量同步), 用于区分卡片状态
+  const syncSingleTableRef = useRef<string | null>(null)
   // 选中的个股(模糊搜索结果);null 时显示搜索引导
   const [selected, setSelected] = useState<{ symbol: string; name: string } | null>(null)
 
   if (!hasFinancial) {
     return (
       <>
-        <PageHeader title="财务" subtitle="利润表 / 资负表 / 现金流 / 关键指标" />
-        <EmptyState
-          icon={Lock}
-          title="需要 Expert 套餐"
-          hint="财务数据接口仅 Expert 套餐可用。升级后此页自动显示财务数据面板。"
-        />
+        <PageHeader title="财务" subtitle="利润表 / 资负表 / 现金流 / 关键指标 · Expert" />
+        <div className="px-8 py-10">
+          <div className="mx-auto max-w-md rounded-card border border-warning/30 bg-warning/[0.04] p-8 text-center">
+            <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-warning/10">
+              <Lock className="h-6 w-6 text-warning" />
+            </div>
+            <h3 className="mt-4 text-base font-semibold text-foreground">需要 Expert 套餐</h3>
+            <p className="mt-2 text-xs leading-relaxed text-secondary">
+              财务数据接口仅 Expert 套餐可用。升级后此页自动显示财务数据面板。
+            </p>
+          </div>
+        </div>
       </>
     )
   }
@@ -40,13 +59,45 @@ export function Financials() {
   const handleSync = (table: string) => {
     // 防重复点击:syncing 中不再触发(后端 run_now 也有 is_syncing 兜底)
     if (syncing) return
-    syncMut.mutate(table)
+    // 记录开始时间: 全量同步判断所有 4 张表, 单表同步只判断这一张
+    syncStartedAtRef.current = Date.now()
+    syncSingleTableRef.current = table === 'all' ? null : table
+    syncMut.mutate(table, {
+      onSettled: () => {
+        syncStartedAtRef.current = null
+        syncSingleTableRef.current = null
+      },
+    })
   }
 
   const tables = status?.tables ?? {}
   const available = status?.available ?? false
-  // 进度:已同步(rows>0)的表数 / 总表数,供同步中提示
-  const syncedCount = Object.values(tables).filter(t => (t?.rows ?? 0) > 0).length
+  const lastSync = status?.last_sync ?? {}
+  // 本次同步进度: 仅当 syncStartedAt 存在且 syncing 时, 按 last_sync 时间戳判断
+  const syncStartedAt = syncStartedAtRef.current
+  const syncSingleTable = syncSingleTableRef.current
+  const isFullSync = syncing && syncStartedAt && !syncSingleTable  // 全量同步
+  const isSingleSync = syncing && syncStartedAt && !!syncSingleTable  // 单表同步
+  const TABLE_ORDER = ['metrics', 'income', 'balance_sheet', 'cash_flow'] as const
+  const tableDoneThisRound = (key: string): boolean => {
+    if (!syncStartedAt || !syncing) return false
+    // 单表同步: 只判断这一张表是否完成
+    if (syncSingleTable && key !== syncSingleTable) return false
+    const ls = lastSync[key]
+    if (!ls) return false
+    return new Date(ls).getTime() >= syncStartedAt
+  }
+  // 当前正在同步的表:
+  // 全量同步 → 第一个未完成的; 单表同步 → 那张表(未完成时)
+  const currentSyncingTable = syncing && syncStartedAt
+    ? (syncSingleTable
+        ? (tableDoneThisRound(syncSingleTable) ? null : syncSingleTable)
+        : TABLE_ORDER.find(t => !tableDoneThisRound(t)) ?? null)
+    : null
+  const syncedCount = TABLE_ORDER.filter(t => tableDoneThisRound(t)).length
+  // 卡片三态: 仅全量同步时未轮到的表显示"等待"; 单表同步时其他表保持原样
+  const isWaitingTable = (key: string): boolean =>
+    !!isFullSync && !tableDoneThisRound(key) && currentSyncingTable !== key
 
   return (
     <>
@@ -54,121 +105,169 @@ export function Financials() {
         title="财务"
         subtitle="利润表 / 资负表 / 现金流 / 关键指标 · Expert"
         right={
-          <div className="flex gap-2">
+          <div className="flex items-center gap-2">
+            {syncing && (
+              <span className="text-xs text-accent/80 flex items-center gap-1.5">
+                <Loader2 className="w-3 h-3 animate-spin" />
+                {isFullSync
+                  ? `已同步 ${syncedCount}/4 张表…`
+                  : isSingleSync
+                    ? `同步${TABLE_LABELS[syncSingleTable!] ?? syncSingleTable}…`
+                    : '同步中…'}
+              </span>
+            )}
             <button
-              className="px-3 py-1.5 text-xs bg-card border border-border rounded-md hover:bg-accent transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-btn bg-gradient-to-r from-accent/25 to-accent/10 border border-accent/30 text-accent text-xs font-medium hover:from-accent/35 hover:to-accent/20 transition-all duration-150 disabled:opacity-40 disabled:cursor-not-allowed"
               onClick={() => handleSync('all')}
               disabled={syncing}
               title={syncing ? '正在同步，请稍候…' : '同步全部财务表'}
             >
               {syncing
-                ? <Loader2 className="inline w-3 h-3 mr-1 animate-spin" />
-                : <RefreshCw className="inline w-3 h-3 mr-1" />}
+                ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                : <RefreshCw className="h-3.5 w-3.5" />}
               {syncing ? '同步中…' : '全部同步'}
             </button>
           </div>
         }
       />
 
-      {syncing && (
-        <div className="px-5 -mt-2 pb-1 text-xs text-accent/80 flex items-center gap-1.5">
-          <Loader2 className="w-3 h-3 animate-spin" />
-          正在从 TickFlow 拉取财务数据，已同步 {syncedCount}/4 张表…
-        </div>
-      )}
-
-      {/* 同步状态卡片 —— 始终显示,反映本地财务数据概况 */}
-      {!isLoading && available && (
-        <div className="px-5 pt-3">
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            {Object.entries(TABLE_LABELS).map(([key, label]) => {
-              const info = tables[key]
-              return (
-                <div key={key} className="bg-card border border-border rounded-lg p-3">
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm font-medium">{label}</span>
-                    <button
-                      className="text-muted hover:text-foreground transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                      onClick={() => handleSync(key)}
-                      disabled={syncing}
-                      title={syncing ? '正在同步…' : `同步${label}`}
-                    >
-                      {syncing
-                        ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                        : <RefreshCw className="w-3.5 h-3.5" />}
-                    </button>
-                  </div>
-                  <div className="mt-2 text-2xl font-semibold tabular-nums">
-                    {info?.rows ?? 0}
-                    <span className="text-xs text-muted ml-1">行</span>
-                  </div>
-                  <div className="text-xs text-muted mt-0.5">
-                    {info?.symbols ?? 0} 只标的
-                  </div>
-                </div>
-              )
-            })}
+      <div className="px-8 py-6 space-y-6 max-w-7xl">
+        {syncing && (
+          <div className="flex items-center gap-2 rounded-card border border-accent/30 bg-accent/[0.06] px-3 py-2 text-xs text-accent">
+            <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" />
+            正在从 TickFlow 拉取财务数据，请稍候…
           </div>
-          {status?.last_sync && Object.keys(status.last_sync).length > 0 && (
-            <div className="text-xs text-muted mt-3">
-              最后同步: {Object.entries(status.last_sync).map(([k, v]) =>
-                `${TABLE_LABELS[k] || k}: ${new Date(v).toLocaleString()}`
-              ).join(' / ')}
+        )}
+
+        {/* 同步状态卡片 —— 始终显示,反映本地财务数据概况 */}
+        {!isLoading && available && (
+          <div>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              {Object.entries(TABLE_LABELS).map(([key, label]) => {
+                const info = tables[key]
+                const TIcon = TABLE_ICON[key] ?? Database
+                const hasData = (info?.rows ?? 0) > 0
+                // 本次同步三态: 完成 / 同步中 / 等待 (仅全量同步时未轮到的表才"等待")
+                const doneThisRound = tableDoneThisRound(key)
+                const isThisSyncing = currentSyncingTable === key
+                const isWaiting = isWaitingTable(key)
+                const lsTime = lastSync[key]
+                return (
+                  <div
+                    key={key}
+                    className={`rounded-card border p-3.5 transition-colors flex flex-col ${
+                      isThisSyncing
+                        ? 'border-accent/40 bg-accent/[0.04]'
+                        : isWaiting
+                          ? 'border-border/50 bg-elevated/15'
+                          : hasData
+                            ? 'border-border bg-surface'
+                            : 'border-dashed border-border/60 bg-elevated/20'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-1.5">
+                        {doneThisRound ? (
+                          <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
+                        ) : isThisSyncing ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin text-accent" />
+                        ) : isWaiting ? (
+                          <Hourglass className="h-3.5 w-3.5 text-muted/60" />
+                        ) : (
+                          <TIcon className={`h-3.5 w-3.5 ${hasData ? 'text-accent' : 'text-muted'}`} />
+                        )}
+                        <span className="text-xs font-medium text-foreground">{label}</span>
+                      </div>
+                      <button
+                        className="text-muted hover:text-accent transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                        onClick={() => handleSync(key)}
+                        disabled={syncing}
+                        title={syncing ? '正在同步…' : `同步${label}`}
+                      >
+                        {syncing
+                          ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          : <RefreshCw className="h-3.5 w-3.5" />}
+                      </button>
+                    </div>
+                    <div className="mt-2 text-xl font-semibold tabular-nums text-foreground">
+                      {fmtBigNum(info?.rows ?? 0)}
+                      <span className="text-[10px] text-muted ml-1 font-normal">行</span>
+                    </div>
+                    <div className="text-[11px] text-muted mt-0.5">
+                      {fmtBigNum(info?.symbols ?? 0)} 只标的
+                    </div>
+                    <div className="mt-auto pt-2 border-t border-border/40 text-[10px] text-muted flex items-center gap-1">
+                      <Clock className="h-2.5 w-2.5 shrink-0" />
+                      {lsTime
+                        ? new Date(lsTime).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+                        : '尚未同步'}
+                    </div>
+                  </div>
+                )
+              })}
             </div>
-          )}
-        </div>
-      )}
-
-      {isLoading ? (
-        <div className="p-5 text-sm text-muted">加载中…</div>
-      ) : !available ? (
-        <div className="p-5 text-sm text-muted">暂无数据，点击"全部同步"从 TickFlow 拉取财务数据</div>
-      ) : (
-        <>
-          {/* 个股搜索区 */}
-          <div className="px-5 pt-6 pb-2">
-            {selected ? (
-              // 已选股:紧凑搜索条 + 清除按钮(便于换股)
-              <div className="flex items-center gap-3">
-                <div className="flex-1 max-w-xl">
-                  <StockFinancialSearch onSelect={(symbol, name) => setSelected({ symbol, name })} />
-                </div>
-                <button
-                  onClick={() => setSelected(null)}
-                  className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs text-secondary hover:text-foreground rounded-btn border border-border hover:bg-elevated transition-colors shrink-0"
-                  title="清除选择"
-                >
-                  <X className="h-3.5 w-3.5" />
-                  清除
-                </button>
-              </div>
-            ) : (
-              // 未选股:醒目居中引导
-              <div className="flex flex-col items-center gap-3 py-6">
-                <div className="flex items-center gap-2 text-sm text-secondary">
-                  <Search className="h-4 w-4" />
-                  <span>搜索个股查看详细财务数据</span>
-                </div>
-                <StockFinancialSearch onSelect={(symbol, name) => setSelected({ symbol, name })} />
-                <div className="text-[11px] text-muted">支持股票代码或名称模糊匹配，如 600000 / 浦发</div>
-              </div>
-            )}
           </div>
+        )}
 
-          {/* 个股详情 / 空引导 */}
-          <div className="px-5 pb-8">
-            {selected ? (
-              <StockFinancialDetail symbol={selected.symbol} name={selected.name} />
-            ) : (
-              <EmptyState
-                icon={Search}
-                title="未选择股票"
-                hint="在上方搜索框输入股票代码或名称，选择后即可查看该股的核心指标、利润表、资产负债表与现金流量表。"
-              />
-            )}
+        {isLoading ? (
+          <div className="flex items-center justify-center py-16">
+            <Loader2 className="h-5 w-5 animate-spin text-muted" />
           </div>
-        </>
-      )}
+        ) : !available ? (
+          <div className="rounded-card border border-dashed border-border bg-surface px-6 py-14 text-center">
+            <Database className="mx-auto h-8 w-8 text-muted" />
+            <div className="mt-3 text-sm text-secondary">暂无财务数据</div>
+            <div className="mt-1 text-xs text-muted">点击右上角"全部同步"从 TickFlow 拉取</div>
+          </div>
+        ) : (
+          <>
+            {/* 个股搜索区 */}
+            <div>
+              {selected ? (
+                // 已选股:紧凑搜索条 + 清除按钮(便于换股)
+                <div className="flex items-center gap-3">
+                  <div className="flex-1 max-w-xl">
+                    <StockFinancialSearch onSelect={(symbol, name) => setSelected({ symbol, name })} />
+                  </div>
+                  <button
+                    onClick={() => setSelected(null)}
+                    className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs text-secondary hover:text-foreground rounded-btn border border-border hover:bg-elevated transition-colors shrink-0"
+                    title="清除选择"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                    清除
+                  </button>
+                </div>
+              ) : (
+                // 未选股:醒目居中引导
+                <div className="flex flex-col items-center gap-3 py-8">
+                  <div className="flex items-center gap-2 text-sm text-secondary">
+                    <Search className="h-4 w-4 text-accent" />
+                    <span>搜索个股查看详细财务数据</span>
+                  </div>
+                  <div className="w-full max-w-xl">
+                    <StockFinancialSearch onSelect={(symbol, name) => setSelected({ symbol, name })} />
+                  </div>
+                  <div className="text-[11px] text-muted">支持股票代码或名称模糊匹配，如 600000 / 浦发</div>
+                </div>
+              )}
+            </div>
+
+            {/* 个股详情 / 空引导 */}
+            <div className="pb-4">
+              {selected ? (
+                <StockFinancialDetail symbol={selected.symbol} name={selected.name} />
+              ) : (
+                <EmptyState
+                  icon={Search}
+                  title="未选择股票"
+                  hint="在上方搜索框输入股票代码或名称，选择后即可查看该股的核心指标、利润表、资产负债表与现金流量表。"
+                />
+              )}
+            </div>
+          </>
+        )}
+      </div>
     </>
   )
 }

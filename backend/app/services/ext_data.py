@@ -304,11 +304,42 @@ def normalize_symbol(series: pl.Series, lookup: dict[str, str] | None = None) ->
     return series.map_elements(_fix_one, return_dtype=pl.Utf8)
 
 
+def ensure_utf8_csv(file_path: Path) -> Path:
+    """确保 CSV 文件以 UTF-8 编码可读，非 UTF-8（如 GBK/GB18030）则转换。
+
+    国内行情软件（同花顺/东财/通达信）和 Windows 中文 Excel 导出的 CSV 多为
+    GBK 系编码，Polars 的 read_csv 默认按 UTF-8 解析会抛 "invalid utf-8 sequence"。
+    这里在交给 Polars 前做一次编码规范化。
+
+    返回值：若已是 UTF-8 则返回原路径；否则在同目录写一个 *.utf8 文件并返回它
+    （调用方用临时目录，随目录一起清理）。
+    """
+    raw = file_path.read_bytes()
+    # BOM 处理：UTF-8-SIG 等带 BOM 文件直接交给 Polars（它认识 BOM）
+    try:
+        raw.decode("utf-8")
+        return file_path  # 已是合法 UTF-8
+    except UnicodeDecodeError:
+        pass
+    # 依次尝试常见中文编码，第一个能完整解码的即为命中
+    for enc in ("gb18030", "gbk", "gb2312", "big5"):
+        try:
+            text = raw.decode(enc)
+        except UnicodeDecodeError:
+            continue
+        out_path = file_path.with_suffix(file_path.suffix + ".utf8")
+        out_path.write_text(text, encoding="utf-8")
+        logger.info("CSV 编码转换 %s → %s (%s)", file_path.name, out_path.name, enc)
+        return out_path
+    # 都无法解码：返回原路径，让 Polars 抛出更精确的原始错误
+    return file_path
+
+
 def parse_upload_file(file_path: Path, symbol_col: str = "symbol", data_dir: Path | None = None) -> pl.DataFrame:
     """解析上传的 CSV / Excel 文件为 Polars DataFrame。"""
     suffix = file_path.suffix.lower()
     if suffix == ".csv":
-        df = pl.read_csv(file_path, infer_schema_length=10000)
+        df = pl.read_csv(ensure_utf8_csv(file_path), infer_schema_length=10000)
     elif suffix in (".xlsx", ".xls"):
         df = pl.read_excel(file_path)
     else:

@@ -19,6 +19,7 @@ from app.services.ext_data import (
     ExtConfigStore,
     ExtField,
     PullConfig,
+    ensure_utf8_csv,
     fix_symbol_format,
     normalize_symbol,
     parse_upload_file,
@@ -450,7 +451,7 @@ async def upload_data(
 
         # 直接读取文件，不做列重命名
         if suffix == ".csv":
-            df = pl.read_csv(tmp_path, infer_schema_length=10000)
+            df = pl.read_csv(ensure_utf8_csv(tmp_path), infer_schema_length=10000)
         elif suffix in (".xlsx", ".xls"):
             df = pl.read_excel(tmp_path)
         else:
@@ -669,7 +670,7 @@ async def detect_fields(
 
         # 直接读取，不要求 symbol 列
         if suffix == ".csv":
-            df = pl.read_csv(tmp_path, infer_schema_length=10000)
+            df = pl.read_csv(ensure_utf8_csv(tmp_path), infer_schema_length=10000)
         elif suffix in (".xlsx", ".xls"):
             df = pl.read_excel(tmp_path)
         else:

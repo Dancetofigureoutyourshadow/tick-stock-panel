@@ -33,16 +33,19 @@ AppName={#MyAppName}
 AppVerName={#MyAppName} {#MyAppVersion}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
-DefaultDirName={localappdata}\Programs\TickFlowStockPanel
+; 默认装到 D 盘 (非系统盘), 用户可在向导中改任意位置
+; 若 D 盘不存在, [Code] 段 InitializeWizard 会自动回退到用户目录
+DefaultDirName=D:\TickFlowStockPanel
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 OutputDir=Output
 OutputBaseFilename=TickFlowStockPanel-Setup-{#MyAppVersion}
 
-; 关键: 不需要管理员权限 (用户目录安装)
-; PrivilegesRequired=lowest 固定走用户安装, 永不弹 UAC
-; 不用 PrivilegesRequiredOverridesAllowed (它在静默模式下路径解析不确定)
+; 关键: 不需要管理员权限, 永不弹 UAC
+; 装到 D 盘普通目录 (非 Program Files) 不需要管理员权限
 PrivilegesRequired=lowest
+; 允许用户在向导中自由选择安装目录
+DisableDirPage=no
 
 ; 压缩
 Compression=lzma2/ultra64
@@ -95,6 +98,25 @@ Filename: "{cmd}"; Parameters: "/C taskkill /F /IM {#MyAppExeName}"; Flags: runh
 Type: filesandordirs; Name: "{app}"
 
 [Code]
+// ── 启动时: 若 D 盘不存在, 回退默认路径到用户目录 ───────────────
+// 避免默认 D:\... 但系统没 D 盘时向导显示无效路径
+function InitializeSetup(): Boolean;
+begin
+  Result := True;
+end;
+
+procedure InitializeWizard();
+var
+  DefaultDir: String;
+begin
+  // D 盘存在 → 用 D 盘; 否则回退用户目录 (无需管理员权限)
+  if not DirExists('D:\') then
+  begin
+    DefaultDir := ExpandConstant('{localappdata}\Programs\TickFlowStockPanel');
+    WizardForm.DirEdit.Text := DefaultDir;
+  end;
+end;
+
 // ── 卸载时询问是否删除用户数据 ─────────────────────────────────
 // 用户数据在 %LOCALAPPDATA%\TickFlowStockPanel\ (策略/选股/回测/监控)
 // 默认保留 (重装不丢), 但给用户彻底清除的选项

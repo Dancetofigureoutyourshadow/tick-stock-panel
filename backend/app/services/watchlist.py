@@ -97,6 +97,10 @@ def fetch_quotes(symbols: list[str], capset: CapabilitySet, timeout_s: float = 8
     elif capset.has(Cap.QUOTE_BY_SYMBOL):
         lim = capset.limits(Cap.QUOTE_BY_SYMBOL)
         batch_size = lim.batch if lim and lim.batch else 5
+    else:
+        # 无任何实时行情能力(none/free 档走 free-api 服务器,不提供实时行情)
+        # 提前返回空,避免发起注定失败的请求
+        return []
 
     chunks = [symbols[i:i + batch_size] for i in range(0, len(symbols), batch_size)]
 

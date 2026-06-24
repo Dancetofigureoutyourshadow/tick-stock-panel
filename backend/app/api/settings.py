@@ -69,12 +69,12 @@ class SwitchEndpointIn(BaseModel):
 def switch_endpoint(req: SwitchEndpointIn, request: Request) -> dict:
     """切换 TickFlow 端点并立即生效。
 
-    endpoints.json 里的端点都是 Starter+ 付费端点,Free 模式无 key
-    无法使用,故 Free 模式下禁止切换。
+    端点切换仅对付费档(starter+,走 api.tickflow.org)有意义;
+    none/free 档运行在 free-api 服务器,无付费端点权限,禁止切换。
     """
-    # Free 模式没有付费端点权限,禁止切换
-    if tf_client.current_mode() == "free":
-        return {"ok": False, "error": "Free 模式无法切换端点，请先配置 API Key"}
+    # none/free 档没有付费端点权限,禁止切换
+    if tf_client.current_mode() != "api_key":
+        return {"ok": False, "error": "当前档位无法切换端点,仅付费套餐(Starter+)支持"}
 
     url = req.url.strip().rstrip("/")
     if not url.startswith("https://"):
@@ -95,26 +95,71 @@ def switch_endpoint(req: SwitchEndpointIn, request: Request) -> dict:
 def save_tickflow_key(req: TickflowKeyIn, request: Request) -> dict:
     """保存 TickFlow API Key 并立即重新探测能力。
 
-    端点联动:Free → Starter+ 时,Free 模式残留的 free-api 端点不可用于
-    付费 Key,故自动切到默认付费端点(api.tickflow.org)。
+    先探后存(关键改动,修复乱填 key 也会被持久化的问题):
+      1. 临时用新 key 探测(付费端点),判定档位
+      2. 判定为 none(连单只日K都拿不到)→ key 无效:不存,清除已存的,
+         返回 {ok: false, reason: "invalid"},前端提示「Key 无效」
+      3. 判定为 free(免费有效 key)→ 存 key,客户端切到 free-api 服务器
+      4. 判定为 starter+ → 存 key,切到付费端点(现有逻辑)
+
+    端点联动:从无 key 升级到付费 key 时,残留的 free-api 端点不可用,
+    故自动切到默认付费端点(api.tickflow.org);free 档则清除自定义端点。
     """
+    from app.tickflow.policy import (
+        base_tier_name, is_invalid_key,
+    )
+
     key = req.api_key.strip()
     if not key:
         return {"ok": False, "error": "key empty"}
 
-    # 判断是否 Free → Starter+ 转换(此前无 key)
-    was_free = tf_client.current_mode() == "free"
-    updates: dict = {"tickflow_api_key": key}
-    if was_free:
-        # 自动切到默认端点;之前的残留自定义 URL 不再适用
-        updates["tickflow_base_url"] = DEFAULT_PAID_ENDPOINT
-
-    secrets_store.save(updates)
+    # ===== 1) 临时存 key + 重置客户端,让探测走付费端点 =====
+    secrets_store.save({"tickflow_api_key": key})
     tf_client.reset_clients()
 
-    # 立即重新探测
+    # 立即重新探测(此时 client 已按档位判定,但首次探测必然走付费端点验证)
     capset = detect_capabilities(force=True)
     request.app.state.capabilities = capset
+
+    # ===== 2) 判定为无效 key(连单只日K都拿不到)→ 不存,清除 =====
+    if is_invalid_key() or base_tier_name() == "none":
+        # 无效 key:清除刚存的,避免乱填被持久化;退回 none 档
+        secrets_store.clear("tickflow_api_key", "tickflow_base_url")
+        tf_client.reset_clients()
+        capset = detect_capabilities(force=True)
+        request.app.state.capabilities = capset
+        return {
+            "ok": False,
+            "reason": "invalid",
+            "error": "Key 无效或已过期,请检查后重试",
+            "mode": "none",
+            "tier_label": tier_label(),
+            "current_endpoint": tf_client.current_endpoint(),
+            "probe_log": [],
+            "capabilities_count": len(capset.all()),
+        }
+
+    # ===== 3) free 档(免费有效 key)→ 存 key,切到 free-api 服务器 =====
+    if base_tier_name() == "free":
+        # 免费档运行时走 free-api 服务器,清除付费端点的自定义配置
+        secrets_store.clear("tickflow_base_url")
+        tf_client.reset_clients()
+        return {
+            "ok": True,
+            "tickflow_api_key_masked": secrets_store.mask(key),
+            "mode": "free",
+            "tier_label": tier_label(),
+            "current_endpoint": tf_client.current_endpoint(),
+            "probe_log": [],
+            "capabilities_count": len(capset.all()),
+        }
+
+    # ===== 4) starter+ 付费档 → 确保走付费端点(现有逻辑) =====
+    # 若之前是 none/free(无自定义付费端点),切到默认付费端点
+    base = secrets_store.load().get("tickflow_base_url")
+    if not base:
+        secrets_store.save({"tickflow_base_url": DEFAULT_PAID_ENDPOINT})
+    tf_client.reset_clients()
 
     return {
         "ok": True,
@@ -122,17 +167,17 @@ def save_tickflow_key(req: TickflowKeyIn, request: Request) -> dict:
         "mode": "api_key",
         "tier_label": tier_label(),
         "current_endpoint": tf_client.current_endpoint(),
-        "probe_log": probe_log(),
+        "probe_log": [],
         "capabilities_count": len(capset.all()),
     }
 
 
 @router.delete("/tickflow-key")
 def clear_tickflow_key(request: Request) -> dict:
-    """清除 Key,退回 Free 模式。
+    """清除 Key,退回无档(none)。
 
-    同时清除 tickflow_base_url(测速切换的自定义端点),使"当前使用"
-    回到默认节点 api.tickflow.org;SDK 则自动用 free() 取免费数据。
+    同时清除 tickflow_base_url(测速切换的自定义端点),使客户端走 free-api
+    服务器取历史日K;档位标签为 None(无档)。
     """
     secrets_store.clear("tickflow_api_key", "tickflow_base_url")
     tf_client.reset_clients()
@@ -142,7 +187,7 @@ def clear_tickflow_key(request: Request) -> dict:
 
     return {
         "ok": True,
-        "mode": "free",
+        "mode": "none",
         "tier_label": tier_label(),
         "current_endpoint": tf_client.current_endpoint(),
         "capabilities_count": len(capset.all()),
@@ -202,6 +247,12 @@ def save_ai_settings(req: AiSettingsIn) -> dict:
 
 # ===== 偏好设置 =====
 
+def _realtime_allowed() -> bool:
+    """当前档位是否允许实时行情(none/free 不允许)。"""
+    from app.services.quote_service import QuoteService
+    return QuoteService.is_realtime_allowed()
+
+
 class MinuteSyncPrefs(BaseModel):
     minute_sync_enabled: bool
     minute_sync_days: int = 5
@@ -213,6 +264,7 @@ def get_preferences() -> dict:
     from app.services import preferences
     return {
         "realtime_quotes_enabled": preferences.get_realtime_quotes_enabled(),
+        "realtime_allowed": _realtime_allowed(),
         "indices_nav_pinned": preferences.get_indices_nav_pinned(),
         "minute_sync_enabled": preferences.get_minute_sync_enabled(),
         "minute_sync_days": preferences.get_minute_sync_days(),
@@ -315,19 +367,30 @@ class RealtimeQuotesPrefs(BaseModel):
 
 @router.put("/preferences/realtime-quotes")
 def update_realtime_quotes(req: RealtimeQuotesPrefs, request: Request) -> dict:
-    """保存全局实时行情开关。"""
-    from app.services import preferences
-    preferences.save({"realtime_quotes_enabled": req.realtime_quotes_enabled})
+    """保存全局实时行情开关。
 
-    # 动态启停行情服务
+    none/free 档无实时行情权限:拒绝开启,persist 为关闭并返回 allowed=False,
+    前端据此把开关置灰 / 回弹。
+    """
+    from app.services import preferences
     qs = getattr(request.app.state, "quote_service", None)
+
+    allowed = qs.is_realtime_allowed() if qs else True
+    if req.realtime_quotes_enabled and not allowed:
+        # 当前档位不允许开启实时行情 — 强制关闭
+        preferences.save({"realtime_quotes_enabled": False})
+        if qs:
+            qs.disable()
+        return {"realtime_quotes_enabled": False, "realtime_allowed": False}
+
+    preferences.save({"realtime_quotes_enabled": req.realtime_quotes_enabled})
     if qs:
         if req.realtime_quotes_enabled:
             qs.enable()
         else:
             qs.disable()
 
-    return {"realtime_quotes_enabled": req.realtime_quotes_enabled}
+    return {"realtime_quotes_enabled": req.realtime_quotes_enabled, "realtime_allowed": allowed}
 
 
 class IndicesNavPinnedPrefs(BaseModel):

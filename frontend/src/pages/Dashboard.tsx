@@ -2,12 +2,12 @@ import { useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { motion } from 'framer-motion'
-import { Activity, ArrowDownRight, ArrowUpRight, BarChart3, BellRing, Flame, Gauge, LineChart, Loader2, RefreshCw, Sparkles, Target, Timer } from 'lucide-react'
+import { Activity, ArrowDownRight, ArrowUpRight, BarChart3, BellRing, Flame, Gauge, LineChart, Loader2, RefreshCw, Sparkles, Target, Timer, ExternalLink, Gift } from 'lucide-react'
 import { DatePicker } from '@/components/DatePicker'
 import { api, type MarketSnapshotRow, type OverviewDimensionRankItem, type OverviewMarket, type AlertEvent } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
 import { fmtBigNum, fmtPct } from '@/lib/format'
-import { useDataStatus, useCapabilities } from '@/lib/useSharedQueries'
+import { useDataStatus, useCapabilities, useSettings } from '@/lib/useSharedQueries'
 import { SealedBadge } from '@/components/SealedBadge'
 import { StockPreviewDialog } from '@/components/StockPreviewDialog'
 import { cn } from '@/lib/cn'
@@ -480,9 +480,12 @@ export function Dashboard() {
   })
   const data = overview.data
   const caps = useCapabilities()
+  const settings = useSettings()
   const hasDepth = !!caps.data?.capabilities?.['depth5.batch']
   const sealedReady = !!data?.limit?.sealed_ready
   const isSealedDegrade = !hasDepth || !sealedReady
+  // none 档(无 key / 无效 key)→ 显示升级提示横幅
+  const isNoKey = settings.data?.mode === 'none'
 
   // 手动刷新: 显示旋转动画; SSE 自动刷新: 静默, 无体感
   const handleRefresh = () => {
@@ -520,6 +523,27 @@ export function Dashboard() {
 
   return (
     <div className="min-h-full bg-base p-3">
+      {/* none 档(无 key)提示横幅 —— 引导用户领取免费 Key 解锁完整能力 */}
+      {isNoKey && (
+        <div className="mb-3 flex items-center gap-2 rounded-card border border-warning/40 bg-warning/10 px-3 py-2 text-xs">
+          <Gift className="h-4 w-4 shrink-0 text-warning" />
+          <span className="text-secondary leading-relaxed">
+            当前未配置 API Key,实时行情、批量同步等能力不可用。
+            <a
+              href="https://tickflow.org/auth/register?ref=V3KDKGXPEA"
+              target="_blank"
+              rel="noreferrer"
+              className="mx-1 inline-flex items-baseline gap-0.5 font-medium text-warning hover:underline"
+            >
+              前往 TickFlow 官网
+              <ExternalLink className="h-3 w-3 self-center" />
+            </a>
+            免费注册(或填邀请码{' '}
+            <span className="font-mono font-semibold text-warning">V3KDKGXPEA</span>
+            )即可领取免费 API Key,无需付费即可体验完整功能。
+          </span>
+        </div>
+      )}
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-card border border-border bg-surface/85 px-3 py-2">
         <div className="flex items-center gap-2">
           <Gauge className="h-4 w-4 text-accent" />

@@ -99,8 +99,15 @@ class QuoteService:
         self._save_enabled(False)
         logger.info("行情服务已停止")
 
-    def enable(self) -> None:
-        """开启自动行情 (不立即启动线程，等下一个交易时段)。"""
+    def enable(self) -> bool:
+        """开启自动行情 (不立即启动线程，等下一个交易时段)。
+
+        none/free 档无实时行情权限,拒绝开启并返回 False;
+        starter+ 正常启动。返回值表示是否真正开启。
+        """
+        if not self.is_realtime_allowed():
+            logger.warning("实时行情开启被拒:当前档位(none/free)无实时行情权限")
+            return False
         self._enabled = True
         self._save_enabled(True)
         if not self._running:
@@ -117,8 +124,17 @@ class QuoteService:
         logger.info("行情服务已关闭")
 
     def boot_check(self) -> None:
-        """启动时检查 preferences，若 enabled 则自动启动。"""
+        """启动时检查 preferences，若 enabled 则自动启动。
+
+        none/free 档无实时行情权限:即使 preferences 标记为 enabled,
+        也不启动,并同步 preferences 为关闭(避免 UI 误显示已开启)。
+        """
         from app.services import preferences
+        if not self.is_realtime_allowed():
+            if preferences.get_realtime_quotes_enabled():
+                self._save_enabled(False)
+            logger.info("实时行情未启动:当前档位(none/free)无实时行情权限")
+            return
         if preferences.get_realtime_quotes_enabled():
             self.start()
 
@@ -181,6 +197,15 @@ class QuoteService:
         """获取当前档位名（小写）。"""
         from app.tickflow.policy import tier_label
         return tier_label().split()[0].split("+")[0].strip().lower()
+
+    @classmethod
+    def is_realtime_allowed(cls) -> bool:
+        """当前档位是否允许使用实时行情。
+
+        none/free 档走 free-api 服务器,无实时行情权限 → 不允许;
+        starter+ 付费档走付费端点,有实时行情 → 允许。
+        """
+        return cls._current_tier() not in ("none", "free")
 
     @classmethod
     def _tier_min_interval(cls) -> float:

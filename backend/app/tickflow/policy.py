@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -29,7 +30,9 @@ _CAPSET_CACHE_FILE = "capabilities.json"
 # 旧缓存(无此字段或版本更低)会被判定过期,触发重新探测。
 # v2: 拆分 depth5 → depth5(单只) + depth5.batch(批量)
 # v3: 探测补全 quote.batch(此前 tiers.yaml 声明了但 _probe_real 漏探测)
-_CACHE_SCHEMA_VERSION = 3
+# v4: 5 档重构 —— 新增 none 档(无key/无效key),free 档重定义(走 free-api 服务器,
+#     仅历史日K)。判定改为复权因子分水岭:_classify_tier 接管档位判定。
+_CACHE_SCHEMA_VERSION = 4
 
 # 探测用最小代价请求:挑流通性最好的 1 只标的试
 _PROBE_SYMBOL = "600000.SH"  # 浦发银行,长期不会退市
@@ -247,27 +250,36 @@ def detect_capabilities(force: bool = False) -> CapabilitySet:
 
     tiers = _load_tiers_yaml()
     if settings.use_free_mode:
-        capset = _tier_to_capset(tiers["free"])
-        label, missing, extras = _compute_label_and_missing(capset, tiers)
-        _persist(capset, label, log=["Free 模式(无 API Key)"], missing=missing, extras=extras)
+        # 无 key —— 归 none 档(走 free-api 服务器,仅历史日K)
+        capset = _tier_to_capset(tiers["none"])
+        _persist(capset, "None", log=["无 API Key(无档 · free-api 服务器)"], missing=[], extras=[])
         return capset
 
     # 有 API key — 真实探测
     try:
         capset, probe_log = _probe_real(tiers)
-        if not capset.all():
-            logger.warning("probe returned no caps; falling back to free baseline")
+        # 判定档位:无效 key → none,免费 key → free,付费 → starter/pro/expert
+        classified = _classify_tier(capset, tiers)
+        if classified.is_invalid:
+            # 无效 key(连单只日K都拿不到):归 none 档,标记要求清除 key
+            capset = _tier_to_capset(tiers["none"])
+            probe_log.append("⚠ Key 无效(单只日K也无法获取),判定为无档")
+            _persist(capset, "None", log=probe_log, missing=[], extras=[], invalid_key=True)
+            return capset
+        if classified.is_free:
+            # 免费有效 key:能力按 free 档(= none 档能力,走 free-api 服务器)
             capset = _tier_to_capset(tiers["free"])
-            probe_log.append("⚠ 所有探测均失败,降级为 Free 占位")
+            _persist(capset, "Free", log=probe_log + ["✓ 免费有效 key(运行时走 free-api 服务器)"], missing=[], extras=[])
+            return capset
+        # 付费档(starter+) — 探测出的能力即为真实可用
         label, missing, extras = _compute_label_and_missing(capset, tiers)
-        # 探测时 limits 用了"任意档默认值",现在判档完成,用真实档位的 limits 覆盖
         capset = _override_limits_with_detected_tier(capset, label, tiers)
         _persist(capset, label, log=probe_log, missing=missing, extras=extras)
         return capset
     except Exception as e:
-        logger.exception("detect_capabilities failed; using free baseline: %s", e)
-        capset = _tier_to_capset(tiers["free"])
-        _persist(capset, "Free(探测失败)", log=[f"探测失败:{e}"], missing=[], extras=[])
+        logger.exception("detect_capabilities failed; using none baseline: %s", e)
+        capset = _tier_to_capset(tiers["none"])
+        _persist(capset, "None(探测失败)", log=[f"探测失败:{e}"], missing=[], extras=[])
         return capset
 
 
@@ -280,8 +292,54 @@ TIER_SIGNATURES: dict[str, set[Cap]] = {
                 Cap.INTRADAY, Cap.DEPTH5, Cap.DEPTH5_BATCH},
     "starter": {Cap.QUOTE_BATCH, Cap.KLINE_DAILY_BATCH,
                 Cap.ADJ_FACTOR, Cap.QUOTE_POOL},
-    # free 不需 signature — 默认兜底
+    # free / none 不需 signature — 由 _classify_tier 的分水岭逻辑判定
 }
+
+
+@dataclass(slots=True, frozen=True)
+class TierClassification:
+    """档位判定结果。
+
+    判定依据是"复权因子分水岭":
+      - 连单只日K都没有 → 无效 key(is_invalid),归 none 档
+      - 有单只日K、无复权因子 → 免费 key(is_free)
+      - 有复权因子 → 付费档(starter+),具体档位由 signature 决定
+    """
+
+    tier: str            # "none" / "free" / "starter" / "pro" / "expert"
+    is_invalid: bool     # 无效 key(连单只日K都拿不到)
+    is_free: bool        # 免费有效 key(有日K、无复权因子)
+
+
+def _classify_tier(capset: CapabilitySet, tiers: dict) -> TierClassification:
+    """根据探测出的能力集判定档位。
+
+    分水岭是 KLINE_DAILY_BY_SYMBOL(单只日K)与 ADJ_FACTOR(复权因子):
+      - 无单只日K     → none(无效 key)
+      - 有日K无复权   → free(免费 key)
+      - 有复权因子    → 走 signature 判定 starter/pro/expert
+    """
+    held = set(capset.all().keys())
+
+    # 1) 连单只日K都没有 → 无效 key
+    if Cap.KLINE_DAILY_BY_SYMBOL not in held:
+        return TierClassification(tier="none", is_invalid=True, is_free=False)
+
+    # 2) 有日K但无复权因子 → 免费 key
+    if Cap.ADJ_FACTOR not in held:
+        return TierClassification(tier="free", is_invalid=False, is_free=True)
+
+    # 3) 有复权因子 → 付费档,按 signature 自上而下判定
+    if held & TIER_SIGNATURES["expert"]:
+        base = "expert"
+    elif held & TIER_SIGNATURES["pro"]:
+        base = "pro"
+    elif held & TIER_SIGNATURES["starter"]:
+        base = "starter"
+    else:
+        # 有复权因子但无任何代表能力 — 兜底为 starter(复权本身是 starter 特征)
+        base = "starter"
+    return TierClassification(tier=base, is_invalid=False, is_free=False)
 
 # 补丁友好命名(label 后缀用)
 _CAP_ALIASES: dict[Cap, str] = {
@@ -395,6 +453,7 @@ def _persist(
     log: list[str] | None = None,
     missing: list[str] | None = None,
     extras: list[str] | None = None,
+    invalid_key: bool = False,
 ) -> None:
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     cache_path = settings.data_dir / _CAPSET_CACHE_FILE
@@ -405,6 +464,7 @@ def _persist(
         "probe_log": log or [],
         "missing_caps": missing or [],   # 本档应有但未探测到
         "extras_caps": extras or [],     # 超出本档的额外能力
+        "invalid_key": invalid_key,      # 探测出的 key 无效(连单只日K都拿不到)
     }
     with cache_path.open("w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
@@ -456,3 +516,24 @@ def extras_caps() -> list[str]:
         with cache_path.open(encoding="utf-8") as f:
             return json.load(f).get("extras_caps", [])
     return []
+
+
+def is_invalid_key() -> bool:
+    """最近一次探测是否判定 key 无效(连单只日K都拿不到)。
+
+    settings 层据此清除已存的 key,避免乱填的 key 被持久化。
+    """
+    cache_path = settings.data_dir / _CAPSET_CACHE_FILE
+    if cache_path.exists():
+        with cache_path.open(encoding="utf-8") as f:
+            return bool(json.load(f).get("invalid_key", False))
+    return False
+
+
+def base_tier_name() -> str:
+    """当前档位的基础名(小写): none / free / starter / pro / expert。
+
+    供 client 层判断"是否走 free-api 服务器"(none/free → free 服务器)。
+    """
+    label = tier_label()
+    return label.split()[0].split("+")[0].strip().lower()

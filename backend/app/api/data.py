@@ -564,8 +564,30 @@ def clear_data(request: Request):
             fp.unlink()
             deleted += 1
 
+    # 清除监控运行数据 (user_data 下仅清运行产物, 不动 monitor_rules/preferences/secrets 等用户配置)
+    # - 触发记录 alerts.jsonl
+    from app.services import alert_store
+    alert_store.clear(data_dir)
+    # - 待推送的实时通知队列 (进程内存)
+    qs = getattr(request.app.state, "quote_service", None)
+    if qs is not None:
+        with qs._lock:
+            qs._pending_alerts.clear()
+
     # 清除 Polars 缓存
+    # 先 clear_cache 无条件清空内存 (refresh_cache 在磁盘无数据时会提前 return,
+    # 导致 _enriched_cache 等旧数据残留 —— 清数据后看板仍显示旧数据的根因),
+    # 再 refresh_cache 尝试重载 (磁盘有数据则重建缓存)。
+    repo.clear_cache()
     repo.refresh_cache()
+
+    # 清除 Screener 进程级 _history_cache (TTL 缓存)
+    from app.services.screener import ScreenerService
+    ScreenerService.clear_history_cache()
+
+    # 清除 Overview 总览聚合结果缓存 (5s TTL)
+    from app.api.overview import invalidate_overview_cache
+    invalidate_overview_cache()
 
     # 刷新 DuckDB 视图（空 parquet 目录也需要重新挂载）
     d = data_dir.as_posix()
@@ -703,23 +725,19 @@ def table_schema(request: Request, table: str) -> list[dict]:
 def get_version(request: Request) -> dict:
     """返回当前项目版本号。
 
-    优先从 pyproject.toml 读取 (项目权威版本源),
-    回退到 VERSION 文件, 最后兜底 v0.0.0。
+    优先读 app.__version__ (与 /health 接口同源, 唯一权威版本),
+    回退到项目根 VERSION 文件, 最后兜底 v0.0.0。
     """
+    from app import __version__
+
+    # 1. 优先用 app.__version__ (开发期 bump_version.py 写入, 打包期由 PyInstaller 注入)
+    if __version__:
+        v = __version__.strip()
+        return {"version": v if v.startswith("v") else f"v{v}"}
+
+    # 2. 回退到项目根 VERSION 文件
     from app.config import settings
     project_root = Path(settings.data_dir).parent
-
-    # 1. 优先读 pyproject.toml
-    pyproject = project_root / "pyproject.toml"
-    if pyproject.exists():
-        for line in pyproject.read_text(encoding="utf-8").splitlines():
-            if line.strip().startswith("version"):
-                # version = "0.1.28"
-                v = line.split("=", 1)[1].strip().strip('"').strip("'")
-                if v:
-                    return {"version": f"v{v}" if not v.startswith("v") else v}
-
-    # 2. 回退到 VERSION 文件
     version_file = project_root / "VERSION"
     if version_file.exists():
         v = version_file.read_text(encoding="utf-8").strip()

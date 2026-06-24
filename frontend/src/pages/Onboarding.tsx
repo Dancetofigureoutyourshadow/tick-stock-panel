@@ -230,16 +230,20 @@ function KeyStep({ onNext, onSkip, onBack }: { onNext: () => void; onSkip: () =>
 
   const save = useMutation({
     mutationFn: () => api.saveTickflowKey(keyInput.trim()),
-    onSuccess: () => {
-      setSaved(true)
+    onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: QK.settings })
       qc.invalidateQueries({ queryKey: QK.capabilities })
-      // 保存成功后自动进入下一步看探测结果
-      setTimeout(() => onNext(), 600)
+      if (data.ok) {
+        // 仅当 key 有效(被存储)时才进入下一步看探测结果
+        setSaved(true)
+        setTimeout(() => onNext(), 600)
+      }
+      // ok=false(key 无效):不进入下一步,错误提示由 save.error / save.data 渲染
     },
   })
 
-  const alreadyHasKey = settings.data?.has_tickflow_key
+  // 已配置 key —— 免费档或付费档都算(只要不是无档 none)
+  const alreadyHasKey = settings.data?.mode !== 'none' && settings.data?.mode !== undefined
 
   return (
     <div>
@@ -250,8 +254,8 @@ function KeyStep({ onNext, onSkip, onBack }: { onNext: () => void; onSkip: () =>
         <h2 className="text-xl font-bold text-foreground">配置 TickFlow API Key</h2>
       </div>
       <p className="mt-2.5 text-sm text-secondary leading-relaxed">
-        Key 决定你能使用的数据范围。没有 Key 也能以 <span className="font-medium text-foreground">Free</span> 模式试用基础功能;
-        配置后可解锁概念行业、财务数据等扩展能力。
+        Key 决定你能使用的数据范围。没有 Key 也能以<span className="font-medium text-foreground"> 基础模式 </span>
+        使用历史日K;配置有效 Key 后可解锁实时行情、批量同步等扩展能力。
       </p>
 
       {/* 注册引导 */}
@@ -339,6 +343,17 @@ function KeyStep({ onNext, onSkip, onBack }: { onNext: () => void; onSkip: () =>
         {save.isError && (
           <div className="text-xs text-danger">保存失败:{String((save.error as any).message)}</div>
         )}
+        {/* 无效 key —— 探测失败(key 无效/乱填)未存储,提示用户 */}
+        {save.data && !save.data.ok && (
+          <div className="flex items-start gap-1.5 rounded-btn border border-danger/30 bg-danger/10 px-3 py-2 text-[11px] leading-snug text-danger">
+            <AlertCircle className="h-3.5 w-3.5 mt-px shrink-0" />
+            <span>
+              {save.data.reason === 'invalid'
+                ? 'Key 无效或已过期,请检查后重试(未保存该 Key)。'
+                : save.data.error ?? '保存失败'}
+            </span>
+          </div>
+        )}
       </form>
 
       {/* 底部操作 */}
@@ -384,7 +399,8 @@ function ResultStep({ onNext, onBack }: { onNext: () => void; onBack: () => void
   const settings = useSettings()
   const caps = useCapabilities()
 
-  const hasKey = settings.data?.has_tickflow_key
+  // 是否配置成功 —— 免费档(free)或付费档(api_key)都算;无档(none)算未配置
+  const hasKey = settings.data?.mode === 'free' || settings.data?.mode === 'api_key'
   const capList = caps.data ? Object.entries(caps.data.capabilities) : []
 
   return (
@@ -442,11 +458,10 @@ function ResultStep({ onNext, onBack }: { onNext: () => void; onBack: () => void
           <div className="mx-auto w-fit rounded-xl bg-elevated p-3">
             <Zap className="h-6 w-6 text-warning" />
           </div>
-          <div className="mt-3 text-sm font-medium text-foreground">将以 Free 模式继续</div>
+          <div className="mt-3 text-sm font-medium text-foreground">将以基础模式继续</div>
           <p className="mt-2 text-xs text-muted leading-relaxed max-w-sm mx-auto">
-            你可以立即试用基础行情与选股功能。需要扩展数据时,随时在
-            <span className="text-foreground font-medium"> 设置 → 账户 </span>
-            配置 Key。
+            当前未配置有效 Key,仅可使用历史日K数据。配置 Key 后可解锁实时行情、批量同步等能力,
+            随时在<span className="text-foreground font-medium"> 设置 → 账户 </span>填写。
           </p>
         </div>
       )}

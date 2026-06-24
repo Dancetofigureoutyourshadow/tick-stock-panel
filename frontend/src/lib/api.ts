@@ -549,7 +549,7 @@ export interface EndpointManifest {
 }
 
 export interface SettingsState {
-  mode: 'free' | 'api_key'
+  mode: 'none' | 'free' | 'api_key'
   tickflow_api_key_masked: string
   has_tickflow_key: boolean
   tier_label: string
@@ -566,6 +566,19 @@ export interface SettingsState {
   has_ai_key: boolean
   ai_model: string
   ai_daily_token_budget: number
+}
+
+/** 保存 TickFlow Key 的响应(先探后存) */
+export interface SaveTickflowKeyResult {
+  ok: boolean
+  /** ok=false 且 key 无效时的原因标识,前端据此提示「Key 无效」 */
+  reason?: 'invalid'
+  error?: string
+  mode?: 'none' | 'free' | 'api_key'
+  tier_label?: string
+  current_endpoint?: string
+  tickflow_api_key_masked?: string
+  capabilities_count?: number
 }
 
 export interface Preferences {
@@ -609,7 +622,7 @@ export const api = {
 
   settings: () => request<SettingsState>('/api/settings'),
   saveTickflowKey: (api_key: string) =>
-    request<any>('/api/settings/tickflow-key', {
+    request<SaveTickflowKeyResult>('/api/settings/tickflow-key', {
       method: 'POST',
       body: JSON.stringify({ api_key }),
     }),

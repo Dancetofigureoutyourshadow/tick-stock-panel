@@ -16,7 +16,8 @@ export const CAP_LABELS: Record<string, { name: string; hint: string }> = {
 
 // 套餐等级 —— 用于按档位门控功能(如专线端点 / 按月扩展分钟K)。
 // 基础档提取与后端 quote_service.py 一致:取 label 第一个词("Pro +" → "pro")。
-export const TIER_RANK: Record<string, number> = { free: 0, starter: 1, pro: 2, expert: 3 }
+// none = 无档(无 key / 无效 key),低于 free,仅历史日K无实时行情。
+export const TIER_RANK: Record<string, number> = { none: -1, free: 0, starter: 1, pro: 2, expert: 3 }
 export const EXPERT_RANK = TIER_RANK.expert
 
 export function tierRank(label: string): number {
@@ -37,6 +38,12 @@ export interface TierStyle {
 }
 
 const TIER_STYLE: Record<string, TierStyle> = {
+  none: {
+    desc: '未配置 Key · 仅历史日K',
+    tagBg: { background: 'rgba(113,113,122,0.15)' },
+    dotStyle: { background: '#52525b' },
+    labelTextStyle: { color: '#71717a' },
+  },
   free: {
     desc: '基础日K · 单股查询',
     tagBg: { background: 'rgba(113,113,122,0.3)' },
@@ -74,7 +81,7 @@ export function tierStyle(label: string): TierStyle {
 }
 
 /** 所有档位(有序, 供档位列表渲染) */
-export const ALL_TIERS = ['free', 'starter', 'pro', 'expert'] as const
+export const ALL_TIERS = ['none', 'free', 'starter', 'pro', 'expert'] as const
 
 /** 返回档位标签的渐变文字样式(用于大字显示, 如 Keys 页档位) */
 export function tierTextStyle(label: string): { color?: string; background?: string; WebkitBackgroundClip?: string; backgroundClip?: string } {
@@ -85,12 +92,14 @@ export function tierTextStyle(label: string): { color?: string; background?: str
 export function TierTag({ label, className = '' }: { label: string; className?: string }) {
   const t = tierStyle(label)
   const base = tierBaseName(label)
+  // none 档显示中文「无」,其余档显示英文档名
+  const display = base === 'none' ? '无' : base
   return (
     <span
       className={`inline-flex h-[18px] max-w-[80px] shrink-0 items-center overflow-hidden rounded px-1.5 text-[10px] font-bold font-mono leading-none ${className}`}
       style={t.tagBg}
     >
-      <span className="truncate capitalize" style={t.labelTextStyle}>{base}</span>
+      <span className="truncate capitalize" style={t.labelTextStyle}>{display}</span>
     </span>
   )
 }

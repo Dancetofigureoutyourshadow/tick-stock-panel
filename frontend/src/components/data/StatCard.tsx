@@ -5,11 +5,13 @@ import { fmtDate } from '@/lib/format'
 import { Skeleton } from './Skeleton'
 
 // 卡片能力定义：capKey → 查 capability limits；tierReq → 无权限时显示的档位要求
+// capKey 为空串表示该数据在 free-api 服务器(无档/免费档)即可获取,无需付费能力门控。
 export const CARD_META: Record<string, {
-  capKey: string   // 对应的 capability key，空串表示本地计算
+  capKey: string   // 对应的 capability key，空串表示本地计算 / free 服务器可用
   tierReq: string  // 最低档位要求（无权限时显示）
 }> = {
-  instruments: { capKey: 'quote.by_symbol',        tierReq: 'Free' },
+  // 标的维表走 exchanges 端点,free-api 服务器即可获取,无需付费能力
+  instruments: { capKey: '',                        tierReq: '' },
   daily:       { capKey: 'kline.daily.batch',       tierReq: 'Starter+' },
   adj_factor:  { capKey: 'adj_factor',              tierReq: 'Starter+' },
   enriched:    { capKey: '',                        tierReq: '' },

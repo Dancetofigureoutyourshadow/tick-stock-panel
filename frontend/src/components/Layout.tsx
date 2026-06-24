@@ -16,6 +16,7 @@ import {
   useToggleRealtimeQuotes,
 } from '@/lib/useSharedMutations'
 import { QK } from '@/lib/queryKeys'
+import { tierRank } from '@/lib/capability-labels'
 import {
   Star,
   ScanSearch,
@@ -134,7 +135,7 @@ function SidebarIndexQuotes({ rows, items }: { rows: IndexQuote[] | undefined; i
 // ===== 档位卡片 =====
 function TierBadge({ label, hasKey }: { label: string; hasKey?: boolean }) {
   const base = label.split(' ')[0].split('+')[0].toLowerCase()
-  const isFree = base === 'free' || !label
+  const isNone = base === 'none'
 
   const tierConfig: Record<string, {
     desc: string
@@ -142,6 +143,12 @@ function TierBadge({ label, hasKey }: { label: string; hasKey?: boolean }) {
     dotStyle: React.CSSProperties
     labelTextStyle: React.CSSProperties
   }> = {
+    none: {
+      desc: '未配置 Key · 仅历史日K',
+      tagBg: { background: 'rgba(113,113,122,0.15)' },
+      dotStyle: { background: '#52525b' },
+      labelTextStyle: { color: '#71717a' },
+    },
     free: {
       desc: '基础日K · 单股查询',
       tagBg: { background: 'rgba(113,113,122,0.3)' },
@@ -168,7 +175,9 @@ function TierBadge({ label, hasKey }: { label: string; hasKey?: boolean }) {
     },
   }
 
-  const t = tierConfig[base] || tierConfig.free
+  const t = tierConfig[base] || tierConfig.none
+  // none 档显示中文「无」,无 label 时显示「无档」
+  const displayLabel = isNone ? '无' : (label || '无')
 
   return (
     <NavLink
@@ -191,14 +200,14 @@ function TierBadge({ label, hasKey }: { label: string; hasKey?: boolean }) {
               />
             </div>
             <div className="mt-0.5 truncate text-[10px] leading-tight text-muted">
-              {isFree && !hasKey ? '配置 Key 解锁更多能力' : t.desc}
+              {isNone && !hasKey ? '配置 Key 解锁更多能力' : t.desc}
             </div>
           </div>
           <span
             className="inline-flex h-[18px] max-w-[68px] shrink-0 items-center overflow-hidden rounded px-1.5 text-[10px] font-bold font-mono leading-none"
             style={t.tagBg}
           >
-            <span className="truncate" style={t.labelTextStyle}>{label || 'Free'}</span>
+            <span className="truncate" style={t.labelTextStyle}>{displayLabel}</span>
           </span>
           <Settings className="h-3 w-3 shrink-0 text-muted group-hover:text-blue-300 transition-colors" />
         </div>
@@ -271,7 +280,8 @@ export function Layout() {
   const toggleQuote = useToggleRealtimeQuotes()
   const isRunning = quoteStatus?.running ?? false
   const isTrading = quoteStatus?.is_trading_hours ?? false
-  const isFreeTier = (caps?.label ?? '').toLowerCase().startsWith('free')
+  // none/free 档(无实时行情权限)→ rank < starter(1)
+  const isFreeTier = tierRank(caps?.label ?? '') < 1
 
   // 轮询触发记录总数 → 更新监控中心徽标 (每 15 秒)
   const alertsTotalQuery = useQuery({
@@ -316,7 +326,7 @@ export function Layout() {
         queryKey: QK.capabilities,
         queryFn: api.capabilities,
       })
-      if ((fresh.label ?? '').toLowerCase().startsWith('free')) return
+      if (tierRank(fresh.label ?? '') < 1) return
     }
     await toggleQuote.mutateAsync(enabled)
     // 仅在交易时段立即获取一次行情
@@ -356,7 +366,7 @@ export function Layout() {
 
           <TierBadge
             label={caps?.label ?? ''}
-            hasKey={settingsState?.mode === 'api_key'}
+            hasKey={settingsState?.mode !== 'none'}
           />
           <AIConfigBadge
             configured={settingsState?.has_ai_key}

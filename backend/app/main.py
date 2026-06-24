@@ -16,6 +16,7 @@ from app.api.routes import router as core_router
 from app.config import settings
 from app.jobs import daily_pipeline
 from app.services.quote_service import QuoteService
+from app.tickflow import client as tf_client
 from app.tickflow.policy import detect_capabilities
 from app.tickflow.repository import DataStore, KlineRepository
 
@@ -30,7 +31,7 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     logger.info(
         "TickFlow Stock Panel v%s starting (mode=%s)",
-        __version__, "free" if settings.use_free_mode else "api_key",
+        __version__, tf_client.current_mode(),
     )
 
     # 数据层
@@ -196,6 +197,22 @@ app.include_router(strategy.router)
 app.include_router(signals.router)
 app.include_router(monitor_rules.router)
 app.include_router(alerts.router)
+
+
+# 能力门控异常 → 403(而非默认 500)
+# 业务代码用 capset.require(Cap.X) 断言能力,缺失时抛 CapabilityDenied;
+# 若不注册 handler 会冒泡成 500 Internal Server Error,对前端不友好且语义错误。
+from fastapi import Request
+from fastapi.responses import JSONResponse
+from app.tickflow.capabilities import CapabilityDenied
+
+
+@app.exception_handler(CapabilityDenied)
+async def capability_denied_handler(request: Request, exc: CapabilityDenied) -> JSONResponse:
+    return JSONResponse(
+        status_code=403,
+        content={"detail": str(exc), "suggestion": exc.suggestion},
+    )
 
 # 生产期静态文件(前端 dist)
 _static = Path(settings.static_dir)

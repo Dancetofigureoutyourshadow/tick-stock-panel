@@ -18,6 +18,7 @@ import {
 import { useUpdateQuoteInterval, useToggleRealtimeQuotes } from '@/lib/useSharedMutations'
 import { api } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
+import { tierRank } from '@/lib/capability-labels'
 import { toast } from '@/components/Toast'
 import { DepthConfigContent } from '@/components/data/DepthConfigCard'
 
@@ -45,7 +46,8 @@ export function SettingsMonitoringPanel({ highlight }: { highlight?: string } = 
   const { data: intervalData } = useQuoteInterval()
   const updateInterval = useUpdateQuoteInterval()
   const toggleQuote = useToggleRealtimeQuotes()
-  const isFreeTier = (caps?.label ?? '').toLowerCase().startsWith('free')
+  // none/free 档(无实时行情权限)→ rank < starter(1)
+  const isFreeTier = tierRank(caps?.label ?? '') < 1
   const realtimeEnabled = prefs?.realtime_quotes_enabled ?? false
   const refreshPages = prefs?.sse_refresh_pages ?? {}
   const limitLadderMonitor = prefs?.limit_ladder_monitor_enabled ?? false

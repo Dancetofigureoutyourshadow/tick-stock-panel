@@ -38,12 +38,15 @@ export function SettingsKeysPanel() {
 
   const save = useMutation({
     mutationFn: () => api.saveTickflowKey(keyInput.trim()),
-    onSuccess: () => {
+    onSuccess: (data) => {
       setKeyInput('')
-      setSaved(true)
       qc.invalidateQueries({ queryKey: QK.settings })
       qc.invalidateQueries({ queryKey: QK.capabilities })
-      setTimeout(() => setSaved(false), 2000)
+      if (data.ok) {
+        setSaved(true)
+        setTimeout(() => setSaved(false), 2000)
+      }
+      // ok=false 由 save.data 在下方渲染提示(reason=invalid),无需额外处理
     },
   })
 
@@ -119,15 +122,21 @@ export function SettingsKeysPanel() {
                       <span className="text-sm font-medium shrink-0">已配置</span>
                       <span className="font-mono text-xs text-secondary truncate">{masked}</span>
                     </>
+                  ) : mode === 'free' ? (
+                    <>
+                      <CheckCircle2 className="h-4 w-4 text-bear shrink-0" />
+                      <span className="text-sm font-medium shrink-0">免费 Key</span>
+                      <span className="font-mono text-xs text-secondary truncate">{masked}</span>
+                    </>
                   ) : (
                     <>
-                      <AlertCircle className="h-4 w-4 text-warning shrink-0" />
-                      <span className="text-sm font-medium text-warning">Free 试用</span>
+                      <AlertCircle className="h-4 w-4 text-muted shrink-0" />
+                      <span className="text-sm font-medium text-muted">未配置 · Free 数据</span>
                     </>
                   )}
                 </div>
               </div>
-              {mode === 'api_key' && (
+              {(mode === 'api_key' || mode === 'free') && (
                 <button
                   onClick={() => setConfirmClear(true)}
                   disabled={clear.isPending}
@@ -150,7 +159,7 @@ export function SettingsKeysPanel() {
               <div className="relative">
                 <input
                   type={revealing ? 'text' : 'password'}
-                  placeholder={mode === 'api_key' ? '粘贴新 Key 替换当前' : '粘贴 TickFlow API Key'}
+                  placeholder={mode === 'none' ? '粘贴 TickFlow API Key' : '粘贴新 Key 替换当前'}
                   value={keyInput}
                   onChange={(e) => { setKeyInput(e.target.value); if (saved) setSaved(false) }}
                   className="w-full px-3 py-2 pr-9 rounded-input bg-base border border-border text-sm font-mono focus:outline-none focus:border-accent transition-colors duration-150 ease-smooth"
@@ -198,10 +207,20 @@ export function SettingsKeysPanel() {
                 保存失败:{String((save.error as any).message)}
               </div>
             )}
+            {/* 无效 key —— 先探后存:探测失败(key 无效/乱填)时不存储,提示用户 */}
+            {save.data && !save.data.ok && (
+              <div className="mt-3 text-xs text-danger flex items-center gap-1.5">
+                <AlertCircle className="h-3 w-3 shrink-0" />
+                {save.data.reason === 'invalid'
+                  ? 'Key 无效或已过期,请检查后重试(未保存该 Key)'
+                  : save.data.error ?? '保存失败'}
+              </div>
+            )}
             {save.data?.ok && (
               <div className="mt-3 text-xs text-bear flex items-center gap-1.5">
                 <CheckCircle2 className="h-3 w-3" />
-                保存成功 — 检测到 {save.data.capabilities_count} 项功能,档位 {save.data.tier_label}
+                保存成功 — 档位 {save.data.tier_label}
+                {save.data.mode === 'free' && '(免费档 · 历史日K)'}
               </div>
             )}
           </Card>
@@ -322,7 +341,7 @@ export function SettingsKeysPanel() {
           <div className="relative w-[90vw] max-w-[380px] rounded-card border border-border bg-base shadow-2xl p-6">
             <h3 className="text-sm font-medium text-foreground mb-2">清除 API Key</h3>
             <p className="text-xs text-secondary mb-5">
-              清除后将退回 Free 模式,需要重新输入 Key 才能恢复。
+              清除后将退回无档(仅历史日K),需要重新输入 Key 才能恢复。
             </p>
             <div className="flex items-center justify-end gap-2">
               <button
@@ -372,7 +391,7 @@ function TierHelpPopover({ currentLabel }: { currentLabel: string }) {
               className="absolute top-full left-0 mt-1 z-50 w-72 bg-surface border border-border rounded-lg shadow-xl p-3.5 text-[11px] leading-relaxed"
               onClick={e => e.stopPropagation()}
             >
-              {/* 4 档位 tag 横排 */}
+              {/* 档位 tag 横排 */}
               <div className="flex items-center gap-1.5 mb-3">
                 {ALL_TIERS.map(t => (
                   <div key={t} className={`flex flex-col items-center gap-1 ${t === currentBase ? '' : 'opacity-60'}`}>
@@ -388,7 +407,7 @@ function TierHelpPopover({ currentLabel }: { currentLabel: string }) {
                   return (
                     <div key={t} className="flex items-center gap-2">
                       <span className="h-1.5 w-1.5 rounded-full shrink-0" style={s.dotStyle} />
-                      <span className="capitalize font-mono font-bold w-12 shrink-0" style={s.labelTextStyle}>{t}</span>
+                      <span className="font-mono font-bold w-12 shrink-0" style={s.labelTextStyle}>{t === 'none' ? '无' : t}</span>
                       <span className="text-secondary">{s.desc}</span>
                     </div>
                   )
@@ -398,8 +417,8 @@ function TierHelpPopover({ currentLabel }: { currentLabel: string }) {
               {/* 检测说明 */}
               <div className="text-secondary space-y-1.5">
                 <div className="font-medium text-foreground">档位检测说明</div>
-                <p>系统保存 API Key 后会逐一试探各项数据能力,根据实际可用的功能自动匹配档位。拥有某档"代表性能力"(如 Expert 的财务数据)即判定为该档。</p>
-                <p className="text-muted">"代表性能力"任一命中即认作该档及以上,单个能力探测失败不会误降档位。补购单项能力(如 Pro + 分钟K)会在档位标签后显示 + 号。</p>
+                <p>保存 Key 后系统会在付费端点逐一试探数据能力:连单只日K都拿不到则判为「无」(不存 Key);有日K但无复权因子则判为「Free」;有复权因子再按代表能力判定 Starter/Pro/Expert。</p>
+                <p className="text-muted">无档与免费档运行时都走免费数据通道(仅历史日K),区别仅在于是否保存了 Key。付费档走付费端点,享有实时行情等完整能力。</p>
               </div>
             </motion.div>
           </>

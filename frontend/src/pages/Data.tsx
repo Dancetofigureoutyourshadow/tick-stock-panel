@@ -732,7 +732,7 @@ export function Data() {
 
       {showEndpointTest && (
         <EndpointTestDialog
-          hasKey={settings.data?.has_tickflow_key ?? false}
+          hasKey={settings.data?.mode === 'api_key'}
           tierLabel={settings.data?.tier_label ?? ''}
           currentEndpoint={settings.data?.current_endpoint ?? ''}
           onClose={() => setShowEndpointTest(false)}

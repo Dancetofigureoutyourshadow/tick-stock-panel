@@ -114,10 +114,13 @@ jobs:
       - name: 生成 macOS 图标 (仅 macOS)
         if: matrix.platform == 'macos'
         # icon.ico 已入库 (Windows 直接用), 但 icon.icns 未入库 (macOS 专用产物)。
-        # 用 backend venv 里的 Pillow (fastexcel/pandas 传递依赖, 无需额外安装)
-        # 现场生成 icon.icns, 否则 spec 第 37 行 BUNDLE 会因找不到图标而崩。
+        # 用 generate_icon.py 现场生成, 否则 spec 第 37 行 BUNDLE 会因找不到图标而崩。
+        # 注意: Pillow 不是 backend 的运行时依赖 (它属于 backtest 的 matplotlib 链),
+        # --no-dev --extra desktop 不装它, 故需在此显式安装 (仅图标生成需要)。
         working-directory: backend
-        run: uv run python ../packaging/generate_icon.py
+        run: |
+          uv pip install pillow
+          uv run python ../packaging/generate_icon.py
 
       - name: 打包 (PyInstaller)
         # 在 backend 目录跑 (用该目录的 venv: pywebview/polars 等), 但产物输出到

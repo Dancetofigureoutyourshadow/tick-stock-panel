@@ -123,13 +123,13 @@ jobs:
           uv run python ../packaging/generate_icon.py
 
       - name: 打包 (PyInstaller)
-        # 在 backend 目录跑 (用该目录的 venv: pywebview/polars 等), 但产物输出到
-        # 项目根的 dist/ —— 用 --distpath/--workpath 显式指定, 与后续 DMG 步骤的
-        # dist/TickFlowStockPanel.app 路径保持一致。
+        # 在 backend 目录跑 (用该目录的 venv: pywebview/polars 等)。
+        # 产物输出到 backend/dist/ (PyInstaller 默认路径), 与 packaging/tickflow.iss
+        # 第 78 行的 Source 路径 (..\backend\dist\TickFlowStockPanel\*) 保持一致。
         # SPECPATH 由 spec 文件位置决定 (packaging/tickflow.spec → 项目根),
         # 与 cwd 无关, 故 frontend/dist、tiers.yaml 等相对路径仍正确。
         working-directory: backend
-        run: uv run pyinstaller ../packaging/tickflow.spec --noconfirm --distpath ../dist --workpath ../build
+        run: uv run pyinstaller ../packaging/tickflow.spec --noconfirm
 
       - name: 安装 Inno Setup (仅 Windows)
         if: matrix.platform == 'windows'
@@ -169,13 +169,13 @@ jobs:
             --skip-jenkins \
             --no-internet-enable \
             "${{ matrix.artifact }}" \
-            dist/TickFlowStockPanel.app
+            backend/dist/TickFlowStockPanel.app
 
       - name: 压缩产物 (Linux)
         if: matrix.platform == 'linux'
         run: |
-          cd dist
-          tar -czf ../${{ matrix.artifact }} TickFlowStockPanel
+          cd backend/dist
+          tar -czf ../../${{ matrix.artifact }} TickFlowStockPanel
 
       - name: 上传产物为构建产物 (备查)
         uses: actions/upload-artifact@v4

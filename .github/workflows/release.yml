@@ -105,13 +105,28 @@ jobs:
       - name: 安装 PyInstaller
         # 必须装进 backend 的 uv 环境 (pywebview/polars 等依赖都在那里),
         # 否则根目录 uv run 找不到依赖, 打包出来的产物启动即崩。
-        # --project backend 让 uv 定位 backend/pyproject.toml 的环境。
-        run: uv pip install --project backend pyinstaller
+        # 注意: 不用 `uv pip install --project backend` —— 在 macos runner 上
+        # --project 的 venv 自动发现不可靠 (报 "No virtual environment found")。
+        # 用 working-directory 进 backend 目录, 与上面 uv sync 的环境一致。
+        working-directory: backend
+        run: uv pip install pyinstaller
+
+      - name: 生成 macOS 图标 (仅 macOS)
+        if: matrix.platform == 'macos'
+        # icon.ico 已入库 (Windows 直接用), 但 icon.icns 未入库 (macOS 专用产物)。
+        # 用 backend venv 里的 Pillow (fastexcel/pandas 传递依赖, 无需额外安装)
+        # 现场生成 icon.icns, 否则 spec 第 37 行 BUNDLE 会因找不到图标而崩。
+        working-directory: backend
+        run: uv run python ../packaging/generate_icon.py
 
       - name: 打包 (PyInstaller)
-        # 在项目根目录跑 (spec 用 SPECPATH 推导项目根), 但用 backend 的环境。
-        # 产物 dist/ 生成在工作目录 (项目根) 下。
-        run: uv run --project backend pyinstaller packaging/tickflow.spec --noconfirm
+        # 在 backend 目录跑 (用该目录的 venv: pywebview/polars 等), 但产物输出到
+        # 项目根的 dist/ —— 用 --distpath/--workpath 显式指定, 与后续 DMG 步骤的
+        # dist/TickFlowStockPanel.app 路径保持一致。
+        # SPECPATH 由 spec 文件位置决定 (packaging/tickflow.spec → 项目根),
+        # 与 cwd 无关, 故 frontend/dist、tiers.yaml 等相对路径仍正确。
+        working-directory: backend
+        run: uv run pyinstaller ../packaging/tickflow.spec --noconfirm --distpath ../dist --workpath ../build
 
       - name: 安装 Inno Setup (仅 Windows)
         if: matrix.platform == 'windows'

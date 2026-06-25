@@ -1,5 +1,6 @@
 import { useState } from 'react'
-import { CalendarDays, TrendingUp, FileText, Wallet, Activity, Sparkles } from 'lucide-react'
+import { motion, AnimatePresence } from 'framer-motion'
+import { CalendarDays, TrendingUp, FileText, Wallet, Activity, Sparkles, AlertTriangle, Loader2 } from 'lucide-react'
 import {
   useFinancialMetrics,
   useFinancialIncome,
@@ -8,6 +9,8 @@ import {
 } from '@/lib/useFinancials'
 import { fmtPrice, fmtBigNum, fmtDate } from '@/lib/format'
 import { Skeleton } from '@/components/data/Skeleton'
+import { startAnalysis, findLatestHistoryReport, openHistoryReport } from '@/lib/aiReportStore'
+import { toast } from '@/components/Toast'
 
 interface Props {
   symbol: string
@@ -112,11 +115,33 @@ function formatValue(v: number | null | undefined, fmt: FmtType): string {
 
 export function StockFinancialDetail({ symbol, name }: Props) {
   const [tab, setTab] = useState<TabKey>('metrics')
-  // AI 财务分析占位: 功能开发中, 点击提示
-  const [showDevToast, setShowDevToast] = useState(false)
-  const handleAiAnalysis = () => {
-    setShowDevToast(true)
-    setTimeout(() => setShowDevToast(false), 2500)
+  // AI 分析:点击时检查历史,若已有同标的报告则二次确认
+  const [checking, setChecking] = useState(false)
+  const [confirmReport, setConfirmReport] = useState<{ id: string; created_at: string; focus: string } | null>(null)
+
+  const handleAiClick = async () => {
+    if (checking) return
+    setChecking(true)
+    try {
+      const latest = await findLatestHistoryReport(symbol)
+      if (latest) {
+        // 有历史报告 → 弹二次确认
+        setConfirmReport({ id: latest.id, created_at: latest.created_at, focus: latest.focus })
+      } else {
+        // 无历史 → 直接分析
+        await doAnalysis()
+      }
+    } catch {
+      // 查询失败不阻塞,直接分析
+      await doAnalysis()
+    } finally {
+      setChecking(false)
+    }
+  }
+
+  const doAnalysis = async () => {
+    const r = await startAnalysis(symbol, name)
+    if (r.error) toast(r.error, 'error')
   }
 
   const metrics = useFinancialMetrics(symbol)
@@ -143,7 +168,7 @@ export function StockFinancialDetail({ symbol, name }: Props) {
   const latestAnnounce = rows[0]?.announce_date ?? metrics.data?.data?.[0]?.announce_date ?? null
 
   return (
-    <div className="relative rounded-card border border-border bg-surface overflow-hidden">
+    <div className="rounded-card border border-border bg-surface overflow-hidden">
       {/* 头部:标的 + 报告期 */}
       <div className="px-5 py-4 border-b border-border flex items-center gap-3 flex-wrap">
         <div className="flex items-baseline gap-2 min-w-0">
@@ -151,6 +176,15 @@ export function StockFinancialDetail({ symbol, name }: Props) {
           <span className="text-xs font-mono text-muted">{symbol}</span>
         </div>
         <div className="flex items-center gap-2 ml-auto">
+          <button
+            onClick={handleAiClick}
+            disabled={checking}
+            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-btn text-[11px] font-medium border border-purple-400/30 bg-purple-400/10 text-purple-300 hover:bg-purple-400/20 hover:border-purple-400/40 transition-all shrink-0 disabled:opacity-50"
+            title="AI 财务分析"
+          >
+            {checking ? <Loader2 className="h-3 w-3 animate-spin" /> : <Sparkles className="h-3 w-3" />}
+            AI 财务分析
+          </button>
           {latestPeriod && (
             <div className="flex items-center gap-1.5 text-xs text-secondary">
               <CalendarDays className="h-3.5 w-3.5" />
@@ -160,14 +194,6 @@ export function StockFinancialDetail({ symbol, name }: Props) {
               )}
             </div>
           )}
-          <button
-            onClick={handleAiAnalysis}
-            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-btn text-[11px] font-medium border border-purple-400/30 bg-purple-400/10 text-purple-300 hover:bg-purple-400/20 transition-colors shrink-0"
-            title="AI 财务分析（开发中）"
-          >
-            <Sparkles className="h-3 w-3" />
-            AI 财务分析
-          </button>
         </div>
       </div>
 
@@ -241,12 +267,78 @@ export function StockFinancialDetail({ symbol, name }: Props) {
         )}
       </div>
 
-      {/* AI 分析开发中提示 */}
-      {showDevToast && (
-        <div className="absolute top-16 right-6 z-50 rounded-btn border border-purple-400/40 bg-purple-400/15 px-3 py-2 text-xs text-purple-200 shadow-lg backdrop-blur-sm animate-pulse">
-          ✨ AI 财务分析功能开发中，敬请期待
-        </div>
-      )}
+      {/* AI 分析二次确认:已有该标的历史报告 */}
+      <AnimatePresence>
+        {confirmReport && (
+          <div className="fixed inset-0 z-[70] flex items-center justify-center">
+            <motion.div
+              initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              transition={{ duration: 0.15 }}
+              className="absolute inset-0 bg-black/50 backdrop-blur-sm"
+              onClick={() => setConfirmReport(null)}
+            />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 12 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.97, y: 8 }}
+              transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+              className="relative w-[90vw] max-w-[400px] rounded-card border border-border bg-base shadow-2xl p-6"
+            >
+              <div className="flex items-start gap-3">
+                <div className="shrink-0 h-10 w-10 rounded-full bg-purple-400/12 flex items-center justify-center">
+                  <AlertTriangle className="h-5 w-5 text-purple-300" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <h3 className="text-sm font-semibold text-foreground mb-1.5">该个股已有分析报告</h3>
+                  <p className="text-xs text-secondary leading-relaxed">
+                    <span className="font-medium text-foreground">{name}</span>
+                    <span className="font-mono text-muted"> {symbol}</span> 在
+                    <span className="text-purple-300 font-medium"> {fmtReportTime(confirmReport.created_at)} </span>
+                    已生成过 AI 财务分析报告。
+                  </p>
+                  <p className="mt-2 text-[11px] text-muted">
+                    您可以查看历史报告,或基于最新数据重新生成一份。
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center justify-end gap-2 mt-5">
+                <button
+                  onClick={() => setConfirmReport(null)}
+                  className="px-3 py-1.5 rounded-btn bg-elevated text-secondary hover:bg-elevated/80 text-xs transition-colors"
+                >
+                  取消
+                </button>
+                <button
+                  onClick={() => { if (confirmReport) openHistoryReport(confirmReport.id); setConfirmReport(null) }}
+                  className="px-3 py-1.5 rounded-btn border border-border text-secondary hover:text-foreground text-xs font-medium transition-colors"
+                >
+                  查看历史报告
+                </button>
+                <button
+                  onClick={() => { doAnalysis(); setConfirmReport(null) }}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-btn bg-gradient-to-r from-purple-500/80 to-fuchsia-500/80 text-white text-xs font-medium hover:from-purple-500 hover:to-fuchsia-500 transition-all"
+                >
+                  <Sparkles className="h-3.5 w-3.5" />
+                  重新分析
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </div>
   )
+}
+
+// 历史报告时间友好显示
+function fmtReportTime(iso: string): string {
+  try {
+    const t = new Date(iso).getTime()
+    const diff = Date.now() - t
+    if (diff < 60_000) return '刚刚'
+    if (diff < 3600_000) return `${Math.floor(diff / 60_000)} 分钟前`
+    if (diff < 86400_000) return `${Math.floor(diff / 3600_000)} 小时前`
+    if (diff < 7 * 86400_000) return `${Math.floor(diff / 86400_000)} 天前`
+    return new Date(iso).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+  } catch { return '' }
 }

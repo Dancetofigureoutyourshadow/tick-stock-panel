@@ -5,6 +5,8 @@ import { motion } from 'framer-motion'
 import { useQuoteStream } from '@/lib/useQuoteStream'
 import { ToastContainer } from '@/components/Toast'
 import { AlertToastContainer } from '@/components/AlertToast'
+import { AiAnalysisHost } from '@/components/financials/AiAnalysisHost'
+import { AiReportBubble } from '@/components/financials/AiReportBubble'
 import {
   useCapabilities,
   useSettings,
@@ -65,7 +67,7 @@ const nav = [
   { to: '/concept-analysis', label: '概念分析', icon: Layers3 },
   { to: '/industry-analysis', label: '行业分析', icon: Landmark },
   { to: '/stock-analysis',    label: '个股分析', icon: TrendingUp },
-  { to: '/financials', label: '财务',   icon: FileText },
+  { to: '/financials', label: '财务分析', icon: FileText },
   { to: '/indices', label: '指数', icon: BarChart3 },
   { to: '/trading', label: '交易', icon: Cable },
   { to: '/monitor', label: '监控中心', icon: RadioTower },
@@ -529,6 +531,8 @@ export function Layout() {
       </motion.main>
       <ToastContainer />
       <AlertToastContainer />
+      <AiAnalysisHost />
+      <AiReportBubble />
     </div>
   )
 }

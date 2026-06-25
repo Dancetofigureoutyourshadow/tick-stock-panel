@@ -5,8 +5,12 @@ import logging
 
 import polars as pl
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
 from app.services.financial_sync import get_financial_df
+from app.services.financial_analyzer import analyze_financials_stream
+from app.services import ai_reports
 from app.tickflow.capabilities import Cap
 
 logger = logging.getLogger(__name__)
@@ -130,3 +134,84 @@ def sync_table(request: Request, table: str):
     result = fs.trigger(target)
 
     return {"status": "ok", "synced": result}
+
+
+class AnalyzeRequest(BaseModel):
+    """AI 财务分析请求。"""
+    symbol: str
+    focus: str = ""  # 可选:用户追加的分析关注点
+
+
+@router.post("/analyze")
+async def analyze_financials(request: Request, req: AnalyzeRequest):
+    """AI 财务分析 — SSE 流式返回。
+
+    后端读取该标的 4 张财务表 → 注入 CFA 分析师级提示词 → 流式调用 LLM →
+    逐 chunk 以 SSE 形式推给前端(JSON per line, 非 text/event-stream,
+    以便前端用 ReadableStream 逐行解析,更简单可靠)。
+    """
+    capset = request.app.state.capabilities
+    capset.require(Cap.FINANCIAL)
+
+    if not req.symbol:
+        raise HTTPException(400, "symbol 不能为空")
+
+    data_dir = request.app.state.repo.store.data_dir
+
+    async def stream_gen():
+        async for chunk in analyze_financials_stream(data_dir, req.symbol, req.focus):
+            yield chunk + "\n"
+
+    return StreamingResponse(
+        stream_gen(),
+        media_type="application/x-ndjson",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+# ================================================================
+# AI 报告 CRUD(历史报告持久化)
+# ================================================================
+
+class SaveReportRequest(BaseModel):
+    """保存一条 AI 财务分析报告。"""
+    symbol: str
+    name: str = ""
+    focus: str = ""
+    content: str
+    periods: int | None = None
+    summary: str = ""
+
+
+@router.get("/reports")
+def list_reports(request: Request):
+    """获取全部历史报告(按时间降序,后端已裁剪到上限)。无需 FINANCIAL 能力读取列表元信息。"""
+    capset = request.app.state.capabilities
+    if not capset.has(Cap.FINANCIAL):
+        return {"reports": []}
+    return {"reports": ai_reports.list_reports()}
+
+
+@router.post("/reports")
+def save_report(request: Request, req: SaveReportRequest):
+    """保存一条报告。"""
+    capset = request.app.state.capabilities
+    capset.require(Cap.FINANCIAL)
+    report = ai_reports.save_report({
+        "symbol": req.symbol,
+        "name": req.name,
+        "focus": req.focus,
+        "content": req.content,
+        "periods": req.periods,
+        "summary": req.summary,
+    })
+    return {"ok": True, "report": report}
+
+
+@router.delete("/reports/{report_id}")
+def delete_report(request: Request, report_id: str):
+    """删除一条报告。"""
+    capset = request.app.state.capabilities
+    capset.require(Cap.FINANCIAL)
+    ok = ai_reports.delete_report(report_id)
+    return {"ok": ok}

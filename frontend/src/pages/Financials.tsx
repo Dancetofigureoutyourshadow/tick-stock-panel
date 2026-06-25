@@ -6,6 +6,7 @@ import { useCapabilities } from '@/lib/useSharedQueries'
 import { useFinancialStatus, useFinancialSync } from '@/lib/useFinancials'
 import { StockFinancialSearch } from '@/components/financials/StockFinancialSearch'
 import { StockFinancialDetail } from '@/components/financials/StockFinancialDetail'
+import { ReportHistoryPanel } from '@/components/financials/ReportHistoryPanel'
 import { fmtBigNum } from '@/lib/format'
 import { toast } from '@/components/Toast'
 
@@ -52,7 +53,7 @@ export function Financials() {
   if (!hasFinancial) {
     return (
       <>
-        <PageHeader title="财务" subtitle="利润表 / 资负表 / 现金流 / 关键指标 · Expert" />
+        <PageHeader title="财务分析" subtitle="利润表 / 资负表 / 现金流 / 关键指标 / AI分析 · Expert" />
         <div className="px-8 py-10">
           <div className="mx-auto max-w-md rounded-card border border-warning/30 bg-warning/[0.04] p-8 text-center">
             <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-warning/10">
@@ -124,8 +125,8 @@ export function Financials() {
   return (
     <>
       <PageHeader
-        title="财务"
-        subtitle="利润表 / 资负表 / 现金流 / 关键指标 · Expert"
+        title="财务分析"
+        subtitle="利润表 / 资负表 / 现金流 / 关键指标 / AI分析 · Expert"
         right={
           <div className="flex items-center gap-2">
             {syncing && (
@@ -287,6 +288,9 @@ export function Financials() {
                 />
               )}
             </div>
+
+            {/* AI 历史分析报告 */}
+            {available && <ReportHistoryPanel />}
           </>
         )}
       </div>

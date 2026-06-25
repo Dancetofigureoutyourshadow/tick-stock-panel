@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -207,8 +207,42 @@ class FinancialScheduler:
         self._data_dir = data_dir
         self._capset = capset
         self._running = True
+        # 从持久化恢复上次同步时间: 重启后前端仍能显示真实最后同步时间,而非"尚未同步"
+        try:
+            from app.services import preferences
+            restored = dict(preferences.get_financial_sync_times())
+            # 老用户迁移兜底: 若某表在 preferences 无记录但 parquet 已存在(升级前同步过),
+            # 用 parquet 文件的修改时间作为同步时间并补写持久化。
+            for table in FINANCIAL_TABLES:
+                if table in restored:
+                    continue
+                parquet = data_dir / "financials" / table / "part.parquet"
+                if parquet.exists():
+                    mtime = datetime.fromtimestamp(parquet.stat().st_mtime, tz=timezone.utc).isoformat()
+                    restored[table] = mtime
+                    preferences.set_financial_sync_time(table, mtime)
+                    logger.info("FinancialScheduler backfilled last_sync for %s from parquet mtime", table)
+            self._last_sync = restored
+            if self._last_sync:
+                logger.info("FinancialScheduler restored last_sync: %s", list(self._last_sync.keys()))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("restore financial_sync_times failed: %s", e)
         self._task = asyncio.create_task(self._run_loop())
         logger.info("FinancialScheduler started")
+
+    def _record_sync(self, table: str) -> None:
+        """记录一张表的同步完成时间: 更新内存 + 持久化到 preferences.json。
+
+        持久化确保即使重启,前端 /status 仍返回真实的最后同步时间,
+        不会错误地显示"尚未同步"。
+        """
+        ts = datetime.now(timezone.utc).isoformat()
+        self._last_sync[table] = ts
+        try:
+            from app.services import preferences
+            preferences.set_financial_sync_time(table, ts)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("persist financial_sync_time(%s) failed: %s", table, e)
 
     def stop(self) -> None:
         self._running = False
@@ -229,7 +263,7 @@ class FinancialScheduler:
                 # 每周: 只同步 metrics
                 try:
                     rows = sync_metrics(self._data_dir, self._capset)
-                    self._last_sync["metrics"] = datetime.now(timezone.utc).isoformat()
+                    self._record_sync("metrics")
                     logger.info("FinancialScheduler: metrics synced, %d rows", rows)
                 except Exception as e:
                     logger.warning("FinancialScheduler: metrics sync failed: %s", e)
@@ -259,14 +293,14 @@ class FinancialScheduler:
             if not fn:
                 return {}
             rows = fn(self._data_dir, self._capset)
-            self._last_sync[table] = datetime.now(timezone.utc).isoformat()
+            self._record_sync(table)
             return {table: rows}
         # 全部同步
         symbols = _get_symbols(self._data_dir)
         result: dict[str, int] = {}
         for t in FINANCIAL_TABLES:
             result[t] = _sync_table(t, symbols, self._data_dir, self._capset, latest_only=True)
-            self._last_sync[t] = datetime.now(timezone.utc).isoformat()
+            self._record_sync(t)
         _refresh_financials_views(self._data_dir)
         return result
 

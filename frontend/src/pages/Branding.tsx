@@ -77,7 +77,7 @@ const MOCK_NAV = [
   { icon: History, label: '回测' },
   { icon: SignalIcon, label: '信号' },
   { icon: Eye, label: '监控' },
-  { icon: FileText, label: '财务' },
+  { icon: FileText, label: '财务分析' },
 ]
 
 export function Branding() {

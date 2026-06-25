@@ -104,6 +104,18 @@ export interface FinancialCashFlowRecord {
   [key: string]: any
 }
 
+/** AI 财务分析历史报告 */
+export interface AiFinancialReport {
+  id: string
+  symbol: string
+  name: string
+  focus: string
+  content: string
+  periods?: number
+  summary?: string
+  created_at: string
+}
+
 // ===== Kline =====
 export interface MinuteKlineRow {
   datetime: string
@@ -1171,6 +1183,80 @@ export const api = {
     request<{ status: string; synced: { started: boolean; reason?: string } }>(
       `/api/financials/sync/${table}`, { method: 'POST' },
     ),
+
+  /** AI 分析报告 CRUD */
+  financialReportsList: () =>
+    request<{ reports: AiFinancialReport[] }>('/api/financials/reports'),
+
+  financialReportSave: (r: {
+    symbol: string; name?: string; focus?: string; content: string
+    periods?: number; summary?: string
+  }) =>
+    request<{ ok: boolean; report: AiFinancialReport }>('/api/financials/reports', {
+      method: 'POST', body: JSON.stringify(r),
+    }),
+
+  financialReportDelete: (reportId: string) =>
+    request<{ ok: boolean }>(`/api/financials/reports/${encodeURIComponent(reportId)}`, { method: 'DELETE' }),
+
+  /**
+   * AI 财务分析 — 流式调用。
+   *
+   * 返回一个可逐行读取的 async generator,每行是 JSON:
+   *   {type:"meta",symbol,summary,periods}
+   *   {type:"delta",content:"..."}    ← 文本片段,逐个累加
+   *   {type:"error",message:"..."}
+   *   {type:"done"}
+   *
+   * 用 ReadableStream 解析(而非 SSE EventSource),支持 POST body 且更简单。
+   */
+  async *financialAnalyzeStream(symbol: string, focus?: string): AsyncGenerator<{
+    type: 'meta' | 'delta' | 'error' | 'done'
+    symbol?: string
+    summary?: string
+    periods?: number
+    content?: string
+    message?: string
+  }> {
+    const res = await fetch('/api/financials/analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ symbol, focus: focus ?? '' }),
+    })
+    if (!res.ok) {
+      let detail = ''
+      try { const j = JSON.parse(await res.text()); detail = j.detail ?? j.message ?? '' } catch { /* ignore */ }
+      const msg = detail || `${res.status} ${res.statusText}`
+      toast(msg, 'error')
+      throw new Error(msg)
+    }
+    if (!res.body) throw new Error('响应无 body')
+
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder()
+    let buf = ''
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += decoder.decode(value, { stream: true })
+      // 按行分割(保留最后不完整的行在 buf)
+      const lines = buf.split('\n')
+      buf = lines.pop() ?? ''
+      for (const line of lines) {
+        const s = line.trim()
+        if (!s) continue
+        try {
+          yield JSON.parse(s)
+        } catch {
+          // 忽略无法解析的行
+        }
+      }
+    }
+    // 处理残余
+    if (buf.trim()) {
+      try { yield JSON.parse(buf.trim()) } catch { /* ignore */ }
+    }
+  },
 
   // ===== Strategy Engine =====
   strategyList: () =>

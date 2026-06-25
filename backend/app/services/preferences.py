@@ -311,3 +311,18 @@ def set_onboarding_completed(done: bool = True) -> bool:
     """标记首次使用向导完成状态。"""
     save({"onboarding_completed": bool(done)})
     return bool(done)
+
+
+# ===== 财务数据同步时间(持久化,重启不丢失) =====
+# 结构: { "metrics": "2026-06-25T10:00:00+08:00", "income": ..., ... }
+
+def get_financial_sync_times() -> dict[str, str]:
+    """返回各财务表的最后同步时间(ISO 字符串)。未同步过的表不在返回值中。"""
+    return load().get("financial_sync_times", {}) or {}
+
+
+def set_financial_sync_time(table: str, iso_ts: str) -> None:
+    """更新单张财务表的最后同步时间(合并写入,不清除其他表)。"""
+    times = get_financial_sync_times()
+    times[table] = iso_ts
+    save({"financial_sync_times": times})

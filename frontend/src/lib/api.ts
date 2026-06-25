@@ -565,7 +565,6 @@ export interface SettingsState {
   ai_api_key_masked: string
   has_ai_key: boolean
   ai_model: string
-  ai_daily_token_budget: number
   ai_user_agent: string
 }
 
@@ -637,7 +636,7 @@ export const api = {
     ),
 
   /** 保存 AI 配置 */
-  saveAiSettings: (ai: { provider?: string; base_url?: string; api_key?: string; model?: string; daily_token_budget?: number; user_agent?: string }) =>
+  saveAiSettings: (ai: { provider?: string; base_url?: string; api_key?: string; model?: string; user_agent?: string }) =>
     request<{ ok: boolean }>('/api/settings/ai', {
       method: 'POST',
       body: JSON.stringify(ai),

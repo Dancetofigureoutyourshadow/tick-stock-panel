@@ -29,7 +29,7 @@ const THEME = {
 }
 
 // ===== 价位类型(与后端 levels.py 的 LEVEL_TYPES 对齐) =====
-export type LevelType = 'sr' | 'profile' | 'pivot' | 'extreme' | 'keltner' | 'atr_stop' | 'gap' | 'fib' | 'round'
+export type LevelType = 'sr' | 'pivot' | 'extreme' | 'boll' | 'keltner_s' | 'keltner_m' | 'keltner_l' | 'atr_stop' | 'gap' | 'fib' | 'round'
 
 export interface PriceLevel {
   value: number
@@ -43,15 +43,35 @@ export interface PriceLevel {
 
 /** 价位组开关配置:label = 按钮文案,color = markLine 颜色 */
 export const LEVEL_GROUPS: { key: LevelType; label: string; color: string }[] = [
-  { key: 'sr',       label: '压力支撑',  color: '#F97316' },   // 橙
-  { key: 'profile',  label: '成交密集',  color: '#3B82F6' },   // 蓝
+  { key: 'sr',       label: '压力支撑',  color: '#F97316' },   // 橙(成交密集区,价量驱动)
   { key: 'pivot',    label: '枢轴点',    color: '#8B5CF6' },   // 紫
   { key: 'extreme',  label: '前高前低',  color: '#EAB308' },   // 黄
-  { key: 'keltner',  label: 'Keltner',  color: '#06B6D4' },   // 青
+  { key: 'boll',     label: '布林带',    color: '#F97316' },   // 橙(MA20±2σ 曲线)
+  { key: 'keltner_s',label: 'Keltner短期',  color: '#06B6D4' },   // 青(MA20±2ATR 曲线)
+  { key: 'keltner_m',label: 'Keltner中期',  color: '#22D3EE' },   // 浅青(MA60±2.5ATR 曲线)
+  { key: 'keltner_l',label: 'Keltner长期',  color: '#67E8F9' },   // 更浅青(MA120±3ATR 曲线)
   { key: 'atr_stop', label: 'ATR止损',  color: '#EF4444' },   // 红(警示)
   { key: 'gap',      label: '缺口位',    color: '#EC4899' },   // 粉
   { key: 'fib',      label: '斐波那契',  color: '#F59E0B' },   // 金
   { key: 'round',    label: '整数关口',  color: '#71717A' },   // 灰(心理位,弱视觉)
+]
+
+// 通道曲线元数据(单一数据源):供 buildOption 画线 + 右侧面板取最新值共用。
+//   alignedKey: alignedSeries 中的 key(由 series.boll/keltner/atr 对齐而来)
+//   group:      属于哪个价位开关组(开关该组即开关这条曲线)
+//   endLabel:   右侧端点标签(显示最新值的文字)
+const CURVE_DEFS: { alignedKey: string; group: LevelType; endLabel: string; color: string; dashed?: boolean }[] = [
+  { alignedKey: 'boll_upper',     group: 'boll',      endLabel: '布林上轨', color: '#F97316', dashed: true },
+  { alignedKey: 'boll_lower',     group: 'boll',      endLabel: '布林下轨', color: '#F97316', dashed: true },
+  { alignedKey: 'boll_mid',       group: 'boll',      endLabel: '布林中轨', color: '#FB923C', dashed: false },
+  { alignedKey: 'keltner_s_upper',group: 'keltner_s', endLabel: 'Keltner短上', color: '#06B6D4', dashed: true },
+  { alignedKey: 'keltner_s_lower',group: 'keltner_s', endLabel: 'Keltner短下', color: '#06B6D4', dashed: true },
+  { alignedKey: 'keltner_m_upper',group: 'keltner_m', endLabel: 'Keltner中上', color: '#22D3EE', dashed: true },
+  { alignedKey: 'keltner_m_lower',group: 'keltner_m', endLabel: 'Keltner中下', color: '#22D3EE', dashed: true },
+  { alignedKey: 'keltner_l_upper',group: 'keltner_l', endLabel: 'Keltner长上', color: '#67E8F9', dashed: true },
+  { alignedKey: 'keltner_l_lower',group: 'keltner_l', endLabel: 'Keltner长下', color: '#67E8F9', dashed: true },
+  { alignedKey: 'atr_stop',       group: 'atr_stop',  endLabel: 'ATR止损', color: '#EF4444', dashed: true },
+  { alignedKey: 'atr_tp',         group: 'atr_stop',  endLabel: 'ATR止盈', color: '#F87171', dashed: true },
 ]
 
 // ===== 预留:标记 / 区间(后续新闻面、事件区间用) =====
@@ -94,7 +114,7 @@ export function AnalysisKChart({
   levels,
   series,
   seriesDates,
-  defaultLevelTypes = ['sr', 'pivot', 'keltner'],
+  defaultLevelTypes = ['sr', 'pivot', 'keltner_s'],
   markers,
   ranges,
   onDateClick,
@@ -136,6 +156,7 @@ export function AnalysisKChart({
       if (series.boll) {
         alignedSeries['boll_upper'] = align(series.boll.upper)
         alignedSeries['boll_lower'] = align(series.boll.lower)
+        if (series.boll.mid) alignedSeries['boll_mid'] = align(series.boll.mid)
       }
       if (series.keltner_s) {
         alignedSeries['keltner_s_upper'] = align(series.keltner_s.upper)
@@ -174,23 +195,6 @@ export function AnalysisKChart({
     const volTop = PAD_TOP + mainH + GAP_MAIN_VOL
     const sliderBottom = PAD_BOTTOM
 
-    // 主图 markLine(关键价位)
-    const markLineData: any[] = priceLines.map(p => ({
-      yAxis: p.value,
-      lineStyle: { color: p.color, type: 'dashed', width: 1, opacity: 0.85 },
-      label: {
-        show: true,
-        formatter: `${p.label} ${p.value.toFixed(2)}`,
-        position: 'insideEndTop',
-        color: p.color,
-        fontSize: 10,
-        fontFamily: 'JetBrains Mono, monospace',
-        backgroundColor: 'rgba(15,23,42,0.72)',
-        padding: [1, 5],
-        borderRadius: 3,
-      },
-    }))
-
     // 预留:markPoint(新闻标记)
     const markPointData: any[] = (markers ?? [])
       .filter(m => dateIndex.has(m.date))
@@ -217,7 +221,6 @@ export function AnalysisKChart({
           color: THEME.bull, color0: THEME.bear,
           borderColor: THEME.bull, borderColor0: THEME.bear,
         },
-        markLine: markLineData.length ? { silent: true, symbol: 'none', animation: false, data: markLineData } : undefined,
         markPoint: markPointData.length ? { data: markPointData, animation: false } : undefined,
         markArea: markAreaData.length ? { silent: true, data: markAreaData } : undefined,
       },
@@ -227,44 +230,61 @@ export function AnalysisKChart({
       },
     ]
 
-    // 带状曲线指标(布林带 / Keltner通道 / ATR止损) —— 画成跟随时间漂移的曲线
-    // 复刻 EChartsCandlestick 的 maLine/bollLine 模式:type=line, symbol=none, smooth
-    const mkCurve = (key: string, label: string, color: string, dashed = true) => {
-      const data = alignedSeries[key]
-      if (!data || !data.some(v => v != null)) return
+    // 价位水平线 —— 用 line series(恒定值)画水平线,endLabel 显示标签文字;
+    // 与通道曲线一致,标签落在右侧 grid.right 预留带(外侧),不压蜡烛。
+    for (const p of priceLines) {
       series.push({
-        name: label, type: 'line', data: data.map(v => v ?? '-'),
-        smooth: true, symbol: 'none', silent: true, animation: false,
-        lineStyle: { width: 1, color, type: dashed ? 'dashed' : 'solid', opacity: 0.8 },
-        itemStyle: { color },
+        name: p.label, type: 'line', silent: true, animation: false,
+        symbol: 'none',
+        data: dates.map(() => p.value),
+        lineStyle: { width: 1, color: p.color, type: 'dashed', opacity: 0.7 },
+        itemStyle: { color: p.color },
+        endLabel: {
+          show: true,
+          formatter: () => `${p.label} ${p.value.toFixed(2)}`,
+          color: p.color, fontSize: 9, fontFamily: 'JetBrains Mono, monospace',
+          backgroundColor: 'rgba(15,23,42,0.85)', padding: [1, 4], borderRadius: 2,
+          distance: 6,
+        },
       })
     }
-    // sr 组开启 → 布林带曲线(替代水平线)
-    if (activeTypes.has('sr')) {
-      mkCurve('boll_upper', '布林上轨', '#F97316')
-      mkCurve('boll_lower', '布林下轨', '#F97316')
-    }
-    // keltner 组开启 → 三档通道曲线
-    if (activeTypes.has('keltner')) {
-      mkCurve('keltner_s_upper', '短期通道上', '#06B6D4')
-      mkCurve('keltner_s_lower', '短期通道下', '#06B6D4')
-      mkCurve('keltner_m_upper', '中期通道上', '#22D3EE')
-      mkCurve('keltner_m_lower', '中期通道下', '#22D3EE')
-      mkCurve('keltner_l_upper', '长期通道上', '#67E8F9')
-      mkCurve('keltner_l_lower', '长期通道下', '#67E8F9')
-    }
-    // atr_stop 组开启 → 止损/止盈曲线
-    if (activeTypes.has('atr_stop')) {
-      mkCurve('atr_stop', 'ATR 止损', '#EF4444')
-      mkCurve('atr_tp', 'ATR 止盈', '#F87171')
+
+    // 带状曲线指标(布林带 / Keltner通道 / ATR止损) —— 跟随行情漂移的曲线
+    // 单一数据源 CURVE_DEFS 驱动:每条曲线带 endLabel(右侧端点标签),显示最新数值
+    for (const def of CURVE_DEFS) {
+      if (!activeTypes.has(def.group)) continue
+      const data = alignedSeries[def.alignedKey]
+      if (!data || !data.some(v => v != null)) continue
+      // 取最后一个有效值作为右侧端点显示文字
+      let lastVal: number | null = null
+      for (let i = data.length - 1; i >= 0; i--) {
+        if (data[i] != null) { lastVal = data[i]; break }
+      }
+      series.push({
+        name: def.endLabel, type: 'line', data: data.map(v => v ?? '-'),
+        smooth: true, symbol: 'none', silent: true, animation: false,
+        lineStyle: { width: 1, color: def.color, type: def.dashed === false ? 'solid' : 'dashed', opacity: 0.8 },
+        itemStyle: { color: def.color },
+        // 右侧端点标签:显示该通道的最新数值,距绘图区右缘留 6px 间距
+        endLabel: lastVal != null ? {
+          show: true,
+          formatter: () => `${lastVal!.toFixed(2)}`,
+          color: def.color, fontSize: 9, fontFamily: 'JetBrains Mono, monospace',
+          backgroundColor: 'rgba(15,23,42,0.85)', padding: [1, 4], borderRadius: 2,
+          distance: 6,
+        } : undefined,
+      })
     }
 
     return {
       animation: false,
       backgroundColor: 'transparent',
+      // grid.right 留出足够宽度给价位标签文字区:蜡烛只占左侧主区域,
+      // 价位线右端的标签文字显示在这条预留带里,不压在蜡烛上。
+      // 预留 ~144px:最长标签(如「成交密集区(POC) 12.34」)约 13 字符,fontSize 9 等宽。
       grid: [
-        { left: 56, right: 64, top: 16, height: mainH },
-        { left: 56, right: 64, top: volTop, height: volH },
+        { left: 56, right: 144, top: 16, height: mainH },
+        { left: 56, right: 144, top: volTop, height: volH },
       ],
       xAxis: [
         {
@@ -390,9 +410,10 @@ export function AnalysisKChart({
           )}
         </div>
       )}
+      {/* 图表:右侧预留带(grid.right 预留)显示价位标签文字,不压蜡烛 */}
       <div ref={chartRef} style={{ width: '100%', height }} />
 
-      {/* 价位概览:把当前开启的点位按"压力 / 支撑"结构化列出 */}
+      {/* 价位统计面板:把当前开启的点位按"压力 / 支撑"结构化列出 */}
       {levels && (
         <LevelOverview
           levels={levels}
@@ -405,7 +426,7 @@ export function AnalysisKChart({
   )
 }
 
-// ===== 价位概览面板(结构化文本展示) =====
+// ===== 价位统计面板(图表下方,结构化文本展示) =====
 function LevelOverview({
   levels, activeTypes, pivotRank, close,
 }: {
@@ -501,11 +522,10 @@ function collectPriceLines(
     for (const p of levels[g.key] ?? []) {
       // 枢轴点:按档位过滤(rank>P 的,只显示到选定的档位)
       if (p.type === 'pivot' && p.rank !== undefined && p.rank > pivotRank) continue
-      // 带状指标改由曲线渲染,跳过水平线:
-      //   - keltner / atr_stop 整组走曲线
-      //   - sr 组的布林带(label 含"布林")走曲线
-      if (p.type === 'keltner' || p.type === 'atr_stop') continue
-      if (p.type === 'sr' && p.label.includes('布林')) continue
+      // 波动通道类(boll / keltner三档 / atr_stop)整组走曲线渲染,不画水平线;
+      // sr 组现为成交密集区水平点,直接画线即可,无需特判。
+      if (p.type === 'boll' || p.type === 'keltner_s' || p.type === 'keltner_m'
+          || p.type === 'keltner_l' || p.type === 'atr_stop') continue
       out.push({ value: p.value, label: p.label, color: strengthColor(p.strength, g.color) })
     }
   }

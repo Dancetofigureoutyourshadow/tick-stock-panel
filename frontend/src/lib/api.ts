@@ -117,7 +117,7 @@ export interface AiFinancialReport {
 }
 
 // ===== 个股分析 =====
-export type LevelType = 'sr' | 'profile' | 'pivot' | 'extreme' | 'keltner' | 'atr_stop' | 'gap' | 'fib' | 'round'
+export type LevelType = 'sr' | 'pivot' | 'extreme' | 'boll' | 'keltner_s' | 'keltner_m' | 'keltner_l' | 'atr_stop' | 'gap' | 'fib' | 'round'
 
 export interface PriceLevel {
   value: number
@@ -131,7 +131,7 @@ export interface PriceLevel {
 
 /** 带状曲线指标(布林带/Keltner/ATR)的每日时间序列,与 dates 对齐。 */
 export interface LevelSeries {
-  boll?: { upper: (number | null)[]; lower: (number | null)[] }
+  boll?: { upper: (number | null)[]; lower: (number | null)[]; mid?: (number | null)[] }
   keltner_s?: { upper: (number | null)[]; lower: (number | null)[] }
   keltner_m?: { upper: (number | null)[]; lower: (number | null)[] }
   keltner_l?: { upper: (number | null)[]; lower: (number | null)[] }

@@ -192,15 +192,28 @@ function StockAnalysisBoard({ symbol }: { symbol: string }) {
 
   const levels = (levelsQ.data?.levels ?? {}) as Record<LevelType, PriceLevel[]>
 
+  // 涨跌色:最后一根 K 线收 vs 前一根收(无前日则按开收判断)
+  const last = rows[rows.length - 1]
+  const prev = rows[rows.length - 2]
+  const curClose = levelsQ.data?.close
+  const isUp = prev ? (last.close >= prev.close) : (last.close >= last.open)
+
   return (
     <div className="rounded-card border border-border/60 bg-surface/40 overflow-hidden">
       <div className="px-4 py-3 border-b border-border/40">
-        <div className="flex items-center gap-2">
-          <LineChart className="h-4 w-4 text-sky-400" />
-          <span className="text-sm font-medium text-foreground">关键价位分析</span>
-          <span className="text-[10px] text-muted">
-            {rows.length} 个交易日 · 当前价 {levelsQ.data?.close?.toFixed(2) ?? '—'}
-          </span>
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <LineChart className="h-4 w-4 text-sky-400 shrink-0" />
+            <span className="text-sm font-medium text-foreground">关键价位分析</span>
+          </div>
+          <div className="flex items-baseline gap-2 shrink-0">
+            <span className="text-[10px] text-muted">{rows.length} 个交易日</span>
+            <span className="text-[10px] text-muted/60">·</span>
+            <span className="text-[10px] text-muted">当前价</span>
+            <span className={`text-base font-mono font-bold ${isUp ? 'text-bull' : 'text-bear'}`}>
+              {curClose?.toFixed(2) ?? '—'}
+            </span>
+          </div>
         </div>
       </div>
       <div className="p-3">
@@ -209,7 +222,7 @@ function StockAnalysisBoard({ symbol }: { symbol: string }) {
           levels={levels}
           series={levelsQ.data?.series}
           seriesDates={levelsQ.data?.dates}
-          defaultLevelTypes={['sr', 'pivot', 'keltner']}
+          defaultLevelTypes={['sr', 'pivot', 'keltner_s']}
           height={480}
         />
       </div>

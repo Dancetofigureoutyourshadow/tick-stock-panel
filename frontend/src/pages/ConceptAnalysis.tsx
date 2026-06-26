@@ -311,17 +311,22 @@ export function ConceptAnalysis() {
 
   if (!activeConfig) {
     return (
-      <div className="flex h-full flex-col">
-        <PageHeader
-          title="概念分析"
-          right={
-            <button onClick={() => setShowConfig(true)} className="p-1.5 text-muted hover:bg-surface hover:text-accent" title="配置数据源">
-              <Settings2 className="h-4 w-4" />
-            </button>
-          }
-        />
-        <EmptyState icon={Database} title="暂无概念数据" hint={'请先在"数据"页面创建包含概念/题材字段的扩展数据源'} />
-      </div>
+      <>
+        <div className="flex h-full flex-col">
+          <PageHeader
+            title="概念分析"
+            right={
+              <button onClick={() => setShowConfig(true)} className="p-1.5 text-muted hover:bg-surface hover:text-accent" title="配置数据源">
+                <Settings2 className="h-4 w-4" />
+              </button>
+            }
+          />
+          <EmptyState icon={Database} title="暂无概念数据" hint={'请先在"数据"页面创建包含概念/题材字段的扩展数据源'} />
+        </div>
+        <AnimatePresence>
+          {showConfig && <AnalysisConfigDialog currentConfig={fieldConfig} onSave={handleSaveConfig} onClose={() => setShowConfig(false)} />}
+        </AnimatePresence>
+      </>
     )
   }
 

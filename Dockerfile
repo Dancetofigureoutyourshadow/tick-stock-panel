@@ -3,6 +3,8 @@
 ARG USE_CN_MIRROR=1
 ARG NPM_REGISTRY=https://registry.npmmirror.com
 ARG PYPI_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
+# 备用 PyPI 源:主源同步延迟/故障时自动兜底(阿里云与清华互为补充)
+ARG PYPI_FALLBACK=https://mirrors.aliyun.com/pypi/simple
 ARG BACKEND_EXTRAS=
 
 # === Stage 1: 前端构建 ===
@@ -26,12 +28,18 @@ RUN pnpm build
 FROM python:3.11-slim AS runtime
 ARG USE_CN_MIRROR=1
 ARG PYPI_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
+ARG PYPI_FALLBACK=https://mirrors.aliyun.com/pypi/simple
 ARG BACKEND_EXTRAS=
 WORKDIR /app
 
-# 安装 uv(快)
+# 安装 uv(快) —— 国内镜像下三重兜底:主源 → 备用源 → 官方源,
+# 任一成功即可,避免单一镜像同步延迟/故障导致构建失败。
+# uv 发版极频繁,国内镜像同步存在时间窗口,不锁版本且无 fallback 时
+# 容易遇到 "from versions: none"(索引解析不到最新版)。
 RUN if [ "$USE_CN_MIRROR" = "1" ]; then \
-      pip install --no-cache-dir uv -i "$PYPI_INDEX"; \
+      pip install --no-cache-dir uv -i "$PYPI_INDEX" || \
+      pip install --no-cache-dir uv -i "$PYPI_FALLBACK" || \
+      pip install --no-cache-dir uv; \
     else \
       pip install --no-cache-dir uv; \
     fi
@@ -39,7 +47,11 @@ RUN if [ "$USE_CN_MIRROR" = "1" ]; then \
 # Backend deps
 COPY README.md /README.md
 COPY backend/pyproject.toml backend/uv.lock* ./
-RUN if [ "$USE_CN_MIRROR" = "1" ]; then export UV_DEFAULT_INDEX="$PYPI_INDEX"; fi; \
+# uv 原生支持同时挂多个 index(主源 + 备用源),会自动在两源中查找,
+# 比逐个重试更稳健 —— 任一源缺包时另一源补位。
+RUN if [ "$USE_CN_MIRROR" = "1" ]; then \
+      export UV_DEFAULT_INDEX="$PYPI_INDEX" UV_EXTRA_INDEX_URL="$PYPI_FALLBACK"; \
+    fi; \
     set -- --no-dev; \
     for extra in $BACKEND_EXTRAS; do \
       set -- "$@" --extra "$extra"; \

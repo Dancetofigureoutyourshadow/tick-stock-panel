@@ -196,7 +196,9 @@ function StockAnalysisBoard({ symbol }: { symbol: string }) {
         <AnalysisKChart
           rows={rows}
           levels={levels}
-          defaultLevelTypes={['sr', 'pivot']}
+          series={levelsQ.data?.series}
+          seriesDates={levelsQ.data?.dates}
+          defaultLevelTypes={['sr', 'pivot', 'keltner']}
           height={480}
         />
       </div>

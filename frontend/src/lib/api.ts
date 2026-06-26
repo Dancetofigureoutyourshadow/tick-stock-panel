@@ -129,11 +129,23 @@ export interface PriceLevel {
   rank?: number
 }
 
+/** 带状曲线指标(布林带/Keltner/ATR)的每日时间序列,与 dates 对齐。 */
+export interface LevelSeries {
+  boll?: { upper: (number | null)[]; lower: (number | null)[] }
+  keltner_s?: { upper: (number | null)[]; lower: (number | null)[] }
+  keltner_m?: { upper: (number | null)[]; lower: (number | null)[] }
+  keltner_l?: { upper: (number | null)[]; lower: (number | null)[] }
+  atr?: { stop_loss: (number | null)[]; take_profit: (number | null)[] }
+}
+
 export interface StockLevels {
   levels: Record<LevelType, PriceLevel[]>
   close: number | null
   summary: string
   symbol: string
+  /** dates 与 series 对齐;前端按自身 rows 的日期映射,缺失填 null */
+  dates?: string[]
+  series?: LevelSeries
 }
 
 export interface AiStockReport {

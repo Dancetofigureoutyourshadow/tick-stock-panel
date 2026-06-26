@@ -1,7 +1,7 @@
 import { useEffect, useRef, useMemo, useState } from 'react'
 import * as echarts from 'echarts'
 import type { ECharts, EChartsOption } from 'echarts'
-import type { KlineRow } from '@/lib/api'
+import type { KlineRow, LevelSeries } from '@/lib/api'
 
 /**
  * 个股分析专用日 K 图表。
@@ -71,6 +71,10 @@ export interface ChartRange {
 interface Props {
   rows: KlineRow[]
   levels?: Record<LevelType, PriceLevel[]>
+  /** 带状曲线指标(布林带/Keltner/ATR)的每日序列 —— 画成跟随时间漂移的曲线 */
+  series?: LevelSeries
+  /** series 数据对应的日期数组(与 series 各数组对齐) */
+  seriesDates?: string[]
   /** 默认开启的价位组 */
   defaultLevelTypes?: LevelType[]
   /** 预留:新闻/暴雷/利好日期标记 */
@@ -88,6 +92,8 @@ const VOL_PANE_H = 90
 export function AnalysisKChart({
   rows,
   levels,
+  series,
+  seriesDates,
   defaultLevelTypes = ['sr', 'pivot', 'keltner'],
   markers,
   ranges,
@@ -101,8 +107,8 @@ export function AnalysisKChart({
   /** 枢轴点显示到第几档:1=只P+R1/S1, 2=到R2/S2, 3=全档(R3/S3) */
   const [pivotRank, setPivotRank] = useState<1 | 2 | 3>(1)
 
-  // 数据预处理
-  const { dates, candle, vols, dateIndex, zoomStart } = useMemo(() => {
+  // 数据预处理 + 带状曲线序列对齐(后端 series 的日期范围可能与 rows 不同,需映射)
+  const { dates, candle, vols, dateIndex, zoomStart, alignedSeries } = useMemo(() => {
     const dates = rows.map(r => (typeof r.date === 'string' ? r.date.slice(0, 10) : String(r.date)))
     const candle = rows.map(r => [r.open, r.close, r.low, r.high])
     const vols = rows.map(r => ({
@@ -113,8 +119,44 @@ export function AnalysisKChart({
     // 默认显示最近 6 个月 ≈ 120 个交易日;数据不足则全部显示
     const showBars = 120
     const zoomStart = dates.length > showBars ? Math.round((1 - showBars / dates.length) * 100) : 0
-    return { dates, candle, vols, dateIndex, zoomStart }
-  }, [rows])
+
+    // 把后端 series(按 seriesDates 对齐)映射到前端 rows 的 dates 顺序
+    const alignedSeries: Record<string, (number | null)[]> = {}
+    if (series && seriesDates && seriesDates.length > 0) {
+      // 构建 seriesDates 索引
+      const sIdx = new Map(seriesDates.map((d, i) => [d, i]))
+      // 通用对齐:给定 series 里某条数组,返回与 rows dates 对齐的版本
+      const align = (arr: (number | null)[] | undefined): (number | null)[] => {
+        if (!arr) return dates.map(() => null)
+        return dates.map(d => {
+          const i = sIdx.get(d)
+          return i != null ? arr[i] : null
+        })
+      }
+      if (series.boll) {
+        alignedSeries['boll_upper'] = align(series.boll.upper)
+        alignedSeries['boll_lower'] = align(series.boll.lower)
+      }
+      if (series.keltner_s) {
+        alignedSeries['keltner_s_upper'] = align(series.keltner_s.upper)
+        alignedSeries['keltner_s_lower'] = align(series.keltner_s.lower)
+      }
+      if (series.keltner_m) {
+        alignedSeries['keltner_m_upper'] = align(series.keltner_m.upper)
+        alignedSeries['keltner_m_lower'] = align(series.keltner_m.lower)
+      }
+      if (series.keltner_l) {
+        alignedSeries['keltner_l_upper'] = align(series.keltner_l.upper)
+        alignedSeries['keltner_l_lower'] = align(series.keltner_l.lower)
+      }
+      if (series.atr) {
+        alignedSeries['atr_stop'] = align(series.atr.stop_loss)
+        alignedSeries['atr_tp'] = align(series.atr.take_profit)
+      }
+    }
+
+    return { dates, candle, vols, dateIndex, zoomStart, alignedSeries }
+  }, [rows, series, seriesDates])
 
   // 构建 option
   const buildOption = (): EChartsOption => {
@@ -185,6 +227,38 @@ export function AnalysisKChart({
       },
     ]
 
+    // 带状曲线指标(布林带 / Keltner通道 / ATR止损) —— 画成跟随时间漂移的曲线
+    // 复刻 EChartsCandlestick 的 maLine/bollLine 模式:type=line, symbol=none, smooth
+    const mkCurve = (key: string, label: string, color: string, dashed = true) => {
+      const data = alignedSeries[key]
+      if (!data || !data.some(v => v != null)) return
+      series.push({
+        name: label, type: 'line', data: data.map(v => v ?? '-'),
+        smooth: true, symbol: 'none', silent: true, animation: false,
+        lineStyle: { width: 1, color, type: dashed ? 'dashed' : 'solid', opacity: 0.8 },
+        itemStyle: { color },
+      })
+    }
+    // sr 组开启 → 布林带曲线(替代水平线)
+    if (activeTypes.has('sr')) {
+      mkCurve('boll_upper', '布林上轨', '#F97316')
+      mkCurve('boll_lower', '布林下轨', '#F97316')
+    }
+    // keltner 组开启 → 三档通道曲线
+    if (activeTypes.has('keltner')) {
+      mkCurve('keltner_s_upper', '短期通道上', '#06B6D4')
+      mkCurve('keltner_s_lower', '短期通道下', '#06B6D4')
+      mkCurve('keltner_m_upper', '中期通道上', '#22D3EE')
+      mkCurve('keltner_m_lower', '中期通道下', '#22D3EE')
+      mkCurve('keltner_l_upper', '长期通道上', '#67E8F9')
+      mkCurve('keltner_l_lower', '长期通道下', '#67E8F9')
+    }
+    // atr_stop 组开启 → 止损/止盈曲线
+    if (activeTypes.has('atr_stop')) {
+      mkCurve('atr_stop', 'ATR 止损', '#EF4444')
+      mkCurve('atr_tp', 'ATR 止盈', '#F87171')
+    }
+
     return {
       animation: false,
       backgroundColor: 'transparent',
@@ -241,7 +315,7 @@ export function AnalysisKChart({
     }
     chartInstRef.current.setOption(buildOption(), true)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows, levels, activeTypes, pivotRank, markers, ranges, height])
+  }, [rows, levels, series, seriesDates, activeTypes, pivotRank, markers, ranges, height])
 
   // resize
   useEffect(() => {
@@ -413,7 +487,8 @@ function LevelOverview({
   )
 }
 
-// ===== 工具:收集要画的价位线(按开启的组 + 档位 + 强度配色) =====
+// ===== 工具:收集要画的水平价位线(按开启的组 + 档位 + 强度配色) =====
+// 注意:带状指标(布林带/Keltner/ATR)改用曲线渲染,不在此画水平线,避免重复。
 function collectPriceLines(
   levels: Record<LevelType, PriceLevel[]> | undefined,
   active: Set<LevelType>,
@@ -426,6 +501,11 @@ function collectPriceLines(
     for (const p of levels[g.key] ?? []) {
       // 枢轴点:按档位过滤(rank>P 的,只显示到选定的档位)
       if (p.type === 'pivot' && p.rank !== undefined && p.rank > pivotRank) continue
+      // 带状指标改由曲线渲染,跳过水平线:
+      //   - keltner / atr_stop 整组走曲线
+      //   - sr 组的布林带(label 含"布林")走曲线
+      if (p.type === 'keltner' || p.type === 'atr_stop') continue
+      if (p.type === 'sr' && p.label.includes('布林')) continue
       out.push({ value: p.value, label: p.label, color: strengthColor(p.strength, g.color) })
     }
   }

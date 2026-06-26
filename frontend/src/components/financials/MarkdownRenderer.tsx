@@ -88,7 +88,7 @@ export function MarkdownRenderer({ content }: { content: string }) {
 
     // 分隔线
     if (/^(-{3,}|\*{3,}|_{3,})$/.test(trimmed)) {
-      blocks.push(<hr key={key++} className="my-3 border-border/40" />)
+      blocks.push(<hr key={key++} className="my-6 border-border" />)
       i++
       continue
     }
@@ -99,9 +99,9 @@ export function MarkdownRenderer({ content }: { content: string }) {
       const level = hMatch[1].length
       const text = hMatch[2]
       const sizeCls = level === 1 ? 'text-base' : level === 2 ? 'text-sm' : 'text-xs'
-      const mtCls = level <= 2 ? 'mt-4' : 'mt-3'
+      const mtCls = level <= 2 ? 'mt-6' : 'mt-5'
       blocks.push(
-        <div key={key++} className={`${sizeCls} ${mtCls} mb-2 font-semibold text-foreground flex items-center gap-1.5`}>
+        <div key={key++} className={`${sizeCls} ${mtCls} mb-3 font-semibold text-foreground flex items-center gap-1.5`}>
           {renderInline(text, `h-${key}`)}
         </div>,
       )
@@ -117,7 +117,7 @@ export function MarkdownRenderer({ content }: { content: string }) {
         i++
       }
       blocks.push(
-        <blockquote key={key++} className="my-2 pl-3 border-l-2 border-amber-400/40 bg-amber-400/[0.04] py-1.5 pr-2 rounded-r text-xs text-secondary">
+        <blockquote key={key++} className="my-4 pl-3 border-l-2 border-amber-400/40 bg-amber-400/[0.04] py-1.5 pr-2 rounded-r text-xs text-secondary">
           {renderInline(quoteLines.join(' '), `q-${key}`)}
         </blockquote>,
       )
@@ -131,7 +131,7 @@ export function MarkdownRenderer({ content }: { content: string }) {
         const [header, ...body] = table.rows
         const ncol = header.length
         blocks.push(
-          <div key={key++} className="my-3 overflow-hidden rounded-btn border border-border/30">
+          <div key={key++} className="my-5 overflow-hidden rounded-btn border border-border/30">
             <table className="w-full text-xs border-collapse table-fixed">
               <colgroup>
                 {/* 首列(维度)较窄;末列(判断/说明)最宽并允许折行 */}
@@ -176,10 +176,10 @@ export function MarkdownRenderer({ content }: { content: string }) {
         i++
       }
       blocks.push(
-        <ul key={key++} className="my-1.5 space-y-1">
+        <ul key={key++} className="my-4 space-y-2">
           {items.map((item, ii) => (
             <li key={ii} className="flex items-start gap-2 text-xs text-foreground/90 leading-relaxed">
-              <span className="mt-1.5 h-1 w-1 rounded-full bg-accent/60 shrink-0" />
+              <span className="mt-[7px] h-1 w-1 rounded-full bg-accent/60 shrink-0" />
               <span>{renderInline(item, `li-${key}-${ii}`)}</span>
             </li>
           ))}
@@ -196,7 +196,7 @@ export function MarkdownRenderer({ content }: { content: string }) {
         i++
       }
       blocks.push(
-        <ol key={key++} className="my-1.5 space-y-1">
+        <ol key={key++} className="my-4 space-y-2">
           {items.map((item, ii) => (
             <li key={ii} className="flex items-start gap-2 text-xs text-foreground/90 leading-relaxed">
               <span className="mt-0.5 h-4 w-4 rounded-full bg-accent/10 text-accent text-[10px] font-mono flex items-center justify-center shrink-0">
@@ -212,12 +212,14 @@ export function MarkdownRenderer({ content }: { content: string }) {
 
     // 普通段落
     blocks.push(
-      <p key={key++} className="my-1.5 text-xs text-foreground/90 leading-relaxed">
+      <p key={key++} className="my-3 text-xs text-foreground/90 leading-relaxed">
         {renderInline(trimmed, `p-${key}`)}
       </p>,
     )
     i++
   }
 
-  return <div className="space-y-0">{blocks}</div>
+  // 注意:外层不加 space-y-*,否则会覆盖各块自己的 margin-top 导致间距失效。
+  // 让各块的 my-* 自然叠加(margin collapse),间距更可控。
+  return <div>{blocks}</div>
 }

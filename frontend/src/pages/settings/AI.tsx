@@ -2,10 +2,10 @@ import { useState, useEffect } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Save, Loader2, Check, Wifi, WifiOff, Eye, EyeOff, Shield,
-  Shuffle, Plug, Zap, Settings2, ExternalLink,
+  Shuffle, Plug, Zap, Settings2, ExternalLink, Trash2,
 } from 'lucide-react'
 import { useSettings } from '@/lib/useSharedQueries'
-import { api } from '@/lib/api'
+import { api, type SettingsState } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
 
 // 统一的输入框样式(与项目其他设置页一致)
@@ -35,6 +35,7 @@ export function SettingsAIPanel() {
   const [userAgent, setUserAgent] = useState('')
   const [showKey, setShowKey] = useState(false)
   const [saved, setSaved] = useState(false)
+  const [confirmClear, setConfirmClear] = useState(false)
 
   // 测试
   const [testing, setTesting] = useState(false)
@@ -70,8 +71,41 @@ export function SettingsAIPanel() {
       user_agent: customUa ? userAgent : '',
     }),
     onSuccess: () => {
-      setSaved(true); setApiKey(''); qc.invalidateQueries({ queryKey: QK.settings })
+      setSaved(true); setApiKey('')
+      // 乐观更新:保存后立刻刷新连接状态 & 左侧菜单,不等异步 refetch
+      qc.setQueryData<SettingsState>(QK.settings, prev => prev ? {
+        ...prev,
+        ai_provider: provider,
+        ai_base_url: baseUrl,
+        ai_model: model,
+        // 只在本次确实提交了新 Key 时才更新连接态(留空不修改)
+        ...(apiKey ? {
+          has_ai_key: true,
+          ai_api_key_masked: `${apiKey.slice(0, 4)}••••••${apiKey.slice(-4)}`,
+        } : {}),
+      } : prev)
+      qc.invalidateQueries({ queryKey: QK.settings })
       setTimeout(() => setSaved(false), 2000)
+    },
+  })
+
+  const clear = useMutation({
+    mutationFn: () => api.clearAiSettings(),
+    onSuccess: () => {
+      setConfirmClear(false)
+      // 同步清空本地表单(保留自定义 UA)
+      setProvider('openai_compat'); setBaseUrl(''); setApiKey(''); setModel('')
+      setTestResult(null)
+      // 乐观更新:立刻把连接状态/左侧菜单置为未配置
+      qc.setQueryData<SettingsState>(QK.settings, prev => prev ? {
+        ...prev,
+        ai_provider: 'openai_compat',
+        ai_base_url: '',
+        ai_model: '',
+        has_ai_key: false,
+        ai_api_key_masked: '',
+      } : prev)
+      qc.invalidateQueries({ queryKey: QK.settings })
     },
   })
 
@@ -246,12 +280,45 @@ export function SettingsAIPanel() {
         </div>
       </div>
 
-      {/* ===== 保存 ===== */}
-      <button onClick={() => save.mutate()} disabled={save.isPending || !canSave}
-        className="w-full h-10 rounded-xl bg-accent text-white text-sm font-semibold flex items-center justify-center gap-2 hover:bg-accent/90 disabled:opacity-40 transition-all">
-        {save.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : saved ? <Check className="h-4 w-4" /> : <Save className="h-4 w-4" />}
-        {save.isPending ? '保存中...' : saved ? '已保存' : '保存配置'}
-      </button>
+      {/* ===== 保存 / 清空 ===== */}
+      <div className="flex gap-2">
+        <button onClick={() => save.mutate()} disabled={save.isPending || !canSave}
+          className="flex-1 h-10 rounded-xl bg-accent text-white text-sm font-semibold flex items-center justify-center gap-2 hover:bg-accent/90 disabled:opacity-40 transition-all">
+          {save.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : saved ? <Check className="h-4 w-4" /> : <Save className="h-4 w-4" />}
+          {save.isPending ? '保存中...' : saved ? '已保存' : '保存配置'}
+        </button>
+        {configured && (
+          <button onClick={() => setConfirmClear(true)} disabled={clear.isPending}
+            className="h-10 px-4 rounded-xl bg-elevated text-secondary hover:text-danger text-sm flex items-center justify-center gap-1.5 hover:bg-elevated/80 disabled:opacity-50 transition-all shrink-0"
+            title="清除 API Key、地址、模型等所有 AI 配置(保留自定义 UA)">
+            <Trash2 className="h-4 w-4" />
+            清空配置
+          </button>
+        )}
+      </div>
+
+      {/* 二次确认:清空 AI 配置 */}
+      {confirmClear && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setConfirmClear(false)} />
+          <div className="relative w-[90vw] max-w-[380px] rounded-card border border-border bg-base shadow-2xl p-6">
+            <h3 className="text-sm font-medium text-foreground mb-2">清空 AI 配置</h3>
+            <p className="text-xs text-secondary mb-5 leading-relaxed">
+              将清除 API Key、API 地址、模型等所有 AI 配置。自定义请求头(User-Agent)会保留。清空后相关 AI 功能将不可用,需重新配置。
+            </p>
+            <div className="flex items-center justify-end gap-2">
+              <button onClick={() => setConfirmClear(false)}
+                className="px-3 py-1.5 rounded-btn bg-elevated text-secondary hover:bg-elevated/80 text-sm transition-colors">
+                取消
+              </button>
+              <button onClick={() => clear.mutate()} disabled={clear.isPending}
+                className="px-3 py-1.5 rounded-btn bg-danger/15 text-danger hover:bg-danger/25 text-sm font-medium transition-colors disabled:opacity-50">
+                {clear.isPending ? '清空中...' : '确认清空'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

@@ -246,6 +246,24 @@ def save_ai_settings(req: AiSettingsIn) -> dict:
     return {"ok": True}
 
 
+@router.delete("/ai")
+def clear_ai_settings() -> dict:
+    """一键清空 AI 配置(provider / base_url / api_key / model)。
+
+    保留 ai_user_agent —— 自定义请求头与凭证解耦,清空凭证不影响绕过 CDN 拦截的设置。
+    """
+    from app.config import settings
+
+    secrets_store.clear("ai_provider", "ai_base_url", "ai_api_key", "ai_model")
+    # 同步重置运行时内存(provider 回默认值,其余置空)
+    settings.ai_provider = "openai_compat"
+    settings.ai_base_url = ""
+    settings.ai_api_key = ""
+    settings.ai_model = ""
+
+    return {"ok": True}
+
+
 # ===== 偏好设置 =====
 
 def _realtime_allowed() -> bool:

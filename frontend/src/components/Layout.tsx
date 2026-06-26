@@ -7,6 +7,8 @@ import { ToastContainer } from '@/components/Toast'
 import { AlertToastContainer } from '@/components/AlertToast'
 import { AiAnalysisHost } from '@/components/financials/AiAnalysisHost'
 import { AiReportBubble } from '@/components/financials/AiReportBubble'
+import { StockAnalysisHost } from '@/components/stock-analysis/StockAnalysisHost'
+import { StockAnalysisBubble } from '@/components/stock-analysis/StockAnalysisBubble'
 import {
   useCapabilities,
   useSettings,
@@ -420,6 +422,12 @@ export function Layout() {
                 <>
                   <Icon className="h-4 w-4 shrink-0" />
                   <span className="flex-1">{label}</span>
+                  {/* 个股分析 Beta 标识 */}
+                  {to === '/stock-analysis' && (
+                    <span className="inline-flex items-center rounded-full border border-amber-400/30 bg-amber-400/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-amber-400 shrink-0">
+                      Beta
+                    </span>
+                  )}
                   {/* 数据同步状态: 同步中转圈, 刚完成显示绿色对勾闪烁 3 秒 */}
                   {to === '/data' && isDataSyncing && (
                     <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-accent" />
@@ -533,6 +541,8 @@ export function Layout() {
       <AlertToastContainer />
       <AiAnalysisHost />
       <AiReportBubble />
+      <StockAnalysisHost />
+      <StockAnalysisBubble />
     </div>
   )
 }

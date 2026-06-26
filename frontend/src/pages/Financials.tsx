@@ -7,6 +7,8 @@ import { useFinancialStatus, useFinancialSync } from '@/lib/useFinancials'
 import { StockFinancialSearch } from '@/components/financials/StockFinancialSearch'
 import { StockFinancialDetail } from '@/components/financials/StockFinancialDetail'
 import { ReportHistoryPanel } from '@/components/financials/ReportHistoryPanel'
+import { LastStockChip } from '@/components/LastStockChip'
+import { useLastStock } from '@/lib/useLastStock'
 import { fmtBigNum } from '@/lib/format'
 import { toast } from '@/components/Toast'
 
@@ -49,6 +51,11 @@ export function Financials() {
   }, [syncing, syncStartedAt])
   // 选中的个股(模糊搜索结果);null 时显示搜索引导
   const [selected, setSelected] = useState<{ symbol: string; name: string } | null>(null)
+  const { last: lastStock, remember: rememberStock } = useLastStock('financials')
+  const pick = (symbol: string, name: string) => {
+    setSelected({ symbol, name })
+    rememberStock(symbol, name)
+  }
 
   if (!hasFinancial) {
     return (
@@ -129,6 +136,7 @@ export function Financials() {
         subtitle="利润表 / 资负表 / 现金流 / 关键指标 / AI分析 · Expert"
         right={
           <div className="flex items-center gap-2">
+            <LastStockChip stock={lastStock} onSelect={pick} />
             {syncing && (
               <span className="text-xs text-accent/80 flex items-center gap-1.5">
                 <Loader2 className="w-3 h-3 animate-spin" />
@@ -250,7 +258,7 @@ export function Financials() {
                 // 已选股:紧凑搜索条 + 清除按钮(便于换股)
                 <div className="flex items-center gap-3">
                   <div className="flex-1 max-w-xl">
-                    <StockFinancialSearch onSelect={(symbol, name) => setSelected({ symbol, name })} />
+                    <StockFinancialSearch onSelect={pick} />
                   </div>
                   <button
                     onClick={() => setSelected(null)}
@@ -269,7 +277,7 @@ export function Financials() {
                     <span>搜索个股查看详细财务数据</span>
                   </div>
                   <div className="w-full max-w-xl">
-                    <StockFinancialSearch onSelect={(symbol, name) => setSelected({ symbol, name })} />
+                    <StockFinancialSearch onSelect={pick} />
                   </div>
                   <div className="text-[11px] text-muted">支持股票代码或名称模糊匹配，如 600000 / 浦发</div>
                 </div>

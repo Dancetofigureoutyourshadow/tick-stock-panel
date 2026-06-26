@@ -3,7 +3,7 @@
 路由前缀: /api/stock-analysis
 
 端点:
-  GET  /levels?symbol=         4 类关键价位(图表 markLine 数据源)
+  GET  /levels?symbol=         11 类关键价位(图表 markLine 数据源)
   POST /analyze                AI 流式四维分析(NDJSON)
   GET  /reports                历史报告列表
   POST /reports                保存一条报告
@@ -66,11 +66,12 @@ def _build_series(df: pl.DataFrame) -> dict:
     close = df["close"]
     has_atr = "atr_14" in df.columns
 
-    # 布林带
+    # 布林带(上/下/中轨;中轨 = MA20,数据层已预计算)
     if "boll_upper" in df.columns and "boll_lower" in df.columns:
         out["boll"] = {
             "upper": _to_float_list(df["boll_upper"]),
             "lower": _to_float_list(df["boll_lower"]),
+            "mid": _to_float_list(df["ma20"]) if "ma20" in df.columns else None,
         }
 
     # Keltner 通道三档(需要 ATR)
@@ -107,10 +108,12 @@ def get_levels(
     symbol: str = Query(..., description="标的代码,如 000001.SZ"),
     days: int = Query(120, ge=30, le=500, description="计算样本天数"),
 ):
-    """计算 4 类关键价位(压力支撑 / 成交密集区 / 枢轴点 / 前高前低)。
+    """计算 11 类关键价位(成交密集区压力支撑 / 枢轴点 / 前高前低 /
+    布林带 / Keltner短中长 / ATR止损 / 缺口 / 斐波那契 / 整数关口)。
 
-    返回 {levels: {sr, profile, pivot, extreme}, close, summary}。
-    前端按 levels 的 key 渲染开关按钮,逐组显隐 markLine。
+    返回 {levels: {sr, pivot, extreme, boll, keltner_s, keltner_m, keltner_l,
+    atr_stop, gap, fib, round}, close, summary, dates, series}。
+    前端按 levels 的 key 渲染开关按钮,逐组显隐 markLine / 曲线。
     """
     if not symbol:
         raise HTTPException(400, "symbol 不能为空")
@@ -120,8 +123,9 @@ def get_levels(
     start = end - timedelta(days=days * 2)
     df = repo.get_daily(symbol, start, end)
     if df.is_empty():
-        return {"levels": {"sr": [], "profile": [], "pivot": [], "extreme": [],
-                           "keltner": [], "atr_stop": [], "gap": [], "fib": [], "round": []},
+        return {"levels": {"sr": [], "pivot": [], "extreme": [],
+                           "boll": [], "keltner_s": [], "keltner_m": [], "keltner_l": [],
+                           "atr_stop": [], "gap": [], "fib": [], "round": []},
                 "close": None, "summary": "无数据", "symbol": symbol,
                 "dates": [], "series": {}}
 

@@ -41,11 +41,13 @@ class PriceLevel:
 
 # 价位分组 → 开关 key。前端按这个 type 显隐。
 LEVEL_TYPES = {
-    "sr": "压力支撑",        # 布林带 + swing 高低点
-    "profile": "成交密集区",  # 成交量分布 POC + 密集区
+    "sr": "压力支撑",        # 成交密集区(价量:Volume Profile POC + 高成交密集区)
     "pivot": "枢轴点",        # 经典 Pivot P/R/S
-    "extreme": "前高前低",    # 60/120/250 日极值
-    "keltner": "Keltner通道", # 短/中/长三档 MA±n×ATR
+    "extreme": "前高前低",    # 60/250 日极值 + 近期 swing 高低点
+    "boll": "布林带",         # MA20 ± 2σ,标准差波动带(参考性,非真实支撑压力)
+    "keltner_s": "Keltner短期",  # MA20 ± 2×ATR
+    "keltner_m": "Keltner中期",  # MA60 ± 2.5×ATR
+    "keltner_l": "Keltner长期",  # MA120 ± 3×ATR(牛熊趋势边界)
     "atr_stop": "ATR止损",    # close±nATR 动态止盈止损
     "gap": "缺口位",          # 未回补跳空缺口
     "fib": "斐波那契",        # 回撤位 0.236~0.786
@@ -54,43 +56,19 @@ LEVEL_TYPES = {
 
 
 # ================================================================
-# 1. 压力位 / 支撑位 —— 布林带上下轨 + 局部 swing 高低点
+# 1. 压力位 / 支撑位 —— 成交量分布 (Volume Profile)
 # ================================================================
 
-def _support_resistance(df: pl.DataFrame) -> list[dict]:
-    """布林带上下轨(压力/支撑带)。
+def _support_resistance(df: pl.DataFrame, bins: int = 40) -> list[dict]:
+    """成交量分布 (Volume Profile) —— 真正基于价+量的支撑/压力位。
 
-    本组只放"通道型"压力支撑 —— 即布林带的上下轨,代表近期波动边界。
-    局部 swing 高低点 / 前高前低 等点位归到 extreme 组,避免与本组重叠。
-    """
-    if df.is_empty() or df.height < 20:
-        return []
+    把每个价位层按价格分桶,统计落在该桶的累计成交量,取高成交密集区作为关键
+    价位带。与 BOLL/Keltner 等"波动通道"不同,成交密集区反映的是真实换手堆积,
+    是经典意义的支撑/压力。
 
-    out: list[dict] = []
-    last = df.tail(1)
-
-    if "boll_upper" in df.columns:
-        bu = last["boll_upper"][0]
-        if _ok(bu):
-            out.append({"value": round(float(bu), 2), "label": "压力位(布林上轨)",
-                        "type": "sr", "side": "resistance", "strength": "medium"})
-    if "boll_lower" in df.columns:
-        bl = last["boll_lower"][0]
-        if _ok(bl):
-            out.append({"value": round(float(bl), 2), "label": "支撑位(布林下轨)",
-                        "type": "sr", "side": "support", "strength": "medium"})
-
-    return out
-
-
-# ================================================================
-# 2. 成交密集区 —— 成交量分布 (Volume Profile)
-# ================================================================
-
-def _volume_profile(df: pl.DataFrame, bins: int = 40) -> list[dict]:
-    """按价格分桶统计成交量,找 POC(控制点)+ 高成交密集区。
-
-    密集区 = 成交量高于均值的桶,按成交量降序取前 3 个作为关键价位带。
+    密集区 = 成交量高于均值的桶,按成交量降序取前 3 个作为关键价位带:
+      - POC(控制点):成交量最大的桶,标记为 strong
+      - 其他高成交区:高于均值,标记为 medium
     """
     if df.is_empty() or "volume" not in df.columns or df.height < 20:
         return []
@@ -138,7 +116,7 @@ def _volume_profile(df: pl.DataFrame, bins: int = 40) -> list[dict]:
     poc_pos = max(range(len(vols)), key=lambda i: vols[i])
     poc_mid = bin_mid(bin_ids[poc_pos])
     out.append({"value": round(poc_mid, 2), "label": "成交密集区(POC)",
-                "type": "profile", "side": _side(poc_mid, close), "strength": "strong"})
+                "type": "sr", "side": _side(poc_mid, close), "strength": "strong"})
 
     # 其他高成交区(高于均值,排除 POC),按成交量降序取 2 个
     candidates = [(i, v) for i, v in enumerate(vols) if v > mean_vol and i != poc_pos]
@@ -146,12 +124,12 @@ def _volume_profile(df: pl.DataFrame, bins: int = 40) -> list[dict]:
     for i, _v in candidates[:2]:
         mid = bin_mid(bin_ids[i])
         out.append({"value": round(mid, 2), "label": "成交密集区",
-                    "type": "profile", "side": _side(mid, close), "strength": "medium"})
+                    "type": "sr", "side": _side(mid, close), "strength": "medium"})
     return out
 
 
 # ================================================================
-# 3. 枢轴点 (Pivot Point) —— 经典公式,基于最近完整交易日
+# 2. 枢轴点 (Pivot Point) —— 经典公式,基于最近完整交易日
 # ================================================================
 
 def _pivot_points(df: pl.DataFrame) -> list[dict]:
@@ -198,7 +176,7 @@ def _pivot_points(df: pl.DataFrame) -> list[dict]:
 
 
 # ================================================================
-# 4. 前高 / 前低 —— 60 / 120 / 250 日极值
+# 3. 前高 / 前低 —— 60 / 120 / 250 日极值
 # ================================================================
 
 def _extreme_levels(df: pl.DataFrame) -> list[dict]:
@@ -260,62 +238,101 @@ def _extreme_levels(df: pl.DataFrame) -> list[dict]:
 
 
 # ================================================================
-# 5. Keltner 通道 —— MA ± n × ATR,短/中/长三档
+# 4. 波动通道 —— 布林带 + Keltner 三档,各自独立开关
 # ================================================================
 
-def _keltner_channels(df: pl.DataFrame) -> list[dict]:
-    """三档 Keltner 通道(波动自适应边界)。
+def _ma_value(df: pl.DataFrame, ma_col: str | None, window: int) -> float | None:
+    """取某档均线值:优先用预计算列,缺失则现场 rolling_mean。"""
+    last = df.tail(1)
+    if ma_col and ma_col in df.columns:
+        v = last[ma_col][0]
+        return float(v) if _ok(v) else None
+    if df.height >= window:
+        v = df.select(pl.col("close").rolling_mean(window)).tail(1)["close"][0]
+        return float(v) if _ok(v) else None
+    return None
 
-    基于 ATR 的通道:均线 ± n×ATR。ATR 自适应波动,通道宽度随行情自动收缩/扩张,
-    比布林带(基于标准差)更稳定,实战常用作趋势边界与突破参照。
 
-    三档:
-      - 短期:MA20 ± 2×ATR    (近期波动带,约一个月)
-      - 中期:MA60 ± 2.5×ATR  (季度波动带)
-      - 长期:MA120 ± 3×ATR   (半年波动带,牛熊趋势边界)
+def _keltner_band(
+    df: pl.DataFrame, ma_col: str | None, window: int, n: float,
+    label_short: str, type_key: str,
+) -> list[dict]:
+    """单档 Keltner 通道:均线 ± n×ATR。
+
+    ATR 自适应波动,通道宽度随行情自动收缩/扩张。type_key 决定归入哪一组
+    (keltner_s / keltner_m / keltner_l),前端各自独立开关。
     """
-    if df.is_empty() or df.height < 20:
+    if df.is_empty() or df.height < 20 or "atr_14" not in df.columns:
         return []
-    out: list[dict] = []
+    last = df.tail(1)
+    close = float(last["close"][0]) if "close" in df.columns else 0
+    atr = float(last["atr_14"][0])
+    if not close or not _ok(atr):
+        return []
+
+    ma_val = _ma_value(df, ma_col, window)
+    if ma_val is None:
+        return []
+    upper = ma_val + n * atr
+    lower = ma_val - n * atr
+    return [
+        {"value": round(upper, 2), "label": f"{label_short}通道上轨",
+         "type": type_key, "side": _side(upper, close), "strength": "medium"},
+        {"value": round(lower, 2), "label": f"{label_short}通道下轨",
+         "type": type_key, "side": _side(lower, close), "strength": "medium"},
+    ]
+
+
+def _boll_channel(df: pl.DataFrame) -> list[dict]:
+    """布林带上下轨(MA20 ± 2σ)。
+
+    基于标准差的波动带,反映价格相对均线的统计偏离;非真实支撑压力,
+    仅作波动边界参考。数据直接取预计算列 boll_upper/boll_lower。
+    """
+    if df.is_empty() or "boll_upper" not in df.columns or "boll_lower" not in df.columns:
+        return []
     last = df.tail(1)
     close = float(last["close"][0]) if "close" in df.columns else 0
     if not close:
         return []
-
-    # ATR 列由 compute_indicators 生成(atr_14);缺失则跳过
-    if "atr_14" not in df.columns:
+    bu = last["boll_upper"][0]
+    bl = last["boll_lower"][0]
+    if not _ok(bu) or not _ok(bl):
         return []
-    atr = float(last["atr_14"][0])
-    if not _ok(atr):
-        return []
-
-    def _band(ma_col: str | None, n: int, label_short: str, window: int) -> None:
-        """单档通道:优先取预计算列,缺失则现场 rolling_mean。"""
-        ma_val: float | None = None
-        if ma_col and ma_col in df.columns:
-            v = last[ma_col][0]
-            ma_val = float(v) if _ok(v) else None
-        elif df.height >= window:
-            # ma120 等未预计算列:现场算
-            v = df.select(pl.col("close").rolling_mean(window)).tail(1)["close"][0]
-            ma_val = float(v) if _ok(v) else None
-        if ma_val is None:
-            return
-        upper = ma_val + n * atr
-        lower = ma_val - n * atr
-        out.append({"value": round(upper, 2), "label": f"{label_short}通道上轨",
-                    "type": "keltner", "side": _side(upper, close), "strength": "medium"})
-        out.append({"value": round(lower, 2), "label": f"{label_short}通道下轨",
-                    "type": "keltner", "side": _side(lower, close), "strength": "medium"})
-
-    _band("ma20", 2, "短期", 20)
-    _band("ma60", 2.5, "中期", 60)
-    _band(None, 3, "长期", 120)   # ma120 未预计算,现场 rolling_mean
+    bu, bl = float(bu), float(bl)
+    out = [
+        {"value": round(bu, 2), "label": "布林上轨",
+         "type": "boll", "side": _side(bu, close), "strength": "medium"},
+        {"value": round(bl, 2), "label": "布林下轨",
+         "type": "boll", "side": _side(bl, close), "strength": "medium"},
+    ]
+    # 布林中轨 = MA20(多空平衡线,价格在其上下分强弱);数据层已预计算 ma20
+    if "ma20" in df.columns:
+        mid = last["ma20"][0]
+        if _ok(mid):
+            mid = float(mid)
+            out.append({"value": round(mid, 2), "label": "布林中轨",
+                        "type": "boll", "side": _side(mid, close), "strength": "medium"})
     return out
 
 
+def _keltner_short(df: pl.DataFrame) -> list[dict]:
+    """Keltner 短期:MA20 ± 2×ATR(近期波动带,约一个月)。"""
+    return _keltner_band(df, "ma20", 20, 2.0, "短期", "keltner_s")
+
+
+def _keltner_mid(df: pl.DataFrame) -> list[dict]:
+    """Keltner 中期:MA60 ± 2.5×ATR(季度波动带)。"""
+    return _keltner_band(df, "ma60", 60, 2.5, "中期", "keltner_m")
+
+
+def _keltner_long(df: pl.DataFrame) -> list[dict]:
+    """Keltner 长期:MA120 ± 3×ATR(半年波动带,牛熊趋势边界)。"""
+    return _keltner_band(df, None, 120, 3.0, "长期", "keltner_l")
+
+
 # ================================================================
-# 6. ATR 止损位 —— close ± n × ATR,动态止盈止损
+# 5. ATR 止损位 —— close ± n × ATR,动态止盈止损
 # ================================================================
 
 def _atr_stops(df: pl.DataFrame) -> list[dict]:
@@ -347,7 +364,7 @@ def _atr_stops(df: pl.DataFrame) -> list[dict]:
 
 
 # ================================================================
-# 7. 缺口位 (Gap) —— 未回补的跳空缺口
+# 6. 缺口位 (Gap) —— 未回补的跳空缺口
 # ================================================================
 
 def _gap_levels(df: pl.DataFrame, lookback: int = 120) -> list[dict]:
@@ -400,7 +417,7 @@ def _gap_levels(df: pl.DataFrame, lookback: int = 120) -> list[dict]:
 
 
 # ================================================================
-# 8. 斐波那契回撤 —— 基于近期波段的回撤位
+# 7. 斐波那契回撤 —— 基于近期波段的回撤位
 # ================================================================
 
 def _fibonacci_levels(df: pl.DataFrame, window: int = 120) -> list[dict]:
@@ -442,7 +459,7 @@ def _fibonacci_levels(df: pl.DataFrame, window: int = 120) -> list[dict]:
 
 
 # ================================================================
-# 9. 整数关口 —— 心理支撑/阻力位
+# 8. 整数关口 —— 心理支撑/阻力位
 # ================================================================
 
 def _round_numbers(df: pl.DataFrame, pct: float = 0.10, max_count: int = 8) -> list[dict]:
@@ -497,10 +514,11 @@ def _round_numbers(df: pl.DataFrame, pct: float = 0.10, max_count: int = 8) -> l
     return out
 
 def compute_levels(df: pl.DataFrame) -> dict[str, list[dict]]:
-    """计算 9 类价位点,返回 {分组key: [点位...]}。
+    """计算 11 类价位点,返回 {分组key: [点位...]}。
 
-    分组 key 与 LEVEL_TYPES 一致(sr / profile / pivot / extreme /
-    keltner / atr_stop / gap / fib / round),前端按 key 渲染开关按钮,逐组显隐。
+    分组 key 与 LEVEL_TYPES 一致(sr / pivot / extreme / boll /
+    keltner_s / keltner_m / keltner_l / atr_stop / gap / fib / round),
+    前端按 key 渲染开关按钮,逐组显隐。
     """
     if df.is_empty():
         return {k: [] for k in LEVEL_TYPES}
@@ -508,10 +526,12 @@ def compute_levels(df: pl.DataFrame) -> dict[str, list[dict]]:
     try:
         return {
             "sr": _support_resistance(df),
-            "profile": _volume_profile(df),
             "pivot": _pivot_points(df),
             "extreme": _extreme_levels(df),
-            "keltner": _keltner_channels(df),
+            "boll": _boll_channel(df),
+            "keltner_s": _keltner_short(df),
+            "keltner_m": _keltner_mid(df),
+            "keltner_l": _keltner_long(df),
             "atr_stop": _atr_stops(df),
             "gap": _gap_levels(df),
             "fib": _fibonacci_levels(df),

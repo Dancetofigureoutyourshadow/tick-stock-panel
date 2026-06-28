@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { RefreshCw, Lock, Loader2, X, Search, FileText, Database, Clock, CheckCircle2, Hourglass } from 'lucide-react'
+import { RefreshCw, Lock, Loader2, X, Search, FileText, Database, Clock, CheckCircle2, Hourglass, Lightbulb, ExternalLink } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
 import { EmptyState } from '@/components/EmptyState'
 import { useCapabilities } from '@/lib/useSharedQueries'
@@ -70,6 +70,25 @@ export function Financials() {
             <p className="mt-2 text-xs leading-relaxed text-secondary">
               财务数据接口仅 Expert 套餐可用。升级后此页自动显示财务数据面板。
             </p>
+            {/* 当前财务数据源(TickFlow)需付费,后续将接入免费数据源;期间欢迎在 issues 推荐免费源 */}
+            <div className="mt-5 rounded-btn border border-accent/25 bg-accent/[0.05] px-3.5 py-3 text-left">
+              <div className="flex items-center gap-1.5 text-xs font-medium text-accent">
+                <Lightbulb className="h-3.5 w-3.5 shrink-0" />
+                关于数据源
+              </div>
+              <p className="mt-1.5 text-[11px] leading-relaxed text-secondary">
+                当前财务数据源需付费,后续会接入免费数据源。如你常用某个免费财务数据源,欢迎在 Issues 中多多推荐哈 ~
+              </p>
+              <a
+                href="https://github.com/shy3130/tickflow-stock-panel/issues"
+                target="_blank"
+                rel="noreferrer"
+                className="mt-2 inline-flex items-center gap-1 text-[11px] font-medium text-accent hover:underline"
+              >
+                前往 Issues 推荐
+                <ExternalLink className="h-3 w-3" />
+              </a>
+            </div>
           </div>
         </div>
       </>

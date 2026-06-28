@@ -26,10 +26,20 @@
     {
       "name": "所属同花顺行业",
       "dtype": "string",
-      "label": "所属行业"
+      "label": "所属同花顺行业"
+    },
+    {
+      "name": "thscode",
+      "dtype": "string",
+      "label": "thscode"
+    },
+    {
+      "name": "time",
+      "dtype": "string",
+      "label": "time"
     }
   ],
-  "description": "ths行业、月更",
+  "description": "",
   "symbol_map": {
     "type": "mapped",
     "col": "股票代码"
@@ -39,6 +49,6 @@
     "from": "symbol",
     "method": "strip_exchange"
   },
-  "created_at": "2026-06-19T19:57:17.004819",
-  "updated_at": "2026-06-19T19:57:17.004819"
+  "created_at": "2026-06-27T12:18:42.205794",
+  "updated_at": "2026-06-27T12:18:42.205794"
 }

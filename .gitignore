@@ -45,10 +45,14 @@ backend/data/**
 !backend/data/.gitkeep
 data/**
 !data/.gitkeep
-# 扩展数据: 全部纳入版本控制(含 config.json 表结构 + part.parquet 数据文件)
-# 注意 gitignore 否定规则特性: 需先放行目录才能放行内部文件
+# 扩展数据: 仅放行 ext_gn_ths(概念)与 ext_hy_ths(行业)两个数据源
+# 含 config.json 表结构 + part.parquet 数据文件;其余 ext_data 子目录均不入库
+# (gitignore 否定规则特性: 要放行嵌套文件,需逐级放行目录 + /** 放行内部文件)
 !data/ext_data/
-!data/ext_data/**
+!data/ext_data/ext_gn_ths/
+!data/ext_data/ext_gn_ths/**
+!data/ext_data/ext_hy_ths/
+!data/ext_data/ext_hy_ths/**
 
 # ===== Secrets =====
 .env

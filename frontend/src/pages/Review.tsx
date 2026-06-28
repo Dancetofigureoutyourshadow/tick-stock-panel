@@ -1,10 +1,10 @@
 /**
- * AI 大盘复盘页 —— 盘后复盘看板 + 流式 LLM 复盘报告 + 历史归档。
+ * AI 大盘复盘页 —— 以流式 LLM 复盘报告为主体的盘后复盘工作台。
  *
- * 数据分工:
- *  - 顶部看板(指数/涨跌/连板/封板/情绪雷达)来自 GET /api/overview/market
- *  - 复盘报告(markdown)由 POST /api/market-recap/analyze 流式生成
- * 视觉语言对齐 Dashboard:A 股红涨绿跌、rounded-card 卡片、SectionTitle 层级。
+ * 设计定位:极简专注型。不复刻 Dashboard 的看板(KPI/雷达/板块排名),
+ * 仅保留一行「市场摘要条」作为报告上下文参照;AI 报告 + 历史归档是页面主体。
+ *  - 摘要数据:GET /api/overview/market
+ *  - 报告流式:POST /api/market-recap/analyze
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
@@ -12,16 +12,21 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { motion } from 'framer-motion'
 import {
   BookOpenCheck, RefreshCw, Sparkles, Trash2, History, ChevronRight, AlertTriangle,
-  BarChart3, Activity, Layers, ArrowUpRight, ArrowDownRight, Database, Wand2,
+  Database, Wand2, Copy, Download,
 } from 'lucide-react'
 
 import { api, type OverviewMarket, type AiReviewReport } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
 import { cn } from '@/lib/cn'
-import { fmtPrice } from '@/lib/format'
+import { fmtBigNum } from '@/lib/format'
 import { PageHeader } from '@/components/PageHeader'
 import { MarkdownRenderer } from '@/components/financials/MarkdownRenderer'
 import { toast } from '@/components/Toast'
+import { useReviewState } from '@/lib/useReviewStore'
+import {
+  startReviewGeneration, resetReview, isReviewGenerating,
+  type ReviewPhase,
+} from '@/lib/reviewStore'
 
 // ================================================================
 // 涨跌幅格式化(注意单位差异)
@@ -47,19 +52,27 @@ function scoreColor(v: number | null | undefined): string {
   return '#12B76A'
 }
 
-type Phase = 'idle' | 'loading' | 'streaming' | 'done' | 'error'
+// 归档时刻格式化:ISO → "MM-DD HH:mm"(用于历史列表显示复盘时间)
+function fmtArchivedAt(iso: string): string {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return iso
+  const mm = String(d.getMonth() + 1).padStart(2, '0')
+  const dd = String(d.getDate()).padStart(2, '0')
+  const hh = String(d.getHours()).padStart(2, '0')
+  const mi = String(d.getMinutes()).padStart(2, '0')
+  return `${mm}-${dd} ${hh}:${mi}`
+}
+
+// Phase 类型复用 store 的定义(单一来源)
 
 export function Review() {
   const qc = useQueryClient()
   // 复盘日期:当前固定取最新交易日(后续如需日期选择可改回 useState)
   const asOf: string | undefined = undefined
   const [focus, setFocus] = useState('')
-  const [phase, setPhase] = useState<Phase>('idle')
-  const [content, setContent] = useState('')
-  const [error, setError] = useState('')
-  const [meta, setMeta] = useState<{ as_of?: string; emotion_score?: number; emotion_label?: string; summary?: string } | null>(null)
+  // 生成状态走全局 store:切走页面流不中断,回来可恢复
+  const { phase, content, error, meta } = useReviewState()
   const [viewing, setViewing] = useState<AiReviewReport | null>(null)  // 查看历史报告
-  const abortRef = useRef<AbortController | null>(null)
   const reportEndRef = useRef<HTMLDivElement>(null)
 
   // 看板数据(与总览页同源)
@@ -92,80 +105,70 @@ export function Review() {
     }
   }, [content, phase])
 
-  // 主流程:生成复盘
-  const generate = useCallback(async () => {
-    if (phase === 'loading' || phase === 'streaming') return
-    setViewing(null)
-    setPhase('loading')
-    setContent('')
-    setError('')
-    setMeta(null)
-
-    const ctrl = new AbortController()
-    abortRef.current = ctrl
-    let buf = ''
-    let failed = false
-    try {
-      for await (const evt of api.reviewStream(asOf, focus)) {
-        if (ctrl.signal.aborted) break
-        if (evt.type === 'meta') {
-          setMeta(evt)
-        } else if (evt.type === 'delta' && evt.content) {
-          buf += evt.content
-          setContent(buf)
-          setPhase('streaming')
-        } else if (evt.type === 'error') {
-          failed = true
-          setError(evt.message ?? '复盘失败')
-          setPhase('error')
-          return
-        } else if (evt.type === 'done') {
-          setPhase('done')
-        }
-      }
-      // 流正常结束但无 done 事件,按 done 处理
-      if (buf && !failed) setPhase('done')
-    } catch (e: any) {
-      if (!ctrl.signal.aborted) {
-        setError(e?.message ?? '复盘失败')
-        setPhase('error')
-      }
-    } finally {
-      abortRef.current = null
-    }
-  }, [asOf, focus, phase])
-
-  // 保存当前报告
-  const saveCurrent = useCallback(async () => {
-    if (!content) return
-    const reportAsOf = meta?.as_of ?? marketQuery.data?.as_of ?? asOf ?? new Date().toISOString().slice(0, 10)
+  // 自动归档(生成完成后台静默保存)—— 通过回调注入 store,避免 store 直接依赖 qc/marketQuery
+  const onGenerationDone = useCallback(async (fullContent: string, doneMeta: { as_of?: string; summary?: string; emotion_score?: number; emotion_label?: string } | null) => {
+    const reportAsOf = doneMeta?.as_of ?? marketQuery.data?.as_of ?? asOf ?? new Date().toISOString().slice(0, 10)
     try {
       await api.reviewReportSave({
         as_of: reportAsOf,
         focus,
-        content,
-        summary: meta?.summary,
-        emotion_score: meta?.emotion_score ?? null,
-        emotion_label: meta?.emotion_label ?? '',
+        content: fullContent,
+        summary: doneMeta?.summary,
+        emotion_score: doneMeta?.emotion_score ?? null,
+        emotion_label: doneMeta?.emotion_label ?? '',
       })
       qc.invalidateQueries({ queryKey: QK.reviewReports })
-      toast('复盘已归档', 'success')
-    } catch { /* request() 已 toast */ }
-  }, [content, meta, asOf, focus, marketQuery.data, qc])
+    } catch { /* 静默 */ }
+  }, [focus, asOf, marketQuery.data, qc])
 
-  // 查看历史报告
+  // 主流程:生成复盘(委托给全局 store,流在后台独立运行)
+  const generate = useCallback(() => {
+    if (isReviewGenerating()) return
+    setViewing(null)
+    resetReview()
+    startReviewGeneration(asOf, focus, (full, doneMeta) => {
+      onGenerationDone(full, doneMeta).catch(() => { /* 静默 */ })
+    })
+  }, [asOf, focus, onGenerationDone])
+
+  // 复制全文到剪贴板(viewing 优先,与主区域显示一致)
+  const copyContent = useCallback(async () => {
+    const text = viewing?.content ?? content
+    if (!text) return
+    try {
+      await navigator.clipboard.writeText(text)
+      toast('已复制到剪贴板', 'success')
+    } catch {
+      toast('复制失败,请手动选择文本', 'error')
+    }
+  }, [content, viewing])
+
+  // 下载为 .md 文件(viewing 优先)
+  const downloadContent = useCallback(() => {
+    const text = viewing?.content ?? content
+    if (!text) return
+    const reportDate = viewing?.as_of ?? meta?.as_of ?? asOf ?? new Date().toISOString().slice(0, 10)
+    const blob = new Blob([text], { type: 'text/markdown;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `复盘_${reportDate}.md`
+    a.click()
+    URL.revokeObjectURL(url)
+  }, [content, viewing, meta, asOf])
+
+  // 查看历史报告(不中断后台生成:仅临时把 viewing 覆盖到主区域,
+  // 生成中的流仍在 store 里继续跑,点"生成中"项即可切回)
   const viewReport = useCallback((r: AiReviewReport) => {
-    abortRef.current?.abort()
     setViewing(r)
-    setContent(r.content)
-    setMeta({ as_of: r.as_of, emotion_score: r.emotion_score ?? undefined, emotion_label: r.emotion_label, summary: r.summary })
-    setPhase('done')
-    setError('')
   }, [])
 
   const isGenerating = phase === 'loading' || phase === 'streaming'
   const displayDate = viewing?.as_of ?? meta?.as_of ?? marketQuery.data?.as_of ?? asOf ?? '最新'
   const data = marketQuery.data
+  // 主区域显示的内容:viewing(查看历史)优先于 store 的生成 content,
+  // 这样点历史报告不会覆盖后台生成中的流。
+  const displayContent = viewing?.content ?? content
 
   return (
     <>
@@ -179,7 +182,7 @@ export function Review() {
               onClick={() => { marketQuery.refetch() }}
               disabled={marketQuery.isFetching}
               className="inline-flex items-center gap-1 rounded-btn border border-border bg-elevated px-2 py-1 text-[11px] text-secondary transition-colors hover:text-foreground disabled:opacity-50"
-              title="刷新看板数据"
+              title="刷新市场数据"
             >
               <RefreshCw className={cn('h-3 w-3', marketQuery.isFetching && 'animate-spin')} />刷新
             </button>
@@ -204,7 +207,7 @@ export function Review() {
       />
 
       <div className="min-h-full bg-[radial-gradient(circle_at_15%_-5%,rgba(59,130,246,0.10),transparent_30%),radial-gradient(circle_at_85%_5%,rgba(139,92,246,0.08),transparent_30%)] px-4 py-4 sm:px-6">
-        <div className="mx-auto max-w-[1440px] space-y-4">
+        <div className="mx-auto max-w-[1280px] space-y-3">
 
           {marketQuery.isLoading && !data ? (
             <div className="flex h-40 items-center justify-center">
@@ -233,27 +236,8 @@ export function Review() {
             </div>
           ) : (
             <>
-              {/* ===== 指数行情条(对齐 Dashboard IndexTicker) ===== */}
-              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                {data.indices.map(item => <IndexTicker key={item.symbol} item={item} />)}
-              </div>
-
-              {/* ===== KPI 网格 ===== */}
-              <div className="grid grid-cols-2 gap-2 md:grid-cols-3 xl:grid-cols-6">
-                <KpiCell label="涨 / 平 / 跌" value={<><span className="text-bull">{data.breadth.up}</span><span className="text-muted">/</span><span className="text-muted">{data.breadth.flat}</span><span className="text-muted">/</span><span className="text-bear">{data.breadth.down}</span></>} sub={`上涨率 ${data.breadth.up_pct.toFixed(1)}%`} />
-                <KpiCell label="涨停 / 跌停" value={<><span className="text-bull">{data.limit.limit_up}</span><span className="text-muted">/</span><span className="text-bear">{data.limit.limit_down}</span></>} sub={`封板率 ${(data.limit.seal_rate ?? 0).toFixed(0)}% · 炸板 ${data.limit.broken ?? 0}`} />
-                <KpiCell label="最高连板" value={`${data.limit.max_boards || 0}板`} sub={`梯队 ${data.limit.tiers.length}档`} tone="accent" />
-                <KpiCell label="两市成交" value={`${((data.amount.total ?? 0) / 1e8).toFixed(0)}亿`} sub={`均额 ${((data.amount.avg ?? 0) / 1e8).toFixed(1)}亿`} />
-                <KpiCell label="换手 / 量比" value={`${fmtPrice(data.activity.avg_turnover, 1)}% / ${fmtPrice(data.activity.vol_ratio, 2)}`} sub={`高换手 ${data.activity.high_turnover}`} tone="accent" />
-                <KpiCell label="MA5 / 20 / 60" value={`${data.trend.above_ma5_pct.toFixed(0)}%`} sub={`${data.trend.above_ma20_pct.toFixed(0)}% / ${data.trend.above_ma60_pct.toFixed(0)}%`} />
-              </div>
-
-              {/* ===== 情绪雷达 + 板块排名 双栏 ===== */}
-              <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
-                <EmotionSection data={data} />
-                <SectorSection title="概念板块" rank={data.concept_rank} tone="concept" />
-                <SectorSection title="行业板块" rank={data.industry_rank} tone="industry" />
-              </div>
+              {/* ===== 市场摘要条(轻量上下文,非重复看板)===== */}
+              <MarketSummaryBar data={data} />
 
               {/* ===== 关注点输入 ===== */}
               <div className="flex items-center gap-2 rounded-card border border-border bg-surface/80 px-3.5 py-2.5 transition-colors focus-within:border-accent/40">
@@ -270,15 +254,16 @@ export function Review() {
                 )}
               </div>
 
-              {/* ===== 报告 + 历史 双栏 ===== */}
+              {/* ===== 报告 + 历史 双栏(报告为主体)===== */}
               <div className="grid grid-cols-1 gap-3 lg:grid-cols-[1fr_18rem]">
                 <ReportPanel
                   phase={phase}
-                  content={content}
+                  content={displayContent}
                   error={error}
                   isGenerating={isGenerating}
                   viewing={viewing}
-                  onSave={saveCurrent}
+                  onCopy={copyContent}
+                  onDownload={downloadContent}
                   onRegenerate={generate}
                   reportEndRef={reportEndRef}
                 />
@@ -286,7 +271,9 @@ export function Review() {
                   reports={historyQuery.data?.reports ?? []}
                   loading={historyQuery.isLoading}
                   viewingId={viewing?.id ?? null}
+                  generating={isGenerating}
                   onView={viewReport}
+                  onBackToGenerating={() => setViewing(null)}
                   onDelete={(id) => deleteMut.mutate(id)}
                 />
               </div>
@@ -299,184 +286,94 @@ export function Review() {
 }
 
 // ================================================================
-// 指数行情卡(对齐 Dashboard IndexTicker)
+// 市场摘要条 —— 复盘页的轻量上下文(非重复看板)
+// 仅一行:三大指数涨跌 · 情绪分 · 涨停结构 · 成交额
+// 详细数据请去 Dashboard 看,这里只给 AI 报告提供背景参照
 // ================================================================
-function IndexTicker({ item }: { item: OverviewMarket['indices'][number] }) {
-  const pct = item.change_pct
-  const isUp = (pct ?? 0) >= 0
-  return (
-    <div className="grid min-w-0 grid-cols-[1fr_auto] items-center gap-x-2 gap-y-0.5 rounded-card border border-border bg-surface/80 px-3 py-2 transition-colors hover:border-accent/40">
-      <div className="truncate text-xs font-medium text-foreground">{item.name || item.symbol}</div>
-      <div className={cn('font-mono text-xs font-semibold tabular-nums', pctClass(pct))}>{fmtPctAlready(pct, 2, true)}</div>
-      <div className="font-mono text-[10px] text-muted">{item.symbol}</div>
-      <div className={cn('flex items-center gap-0.5 font-mono text-[11px] tabular-nums', pctClass(pct))}>
-        {isUp ? <ArrowUpRight className="h-3 w-3" /> : <ArrowDownRight className="h-3 w-3" />}
-        {fmtPrice(item.last_price)}
-      </div>
-    </div>
-  )
+// 指数简称映射:全称太长(上证指数/深证成指/创业板指/科创综指)摘要条放不下,统一缩成单字
+const INDEX_SHORT: Record<string, string> = {
+  '上证指数': '上', '深证成指': '深', '创业板指': '创', '科创综指': '科', '科创50': '科',
+}
+function indexShort(name?: string | null, symbol?: string): string {
+  if (!name) return symbol ?? '—'
+  return INDEX_SHORT[name] ?? (name.replace(/指数|成指|A股|综指|50/g, '').slice(0, 2) || name.slice(0, 1))
 }
 
-// ================================================================
-// KPI 单元(对齐 Dashboard KpiCell)
-// ================================================================
-function KpiCell({ label, value, sub, tone }: {
-  label: React.ReactNode
-  value: React.ReactNode
-  sub?: string
-  tone?: 'bull' | 'bear' | 'accent'
-}) {
-  const isPlain = typeof value === 'string' || typeof value === 'number'
-  const color = tone === 'bull' ? 'text-bull' : tone === 'bear' ? 'text-bear' : tone === 'accent' ? 'text-accent' : 'text-foreground'
-  return (
-    <div className="min-w-0 rounded-card border border-border bg-surface/80 px-3 py-2">
-      <div className="flex items-center gap-1 text-[11px] text-muted">{label}</div>
-      <div className={cn('mt-1 truncate font-mono text-base font-semibold leading-none tabular-nums', isPlain ? color : 'text-foreground')}>{value}</div>
-      {sub && <div className="mt-1 truncate text-[10px] text-muted">{sub}</div>}
-    </div>
-  )
+// 批量替换文本中的指数全称为简称(用于历史列表 summary 显示,
+// 兼容存量旧报告 —— 它们存盘时 summary 还是全称)。
+const _INDEX_FULL_RE = /上证指数|深证成指|创业板指|科创综指|科创50/g
+function shortenIndexNames(text: string): string {
+  return text.replace(_INDEX_FULL_RE, (m) => INDEX_SHORT[m] ?? m)
 }
 
-// ================================================================
-// 章节标题(对齐 Dashboard SectionTitle)
-// ================================================================
-function SectionTitle({ icon: Icon, title, hint }: { icon: typeof Activity; title: string; hint?: React.ReactNode }) {
-  return (
-    <div className="mb-2 flex items-center justify-between gap-2">
-      <div className="flex items-center gap-1.5">
-        <Icon className="h-3.5 w-3.5 text-accent" />
-        <h2 className="text-xs font-semibold text-foreground">{title}</h2>
-      </div>
-      {hint && <span className="font-mono text-[10px] text-muted">{hint}</span>}
-    </div>
-  )
+// 从 summary 的指数段(如「上-2.26%、深-3.44%、创-4.07%、科-2.02%」)
+// 解析出 [{name, pctStr, pctNum}],供列表项按涨跌染色渲染。
+const _INDEX_PCT_RE = /([上深创科])([+-]?\d+\.\d+%)/g
+function parseIndexPcts(indexSegment: string): { name: string; pctStr: string; pctNum: number }[] {
+  const out: { name: string; pctStr: string; pctNum: number }[] = []
+  for (const m of indexSegment.matchAll(_INDEX_PCT_RE)) {
+    out.push({ name: m[1], pctStr: m[2], pctNum: parseFloat(m[2]) })
+  }
+  return out
 }
 
-// ================================================================
-// 情绪雷达章节(SVG 雷达图,对齐 Dashboard EmotionRadar)
-// ================================================================
-function EmotionSection({ data }: { data: OverviewMarket }) {
-  const score = data.emotion.score
-  const color = scoreColor(score)
-  const radar = data.radar ?? []
-  const size = 220
-  const cx = size / 2
-  const cy = size / 2
-  const maxR = 68
-
-  const points = radar.map((r, i) => {
-    const angle = -Math.PI / 2 + i * 2 * Math.PI / radar.length
-    const radius = maxR * Math.max(0, Math.min(100, r.value)) / 100
-    return {
-      ...r,
-      x: cx + Math.cos(angle) * radius,
-      y: cy + Math.sin(angle) * radius,
-      lx: cx + Math.cos(angle) * (maxR + 24),
-      ly: cy + Math.sin(angle) * (maxR + 24),
-      gx: cx + Math.cos(angle) * maxR,
-      gy: cy + Math.sin(angle) * maxR,
-    }
-  })
-  const polygon = points.map(p => `${p.x},${p.y}`).join(' ')
-  const gridPolygons = [1, 0.66, 0.33].map((level, idx) => ({
-    level, idx,
-    points: radar.map((_, i) => {
-      const angle = -Math.PI / 2 + i * 2 * Math.PI / radar.length
-      return `${cx + Math.cos(angle) * maxR * level},${cy + Math.sin(angle) * maxR * level}`
-    }).join(' '),
-  }))
+function MarketSummaryBar({ data }: { data: OverviewMarket }) {
+  const score = data.emotion?.score ?? null
+  const emoColor = scoreColor(score)
+  const indices = (data.indices ?? []).slice(0, 4)
 
   return (
-    <section
-      className="rounded-card border bg-surface/80 p-3"
-      style={{ borderColor: `${color}40` }}
-    >
-      <SectionTitle icon={Sparkles} title="情绪雷达" hint={`评分 ${score} · ${data.emotion.label}`} />
-      {radar.length === 0 ? (
-        <div className="flex h-44 items-center justify-center text-xs text-muted">暂无雷达数据</div>
-      ) : (
-        <div className="flex justify-center">
-          <svg viewBox={`0 0 ${size} ${size}`} className="h-52 w-full">
-            <defs>
-              <radialGradient id="reviewRadarFill" cx="50%" cy="45%" r="70%">
-                <stop offset="0%" stopColor={`${color}57`} />
-                <stop offset="100%" stopColor={`${color}1f`} />
-              </radialGradient>
-              <radialGradient id="reviewRadarCenter" cx="50%" cy="50%" r="55%">
-                <stop offset="0%" stopColor="rgba(24,24,27,0.92)" />
-                <stop offset="68%" stopColor="rgba(24,24,27,0.70)" />
-                <stop offset="100%" stopColor="rgba(24,24,27,0)" />
-              </radialGradient>
-            </defs>
-            {gridPolygons.map(g => (
-              <polygon
-                key={g.level}
-                points={g.points}
-                fill={g.idx % 2 === 0 ? 'rgba(33,33,38,0.26)' : 'rgba(24,24,27,0.16)'}
-                stroke={g.level === 1 ? 'rgba(148,163,184,0.22)' : 'rgba(148,163,184,0.12)'}
-                strokeWidth={g.level === 1 ? 1.2 : 0.8}
-              />
-            ))}
-            {points.map(p => <line key={p.key} x1={cx} y1={cy} x2={p.gx} y2={p.gy} stroke="rgba(148,163,184,0.08)" />)}
-            <polygon points={polygon} fill="url(#reviewRadarFill)" stroke={color} strokeWidth="2" />
-            {points.map(p => <circle key={p.key} cx={p.x} cy={p.y} r="2.8" fill={color} stroke="rgba(24,24,27,0.9)" strokeWidth="1" />)}
-            <circle cx={cx} cy={cy} r="26" fill="url(#reviewRadarCenter)" />
-            <text x={cx} y={cy + 6} textAnchor="middle" className="fill-foreground font-mono text-[22px] font-bold">{score}</text>
-            {points.map(p => (
-              <text key={`${p.key}-label`} x={p.lx} y={p.ly + 4} textAnchor="middle" className="fill-secondary text-[9px] font-medium">{p.label}</text>
-            ))}
-          </svg>
+    <div className="flex flex-wrap items-center gap-x-5 gap-y-2 rounded-card border border-border bg-surface/80 px-4 py-2.5">
+      {/* 情绪分(带色徽章)—— 复盘的核心定调 */}
+      <div className="flex items-center gap-2">
+        <span
+          className="grid h-8 w-8 shrink-0 place-items-center rounded font-mono text-xs font-bold tabular-nums"
+          style={{ color: emoColor, backgroundColor: `${emoColor}1a` }}
+        >
+          {score ?? '—'}
+        </span>
+        <div className="leading-tight">
+          <div className="text-[11px] font-medium text-foreground">{data.emotion?.label ?? '情绪'}</div>
+          <div className="text-[9px] text-secondary">情绪温度</div>
         </div>
-      )}
-    </section>
-  )
-}
-
-// ================================================================
-// 板块排名章节(领涨/领跌)
-// ================================================================
-function SectorSection({ title, rank, tone }: {
-  title: string
-  rank: OverviewMarket['concept_rank'] | OverviewMarket['industry_rank']
-  tone: 'concept' | 'industry'
-}) {
-  const leading = rank?.leading ?? []
-  const lagging = rank?.lagging ?? []
-  const hasData = leading.length > 0 || lagging.length > 0
-  return (
-    <section className="rounded-card border border-border bg-surface/80 p-3">
-      <SectionTitle icon={tone === 'concept' ? Layers : BarChart3} title={title} hint="领涨/领跌" />
-      {!hasData ? (
-        <div className="py-6 text-center text-[11px] text-muted">暂无数据</div>
-      ) : (
-        <div className="grid grid-cols-2 gap-2">
-          <RankColumn rows={leading} tone="bull" />
-          <RankColumn rows={lagging} tone="bear" />
-        </div>
-      )}
-    </section>
-  )
-}
-
-function RankColumn({ rows, tone }: { rows: OverviewMarket['concept_rank']['leading']; tone: 'bull' | 'bear' }) {
-  return (
-    <div className="min-w-0 space-y-1">
-      <div className={cn('text-[10px] font-medium', tone === 'bull' ? 'text-bull' : 'text-bear')}>
-        {tone === 'bull' ? '领涨' : '领跌'}
       </div>
-      {rows.slice(0, 5).map((r, idx) => (
-        <div key={`${r.name}-${idx}`} className="grid grid-cols-[14px_1fr_auto] items-center gap-1 rounded bg-elevated/40 px-1.5 py-1">
-          <span className="text-center font-mono text-[9px] text-muted">{idx + 1}</span>
-          <div className="min-w-0">
-            <div className="truncate text-[11px] text-foreground" title={r.name}>{r.name}</div>
-            <div className="truncate text-[9px] text-muted">{r.count}只 · {r.leader?.name ?? '—'}</div>
+
+      <div className="hidden h-7 w-px bg-border sm:block" />
+
+      {/* 四大指数(简称:上深创科)*/}
+      <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+        {indices.map(idx => (
+          <div key={idx.symbol} className="flex items-center gap-1">
+            <span className="text-[11px] text-secondary">{indexShort(idx.name, idx.symbol)}</span>
+            <span className={cn('font-mono text-[11px] font-semibold tabular-nums', pctClass(idx.change_pct))}>
+              {fmtPctAlready(idx.change_pct, 2, true)}
+            </span>
           </div>
-          <div className={cn('font-mono text-[10px] font-semibold tabular-nums', pctClass(r.avg_pct))}>
-            {fmtPctAlready((r.avg_pct ?? 0) * 100, 2, true)}
-          </div>
-        </div>
-      ))}
-      {rows.length === 0 && <div className="rounded border border-dashed border-border py-3 text-center text-[10px] text-muted">—</div>}
+        ))}
+      </div>
+
+      <div className="hidden h-7 w-px bg-border sm:block" />
+
+      {/* 涨跌结构 */}
+      <div className="flex items-center gap-1.5 text-[11px]">
+        <span className="text-secondary">涨跌</span>
+        <span className="font-mono font-semibold text-bull">{data.breadth?.up ?? 0}</span>
+        <span className="text-muted">/</span>
+        <span className="font-mono font-semibold text-bear">{data.breadth?.down ?? 0}</span>
+      </div>
+
+      {/* 涨停结构 */}
+      <div className="flex items-center gap-1.5 text-[11px]">
+        <span className="text-secondary">涨停</span>
+        <span className="font-mono font-semibold text-bull">{data.limit?.limit_up ?? 0}</span>
+        <span className="text-secondary">封板 {(data.limit?.seal_rate ?? 0).toFixed(0)}%</span>
+      </div>
+
+      {/* 成交额 */}
+      <div className="flex items-center gap-1.5 text-[11px]">
+        <span className="text-secondary">成交</span>
+        <span className="font-mono font-semibold text-foreground">{fmtBigNum(data.amount?.total)}</span>
+      </div>
     </div>
   )
 }
@@ -485,14 +382,15 @@ function RankColumn({ rows, tone }: { rows: OverviewMarket['concept_rank']['lead
 // 报告面板(流式 + 错误 + 历史/完成态)
 // ================================================================
 function ReportPanel({
-  phase, content, error, isGenerating, viewing, onSave, onRegenerate, reportEndRef,
+  phase, content, error, isGenerating, viewing, onCopy, onDownload, onRegenerate, reportEndRef,
 }: {
-  phase: Phase
+  phase: ReviewPhase
   content: string
   error: string
   isGenerating: boolean
   viewing: AiReviewReport | null
-  onSave: () => void
+  onCopy: () => void
+  onDownload: () => void
   onRegenerate: () => void
   reportEndRef: React.RefObject<HTMLDivElement>
 }) {
@@ -516,29 +414,49 @@ function ReportPanel({
 
   if (phase === 'idle' && !content) {
     return (
-      <div className="flex min-h-[24rem] flex-col items-center justify-center gap-4 rounded-card border border-border bg-surface/80 px-6 py-12">
+      <div className="flex min-h-[28rem] flex-col items-center justify-center gap-5 rounded-card border border-border bg-surface/80 px-6 py-16">
         <div className="relative">
-          <div className="grid h-16 w-16 place-items-center rounded-2xl bg-gradient-to-br from-accent/20 to-purple-500/15 border border-accent/30">
-            <BookOpenCheck className="h-7 w-7 text-accent" strokeWidth={1.8} />
+          <div className="grid h-20 w-20 place-items-center rounded-2xl bg-gradient-to-br from-accent/20 to-purple-500/15 border border-accent/30">
+            <BookOpenCheck className="h-9 w-9 text-accent" strokeWidth={1.8} />
           </div>
+          <Sparkles className="absolute -right-1 -top-1 h-5 w-5 text-accent" />
         </div>
         <div className="text-center">
-          <div className="text-sm font-medium text-foreground">AI 大盘复盘</div>
-          <p className="mx-auto mt-1.5 max-w-sm text-xs leading-relaxed text-muted">
-            点击右上角「生成复盘」,基于今日指数结构、涨跌家数、连板梯队、板块轮动与情绪雷达,
-            生成可直接指导次日仓位与节奏的盘后复盘报告。
+          <div className="text-base font-semibold text-foreground">AI 大盘复盘</div>
+          <p className="mx-auto mt-2 max-w-sm text-xs leading-relaxed text-secondary">
+            一键生成今日盘后复盘报告 —— 从一句话定调到明日交易计划,
+            结构化输出可直接指导次日仓位与节奏。
           </p>
         </div>
-        <div className="mt-1 flex items-center gap-1.5 text-[11px] text-muted">
+        {/* 报告七节预览 —— 空状态也有内容感,暗示报告结构 */}
+        <div className="mt-2 grid w-full max-w-md grid-cols-2 gap-2 sm:grid-cols-4">
+          {[
+            { icon: '🎯', label: '一句话定调' },
+            { icon: '📊', label: '盘面总览' },
+            { icon: '🔥', label: '板块主线' },
+            { icon: '💰', label: '资金情绪' },
+            { icon: '📰', label: '消息催化' },
+            { icon: '🎯', label: '明日计划' },
+            { icon: '⚠️', label: '风险提示' },
+          ].map((s) => (
+            <div key={s.label} className="flex flex-col items-center gap-1 rounded-btn bg-elevated/40 px-2 py-2">
+              <span className="text-base">{s.icon}</span>
+              <span className="text-[10px] text-secondary">{s.label}</span>
+            </div>
+          ))}
+        </div>
+        <div className="mt-2 flex items-center gap-1.5 text-[11px] text-muted">
           <Sparkles className="h-3 w-3 text-accent" />
-          七节结构化报告 · 一键归档 · 历史回看
+          点击右上角「生成复盘」开始
         </div>
       </div>
     )
   }
 
-  const showCursor = isGenerating
-  const showSave = phase === 'done' && !!content && !viewing
+  // 仅当显示生成内容(非查看历史)且正在生成时,才显示流式光标
+  const showCursor = isGenerating && !viewing
+  // 查看历史时(即使后台在生成)也能复制/下载该历史报告
+  const showActions = !!content && (!isGenerating || !!viewing)
   const showViewingTag = !!viewing
   const isLoading = phase === 'loading' && !content
 
@@ -555,13 +473,18 @@ function ReportPanel({
             {showViewingTag ? `历史复盘 · ${viewing!.as_of}` : isGenerating ? 'AI 正在复盘…' : '复盘报告'}
           </span>
         </div>
-        {showSave && (
-          <button onClick={onSave} className="inline-flex items-center gap-1 rounded-btn bg-accent/10 px-2 py-1 text-[11px] text-accent transition-colors hover:bg-accent/20">
-            <History className="h-3 w-3" />归档
-          </button>
+        {showActions && (
+          <div className="flex items-center gap-1">
+            <button onClick={onCopy} className="inline-flex items-center gap-1 rounded-btn bg-elevated px-2 py-1 text-[11px] text-secondary transition-colors hover:text-foreground hover:bg-elevated/70" title="复制全文">
+              <Copy className="h-3 w-3" />复制
+            </button>
+            <button onClick={onDownload} className="inline-flex items-center gap-1 rounded-btn bg-elevated px-2 py-1 text-[11px] text-secondary transition-colors hover:text-foreground hover:bg-elevated/70" title="下载为 Markdown">
+              <Download className="h-3 w-3" />下载
+            </button>
+          </div>
         )}
       </div>
-      <div className="max-h-[calc(100vh-26rem)] overflow-y-auto px-5 py-4">
+      <div className="max-h-[calc(100vh-22rem)] overflow-y-auto px-5 py-4">
         {isLoading ? (
           <div className="flex flex-col items-center justify-center gap-3 py-16">
             <div className="relative">
@@ -570,8 +493,8 @@ function ReportPanel({
               </div>
               <RefreshCw className="absolute -inset-1 h-13 w-13 animate-spin text-accent/30" style={{ animationDuration: '3s' }} />
             </div>
-            <div className="text-xs text-secondary">AI 正在分析今日盘面…</div>
-            <div className="text-[10px] text-muted">读取指数结构 · 涨跌家数 · 连板梯队 · 板块轮动 · 情绪雷达</div>
+            <div className="text-sm text-foreground">AI 正在复盘今日盘面…</div>
+            <div className="text-xs text-secondary">分析指数结构 · 连板梯队 · 板块轮动 · 资金情绪</div>
           </div>
         ) : (
           <div className="prose prose-invert max-w-none">
@@ -591,14 +514,17 @@ function ReportPanel({
 // 历史面板
 // ================================================================
 function HistoryPanel({
-  reports, loading, viewingId, onView, onDelete,
+  reports, loading, viewingId, generating, onView, onBackToGenerating, onDelete,
 }: {
   reports: AiReviewReport[]
   loading: boolean
   viewingId: string | null
+  generating: boolean
   onView: (r: AiReviewReport) => void
+  onBackToGenerating: () => void
   onDelete: (id: string) => void
 }) {
+  const empty = !generating && reports.length === 0
   return (
     <div className="overflow-hidden rounded-card border border-border bg-surface/80">
       <div className="flex items-center gap-1.5 border-b border-border bg-gradient-to-r from-accent/5 to-transparent px-3 py-2.5">
@@ -609,14 +535,32 @@ function HistoryPanel({
       <div className="max-h-[calc(100vh-26rem)] overflow-y-auto p-2">
         {loading ? (
           <div className="grid h-20 place-items-center"><RefreshCw className="h-4 w-4 animate-spin text-muted" /></div>
-        ) : reports.length === 0 ? (
+        ) : empty ? (
           <div className="flex flex-col items-center justify-center gap-2 px-3 py-10 text-center">
             <History className="h-7 w-7 text-muted/40" strokeWidth={1.5} />
             <div className="text-[11px] text-muted">暂无历史复盘</div>
-            <div className="text-[10px] text-muted/60">生成后点「归档」即可保存</div>
+            <div className="text-[10px] text-muted/60">生成完成后自动归档</div>
           </div>
         ) : (
           <div className="space-y-1">
+            {/* 生成中占位项:列表顶部,点击回到正在生成的流式内容 */}
+            {generating && (
+              <div
+                className={cn(
+                  'flex items-center gap-2 rounded px-2 py-2 cursor-pointer transition-colors',
+                  viewingId === null ? 'bg-accent/10 ring-1 ring-accent/20' : 'hover:bg-elevated/60',
+                )}
+                onClick={onBackToGenerating}
+              >
+                <div className="grid h-8 w-8 shrink-0 place-items-center rounded bg-accent/15">
+                  <RefreshCw className="h-3.5 w-3.5 animate-spin text-accent" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-[11px] font-medium text-accent">生成中…</div>
+                  <div className="mt-0.5 truncate text-[10px] text-secondary">AI 正在复盘今日盘面</div>
+                </div>
+              </div>
+            )}
             {reports.map((r) => {
               const color = scoreColor(r.emotion_score)
               return (
@@ -637,13 +581,28 @@ function HistoryPanel({
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-1.5">
                       <span className="truncate text-[11px] font-medium text-foreground">{r.emotion_label ?? '—'}</span>
-                      <span className="font-mono text-[10px] text-muted">{r.as_of}</span>
+                      <span className="font-mono text-[10px] text-secondary">{r.as_of}</span>
                     </div>
-                    <div className="mt-0.5 truncate text-[10px] text-muted">
-                      {r.summary ?? r.content.slice(0, 40)}
+                    <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
+                      {r.summary
+                        ? (() => {
+                            const pcts = parseIndexPcts(shortenIndexNames(r.summary).split('|')[0])
+                            if (pcts.length === 0) {
+                              return <span className="truncate text-[10px] text-secondary">{r.content.slice(0, 40)}</span>
+                            }
+                            return pcts.map((p) => (
+                              <span key={p.name} className="inline-flex items-center gap-0.5 text-[10px]">
+                                <span className="text-secondary">{p.name}</span>
+                                <span className={cn('font-mono font-medium tabular-nums', pctClass(p.pctNum))}>{p.pctStr}</span>
+                              </span>
+                            ))
+                          })()
+                        : <span className="truncate text-[10px] text-secondary">{r.content.slice(0, 40)}</span>}
                     </div>
+                    {r.created_at && (
+                      <div className="mt-0.5 font-mono text-[9px] text-muted">{fmtArchivedAt(r.created_at)}</div>
+                    )}
                   </div>
-                  <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted opacity-0 transition-opacity group-hover:opacity-100" />
                   <button
                     onClick={(e) => { e.stopPropagation(); onDelete(r.id) }}
                     className="shrink-0 p-1 text-muted opacity-0 transition-all hover:text-bear group-hover:opacity-100"

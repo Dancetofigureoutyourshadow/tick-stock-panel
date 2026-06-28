@@ -143,7 +143,7 @@ export function MarkdownRenderer({ content }: { content: string }) {
               <thead>
                 <tr className="bg-elevated/50">
                   {header.map((cell, ci) => (
-                    <th key={ci} className="px-2.5 py-1.5 text-left font-medium text-secondary border-b border-border/40 whitespace-nowrap">
+                    <th key={ci} className="px-2.5 py-1.5 text-left font-medium text-foreground border-b border-border/40 whitespace-nowrap">
                       {renderInline(cell, `th-${key}-${ci}`)}
                     </th>
                   ))}
@@ -153,7 +153,7 @@ export function MarkdownRenderer({ content }: { content: string }) {
                 {body.map((row, ri) => (
                   <tr key={ri} className="border-b border-border/20 last:border-0 hover:bg-elevated/20">
                     {row.map((cell, ci) => (
-                      <td key={ci} className="px-2.5 py-1.5 text-foreground/90 align-top break-words">
+                      <td key={ci} className="px-2.5 py-1.5 text-foreground align-top break-words">
                         {renderInline(cell, `td-${key}-${ri}-${ci}`)}
                       </td>
                     ))}
@@ -178,7 +178,7 @@ export function MarkdownRenderer({ content }: { content: string }) {
       blocks.push(
         <ul key={key++} className="my-4 space-y-2">
           {items.map((item, ii) => (
-            <li key={ii} className="flex items-start gap-2 text-xs text-foreground/90 leading-relaxed">
+            <li key={ii} className="flex items-start gap-2 text-sm text-foreground leading-relaxed">
               <span className="mt-[7px] h-1 w-1 rounded-full bg-accent/60 shrink-0" />
               <span>{renderInline(item, `li-${key}-${ii}`)}</span>
             </li>
@@ -202,7 +202,7 @@ export function MarkdownRenderer({ content }: { content: string }) {
               <span className="mt-0.5 h-4 w-4 rounded-full bg-accent/10 text-accent text-[10px] font-mono flex items-center justify-center shrink-0">
                 {ii + 1}
               </span>
-              <span className="flex-1">{renderInline(item, `ol-${key}-${ii}`)}</span>
+              <span className="flex-1 text-foreground">{renderInline(item, `ol-${key}-${ii}`)}</span>
             </li>
           ))}
         </ol>,
@@ -212,7 +212,7 @@ export function MarkdownRenderer({ content }: { content: string }) {
 
     // 普通段落
     blocks.push(
-      <p key={key++} className="my-3 text-xs text-foreground/90 leading-relaxed">
+      <p key={key++} className="my-3 text-sm text-foreground leading-relaxed">
         {renderInline(trimmed, `p-${key}`)}
       </p>,
     )

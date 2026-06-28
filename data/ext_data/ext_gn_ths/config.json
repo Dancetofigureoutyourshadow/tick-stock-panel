@@ -29,7 +29,7 @@
       "label": "所属概念"
     }
   ],
-  "description": "ths概念、日更",
+  "description": "",
   "symbol_map": {
     "type": "mapped",
     "col": "股票代码"
@@ -39,6 +39,6 @@
     "from": "symbol",
     "method": "strip_exchange"
   },
-  "created_at": "2026-06-19T19:56:33.098883",
-  "updated_at": "2026-06-19T19:56:33.098883"
+  "created_at": "2026-06-27T12:18:23.629390",
+  "updated_at": "2026-06-27T12:18:23.629390"
 }

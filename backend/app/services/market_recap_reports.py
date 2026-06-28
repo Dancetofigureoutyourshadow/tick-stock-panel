@@ -28,7 +28,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-MAX_REPORTS = 30
+MAX_REPORTS = 20
 
 
 def _path() -> Path:

@@ -5,6 +5,7 @@ import { Screener } from './pages/Screener'
 import { Backtest } from './pages/Backtest'
 import { Financials } from './pages/Financials'
 import { Onboarding } from './pages/Onboarding'
+import { Auth } from './pages/Auth'
 import { Data } from './pages/Data'
 import { Monitor } from './pages/Monitor'
 import { Trading } from './pages/Trading'
@@ -51,6 +52,7 @@ function OnboardingGuard({ children }: { children: React.ReactNode }) {
 
 export const router = createBrowserRouter([
   { path: '/onboarding', element: <Onboarding /> },
+  { path: '/login', element: <Auth /> },
   {
     path: '/',
     element: (

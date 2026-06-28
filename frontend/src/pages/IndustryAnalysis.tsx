@@ -1,10 +1,9 @@
 import { useMemo, useState, type ReactNode } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { AnimatePresence } from 'framer-motion'
 import {
   Activity,
   Crown,
-  Database,
   Layers3,
   RefreshCw,
   Search,
@@ -14,7 +13,7 @@ import {
 } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
 import { EmptyState } from '@/components/EmptyState'
-import { AnalysisConfigDialog, DimensionHeatmap, type AnalysisFieldConfig } from '@/components/analysis-shared'
+import { AnalysisConfigDialog, DimensionHeatmap, PresetFetchState, type AnalysisFieldConfig } from '@/components/analysis-shared'
 import { StockPreviewDialog } from '@/components/StockPreviewDialog'
 import { api, type MarketSnapshotRow } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
@@ -291,6 +290,21 @@ export function IndustryAnalysis() {
     enabled: !!activeConfigId,
   })
 
+  // 内置行业预设 (ext_hy_ths) 手动获取数据
+  const PRESET_INDUSTRY_ID = 'ext_hy_ths'
+  const queryClient = useQueryClient()
+  const fetchMutation = useMutation({
+    mutationFn: () => api.extDataPresetFetch(PRESET_INDUSTRY_ID),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: QK.extData })
+      queryClient.invalidateQueries({ queryKey: QK.extDataRows(PRESET_INDUSTRY_ID, undefined, PAGE_LIMIT) })
+    },
+  })
+  // 是否处于「内置行业预设存在但无数据」状态 → 显示获取按钮
+  const needsIndustryFetch =
+    !!activeConfig && activeConfig.id === PRESET_INDUSTRY_ID &&
+    !rowsQuery.isLoading && (rowsQuery.data?.total ?? 0) === 0
+
   const marketQuery = useQuery({
     queryKey: QK.marketSnapshot,
     queryFn: api.marketSnapshot,
@@ -361,6 +375,7 @@ export function IndustryAnalysis() {
   }
 
   if (!activeConfig) {
+    // 极端情况: 无任何行业配置。仍提供一键获取内置行业数据入口
     return (
       <>
         <div className="flex h-full flex-col">
@@ -372,7 +387,13 @@ export function IndustryAnalysis() {
               </button>
             }
           />
-          <EmptyState icon={Database} title="暂无行业数据" hint={'请先在"数据"页面创建包含行业/板块字段的扩展数据源'} />
+          <PresetFetchState
+            title="暂无行业数据"
+            hint="从同花顺获取行业分类数据后即可使用行业分析"
+            isLoading={fetchMutation.isPending}
+            error={fetchMutation.error}
+            onFetch={() => fetchMutation.mutate()}
+          />
         </div>
         <AnimatePresence>
           {showConfig && <AnalysisConfigDialog currentConfig={fieldConfig} onSave={handleSaveConfig} onClose={() => setShowConfig(false)} showHierarchyLevel />}
@@ -443,6 +464,14 @@ export function IndustryAnalysis() {
             </div>
           ) : rowsQuery.isLoading ? (
             <div className="rounded-2xl border border-border bg-surface px-6 py-16 text-center text-sm text-muted">正在计算行业强度...</div>
+          ) : needsIndustryFetch ? (
+            <PresetFetchState
+              title="未获取行业数据"
+              hint="内置行业数据源已就绪,点击下方按钮从同花顺获取行业分类数据"
+              isLoading={fetchMutation.isPending}
+              error={fetchMutation.error}
+              onFetch={() => fetchMutation.mutate()}
+            />
           ) : (
             <EmptyState icon={Layers3} title="未匹配到行业数据" hint={resolved.hint || '请检查扩展数据是否包含行业/板块相关字段'} />
           )}

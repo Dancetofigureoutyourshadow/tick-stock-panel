@@ -1,10 +1,9 @@
 import { useMemo, useState, type ReactNode } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { AnimatePresence } from 'framer-motion'
 import {
   Activity,
   Crown,
-  Database,
   Layers3,
   RefreshCw,
   Search,
@@ -14,7 +13,7 @@ import {
 } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
 import { EmptyState } from '@/components/EmptyState'
-import { AnalysisConfigDialog, type AnalysisFieldConfig } from '@/components/analysis-shared'
+import { AnalysisConfigDialog, PresetFetchState, type AnalysisFieldConfig } from '@/components/analysis-shared'
 import { StockPreviewDialog } from '@/components/StockPreviewDialog'
 import { api, type MarketSnapshotRow } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
@@ -256,6 +255,21 @@ export function ConceptAnalysis() {
     enabled: !!activeConfigId,
   })
 
+  // 内置概念预设 (ext_gn_ths) 手动获取数据
+  const PRESET_CONCEPT_ID = 'ext_gn_ths'
+  const queryClient = useQueryClient()
+  const fetchMutation = useMutation({
+    mutationFn: () => api.extDataPresetFetch(PRESET_CONCEPT_ID),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: QK.extData })
+      queryClient.invalidateQueries({ queryKey: QK.extDataRows(PRESET_CONCEPT_ID, undefined, PAGE_LIMIT) })
+    },
+  })
+  // 是否处于「内置概念预设存在但无数据」状态 → 显示获取按钮
+  const needsConceptFetch =
+    !!activeConfig && activeConfig.id === PRESET_CONCEPT_ID &&
+    !rowsQuery.isLoading && (rowsQuery.data?.total ?? 0) === 0
+
   const marketQuery = useQuery({
     queryKey: QK.marketSnapshot,
     queryFn: api.marketSnapshot,
@@ -310,6 +324,7 @@ export function ConceptAnalysis() {
   }
 
   if (!activeConfig) {
+    // 极端情况: 无任何概念配置。仍提供一键获取内置概念数据入口
     return (
       <>
         <div className="flex h-full flex-col">
@@ -321,7 +336,13 @@ export function ConceptAnalysis() {
               </button>
             }
           />
-          <EmptyState icon={Database} title="暂无概念数据" hint={'请先在"数据"页面创建包含概念/题材字段的扩展数据源'} />
+          <PresetFetchState
+            title="暂无概念数据"
+            hint="从同花顺获取概念分类数据后即可使用概念分析"
+            isLoading={fetchMutation.isPending}
+            error={fetchMutation.error}
+            onFetch={() => fetchMutation.mutate()}
+          />
         </div>
         <AnimatePresence>
           {showConfig && <AnalysisConfigDialog currentConfig={fieldConfig} onSave={handleSaveConfig} onClose={() => setShowConfig(false)} />}
@@ -379,6 +400,14 @@ export function ConceptAnalysis() {
             </div>
           ) : rowsQuery.isLoading ? (
             <div className="rounded-2xl border border-border bg-surface px-6 py-16 text-center text-sm text-muted">正在计算概念强度...</div>
+          ) : needsConceptFetch ? (
+            <PresetFetchState
+              title="未获取概念数据"
+              hint="内置概念数据源已就绪,点击下方按钮从同花顺获取概念分类数据"
+              isLoading={fetchMutation.isPending}
+              error={fetchMutation.error}
+              onFetch={() => fetchMutation.mutate()}
+            />
           ) : (
             <EmptyState icon={Layers3} title="未匹配到概念数据" hint={resolved.hint || '请检查扩展数据是否包含概念/题材相关字段'} />
           )}

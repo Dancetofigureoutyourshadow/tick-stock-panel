@@ -1242,6 +1242,13 @@ export const api = {
       { method: 'POST' },
     ),
 
+  // 内置预设 (概念/行业) 手动获取数据: 走结构转换, 保证 schema 一致
+  extDataPresetFetch: (id: string) =>
+    request<{ status: string; rows: number }>(
+      `/api/ext-data/presets/${id}/fetch`,
+      { method: 'POST' },
+    ),
+
   extDataDetectFields: (file: File) => {
     const fd = new FormData()
     fd.append('file', file)

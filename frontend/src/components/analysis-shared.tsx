@@ -12,9 +12,12 @@ import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { motion } from 'framer-motion'
 import {
+  AlertCircle,
   BarChart3,
   ChevronDown,
   Database,
+  DownloadCloud,
+  RefreshCw,
   Search,
   Settings2,
   Tags,
@@ -447,5 +450,52 @@ export function ConfigButton({ onClick }: { onClick: () => void }) {
     >
       <Settings2 className="h-3.5 w-3.5" />
     </button>
+  )
+}
+
+/**
+ * 内置预设 (概念/行业) 数据获取空状态。
+ *
+ * 当检测到内置预设存在但无数据时, 展示图标 + 提示 + 「获取数据」按钮,
+ * 让用户手动触发拉取 (POST /api/ext-data/presets/{id}/fetch), 而非自动拉取。
+ */
+export function PresetFetchState({
+  title,
+  hint,
+  isLoading,
+  error,
+  onFetch,
+}: {
+  title: string
+  hint: string
+  isLoading: boolean
+  error: unknown
+  onFetch: () => void
+}) {
+  const errMsg = error instanceof Error ? error.message : error ? String(error) : ''
+  return (
+    <div className="h-full grid place-items-center px-8 py-16">
+      <div className="text-center max-w-md">
+        <DownloadCloud className="mx-auto h-10 w-10 text-muted" strokeWidth={1.5} />
+        <h2 className="mt-4 text-base font-medium text-foreground">{title}</h2>
+        <p className="mt-2 text-sm text-secondary leading-relaxed">{hint}</p>
+        <button
+          onClick={onFetch}
+          disabled={isLoading}
+          className="mt-5 inline-flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:brightness-110 disabled:opacity-60"
+        >
+          {isLoading ? (
+            <><RefreshCw className="h-4 w-4 animate-spin" /> 获取中...</>
+          ) : (
+            <><DownloadCloud className="h-4 w-4" /> 获取数据</>
+          )}
+        </button>
+        {errMsg && (
+          <p className="mt-3 flex items-center justify-center gap-1.5 text-xs text-bear">
+            <AlertCircle className="h-3.5 w-3.5" /> {errMsg}
+          </p>
+        )}
+      </div>
+    </div>
   )
 }

@@ -325,6 +325,27 @@ def list_configs(request: Request):
     return {"items": items}
 
 
+@router.post("/presets/{config_id}/fetch")
+async def fetch_preset_data(request: Request, config_id: str):
+    """手动触发内置预设 (概念/行业) 的数据拉取。
+
+    注意: 必须在 /{config_id}/... 动态路由之前声明, 否则 'presets' 会被当成 config_id。
+    与通用 pull/run 不同: 走 ext_presets 的结构转换 (接口的 concepts/industries
+    数组 → 拼接成字符串), 保证 schema 与现有数据一致。
+    """
+    from app.services.ext_presets import fetch_preset
+
+    try:
+        n = await fetch_preset(config_id, _data_dir(request))
+    except ValueError as e:
+        raise HTTPException(404, str(e)) from e
+    except Exception as e:
+        raise HTTPException(400, f"拉取失败: {e}") from e
+
+    _refresh_views(request)
+    return {"status": "ok", "rows": n}
+
+
 @router.post("")
 def create_config(request: Request, body: CreateExtReq):
     """创建扩展数据配置。"""

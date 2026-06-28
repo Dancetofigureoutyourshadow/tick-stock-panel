@@ -90,6 +90,14 @@ async def lifespan(app: FastAPI):
     pull_scheduler.refresh(store.data_dir)
     app.state.pull_scheduler = pull_scheduler
 
+    # 内置扩展表 (概念/行业): 只创建 config (含拉取配置), 不自动拉数据
+    # 数据获取由用户在概念/行业页点「获取数据」手动触发 (POST /api/ext-data/presets/{id}/fetch)
+    try:
+        from app.services.ext_presets import ensure_builtin_presets
+        await ensure_builtin_presets(store.data_dir)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("内置扩展表初始化失败 (不影响启动): %s", e)
+
     # 财务数据独立调度 (需 Expert 套餐)
     from app.services.financial_sync import financial_scheduler
     financial_scheduler.start(store.data_dir, capset)

@@ -166,40 +166,18 @@ async def analyze_financials_stream(
 
     # 3. 调用 LLM 流式
     try:
-        from openai import AsyncOpenAI
-        from app import secrets_store
-        from app.config import settings
-
-        ai_key = secrets_store.get_ai_key()
-        if not ai_key:
-            yield json.dumps({"type": "error", "message": "AI API Key 未配置,请在「设置 → AI」中配置"}, ensure_ascii=False)
-            return
-
-        user_agent = secrets_store.get_ai_config("ai_user_agent", "") or settings.ai_user_agent
-        client = AsyncOpenAI(
-            api_key=ai_key,
-            base_url=secrets_store.get_ai_config("ai_base_url", "https://api.alysc.top"),
-            timeout=180.0,
-            max_retries=2,
-            default_headers={"User-Agent": user_agent},
-        )
+        from app.services.ai_provider import stream_ai_text
 
         user_prompt = _build_user_prompt(fins, symbol, focus)
-        stream = await client.chat.completions.create(
-            model=secrets_store.get_ai_config("ai_model", "gpt-5.5"),
-            messages=[
+        async for delta in stream_ai_text(
+            [
                 {"role": "system", "content": _SYSTEM_PROMPT},
                 {"role": "user", "content": user_prompt},
             ],
             temperature=0.4,
             max_tokens=4000,
-            stream=True,
-        )
-
-        async for chunk in stream:
-            delta = chunk.choices[0].delta if chunk.choices else None
-            if delta and delta.content:
-                yield json.dumps({"type": "delta", "content": delta.content}, ensure_ascii=False)
+        ):
+            yield json.dumps({"type": "delta", "content": delta}, ensure_ascii=False)
 
     except Exception as e:  # noqa: BLE001
         logger.exception("AI financial analysis failed for %s: %s", symbol, e)

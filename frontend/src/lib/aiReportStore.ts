@@ -63,6 +63,12 @@ function subscribe(fn: () => void) {
   return () => { listeners.delete(fn) }
 }
 
+function normalizeAiError(msg: string) {
+  return msg.includes('API Key') || msg.includes('api_key')
+    ? 'AI 未配置或无效,请在「设置 → AI」中检查当前 AI 提供方'
+    : msg
+}
+
 // 快照必须返回稳定引用:只有内容真正变化时才返回新数组/对象。
 // useSyncExternalStore 用 Object.is 比较,getSnapshot 必须缓存。
 let _activeSnap: ActiveTask[] = []
@@ -258,9 +264,7 @@ async function runStream(id: string, symbol: string, focus: string) {
     const msg = String(e?.message ?? '分析失败')
     patchTask(id, {
       phase: 'error',
-      error: msg.includes('API Key') || msg.includes('api_key')
-        ? 'AI API Key 未配置或无效,请在「设置 → AI」中配置'
-        : msg,
+      error: normalizeAiError(msg),
     })
   }
 }

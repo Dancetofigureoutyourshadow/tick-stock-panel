@@ -409,7 +409,7 @@ export function Layout() {
             hasKey={settingsState?.mode !== 'none'}
           />
           <AIConfigBadge
-            configured={settingsState?.has_ai_key}
+            configured={settingsState?.ai_configured ?? settingsState?.has_ai_key}
             model={settingsState?.ai_model}
           />
         </div>

@@ -58,6 +58,12 @@ let dialogMinimized = false
 function emit() { listeners.forEach(fn => fn()) }
 function subscribe(fn: () => void) { listeners.add(fn); return () => { listeners.delete(fn) } }
 
+function normalizeAiError(msg: string) {
+  return msg.includes('API Key') || msg.includes('api_key')
+    ? 'AI 未配置或无效,请在「设置 → AI」中检查当前 AI 提供方'
+    : msg
+}
+
 let _activeSnap: ActiveTask[] = []
 let _historySnap: HistoryReport[] = []
 interface DialogSnap { taskId: string | null; minimized: boolean }
@@ -229,9 +235,7 @@ async function runStream(id: string, symbol: string, _name: string, focus: strin
     const msg = String(e?.message ?? '分析失败')
     patchTask(id, {
       phase: 'error',
-      error: msg.includes('API Key') || msg.includes('api_key')
-        ? 'AI API Key 未配置或无效,请在「设置 → AI」中配置'
-        : msg,
+      error: normalizeAiError(msg),
     })
   }
 }

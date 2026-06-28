@@ -21,22 +21,24 @@ def _user_data_root() -> Path:
 
     定位策略 (按优先级):
       1. 环境变量 DATA_DIR (pydantic-settings 自动注入到 settings.data_dir, 不在此处理)
-      2. exe 同级的独立数据目录 <安装目录>/../TickFlowStockPanel_Data/
-         —— 在 {app} 外, Inno Setup 覆盖安装/卸载都碰不到; 与 exe 同盘符,
-            用户可直接看到, 不占 C 盘。
+      2. 打包桌面版: exe 同级的 data/ 子目录 (<安装目录>/data/)
+         —— 与程序同处一个总目录 (用户选择的安装目录), 视觉直观, 便于备份/迁移。
       3. 非 frozen (开发模式): 项目根 data/
 
     为什么不用 platformdirs 默认 (%LOCALAPPDATA%) 作为主路径:
       - 落在 C 盘系统目录, 用户不易察觉, 占系统盘空间
       - 用户期望「数据跟随程序」(便于备份/迁移)
-    为什么不直接放 {app}/data (exe 旁的 data/):
-      - {app} 在安装目录内, Inno Setup 覆盖安装会覆盖、卸载会清空 → 数据丢失
-    折中: 放 {app} 的同级目录 (兄弟文件夹), 既跟随 exe 又不在 {app} 内。
+    为什么放 {app}/data (exe 旁的 data/) 而非 {app} 外的兄弟目录:
+      - 用户体验: 用户选了安装目录, 自然期望「程序和数据都在这」, 单一总目录更直观。
+      - 数据安全: Inno Setup 覆盖安装(升级)时只往 {app} 写新程序文件, 不会清空
+        目录里不在安装清单上的运行时文件 (data/ 即此类), 故覆盖安装不丢数据。
+        (注意: 卸载时需在 .iss 中豁免 data/, 见 packaging/tickflow.iss 的 [UninstallDelete]。)
+    旧版本数据迁移: 见 DataStore._migrate_legacy_data_dir(), 老用户首次启动自动搬迁。
     """
-    # 打包桌面版: exe 同级的独立数据目录 (../TickFlowStockPanel_Data/)
+    # 打包桌面版: exe 同级的 data/ 子目录 (与程序同一总目录, 覆盖安装不丢数据)
     if _IS_FROZEN:
         exe_dir = Path(sys.executable).resolve().parent
-        return exe_dir.parent / "TickFlowStockPanel_Data"
+        return exe_dir / "data"
 
     # 开发模式: 项目根 data/
     return _PROJECT_ROOT / "data"
@@ -92,7 +94,7 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     backtest_range_guard: bool = False
 
-    # Data — frozen: exe 同级 TickFlowStockPanel_Data/; 非 frozen: 项目根 data/
+    # Data — frozen: exe 同级 data/ 子目录; 非 frozen: 项目根 data/
     # (均可被环境变量 DATA_DIR 覆盖, pydantic-settings 自动注入)
     data_dir: Path = _user_data_root()
 

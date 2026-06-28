@@ -48,6 +48,19 @@ for pkg in ("polars", "pyarrow", "duckdb", "fastexcel"):
     binaries += b
     hiddenimports += h
 
+# polars-runtime-32 (rtcompat 兼容内核): release.yml 用 --extra legacy-cpu 安装。
+# 它是独立的伴侣二进制包 (含 .pyd/.so), 与 polars 主包分开发布,
+# collect_all("polars") 抓不到它的目录 —— 必须显式收集, 否则老 CPU 用户
+# 运行时 rtcompat 加载器找不到兼容库仍会崩 (Illegal instruction)。
+# 不存在时 (未装 legacy-cpu) collect_all 返回空, 不影响普通构建。
+try:
+    rt_d, rt_b, rt_h = collect_all("polars_runtime_32")
+    datas += rt_d
+    binaries += rt_b
+    hiddenimports += rt_h
+except Exception:
+    pass
+
 # polars 新 ABI 运行时目录 (_polars_runtime_32) 需显式收集子模块
 hiddenimports += collect_submodules("polars")
 

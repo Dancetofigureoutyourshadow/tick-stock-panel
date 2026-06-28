@@ -92,7 +92,8 @@ export function RuleEditor({ rule, preset, simple, onClose, onSaved }: Props) {
       ...d,
       conditions: [...d.conditions, op === 'truth'
         ? { field: 'signal_volume_surge', op: 'truth' }
-        : { field: 'rsi_14', op: '<', value: 30 }],
+        // simple 模式(个股弹窗)默认现价; 完整模式默认 RSI 超卖
+        : { field: simple ? 'close' : 'rsi_14', op: '<', value: simple ? 0 : 30 }],
     }))
   const removeCond = (idx: number) =>
     setDraft(d => ({ ...d, conditions: d.conditions.filter((_, i) => i !== idx) }))
@@ -137,6 +138,38 @@ export function RuleEditor({ rule, preset, simple, onClose, onSaved }: Props) {
         <div>
           <div className="mb-1.5 text-[11px] text-muted">选择触发信号 (任一命中即报警)</div>
           <SignalPicker signals={selectedSignals} onChange={onSignalPickerChange} kind="entry" />
+        </div>
+
+        {/* 价位条件 (阈值) — 与信号共存, 可选添加 */}
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] text-muted">价位条件 (可选)</span>
+            <button onClick={() => addCond('threshold')} className="inline-flex items-center gap-1 text-[11px] text-accent hover:text-accent/80 cursor-pointer">
+              <Plus className="h-3 w-3" />添加价位
+            </button>
+          </div>
+          {thresholdConds.length > 0 && (
+            <div className="space-y-1.5">
+              {thresholdConds.map((c, i) => {
+                const realIdx = draft.conditions.indexOf(c)
+                return (
+                  <div key={i} className="flex items-center gap-1.5">
+                    <span className="text-[10px] text-muted/60 w-6 text-right shrink-0">{i === 0 && selectedSignals.length === 0 ? '当' : draft.logic === 'and' ? '且' : '或'}</span>
+                    <select value={c.field} onChange={e => updateCond(realIdx, { field: e.target.value })} className="flex-1 h-7 px-1.5 rounded bg-base border border-border text-[11px] text-foreground focus:outline-none focus:border-accent/50">
+                      {thresholdFields.map(f => <option key={f.key} value={f.key}>{f.label}</option>)}
+                    </select>
+                    <select value={c.op} onChange={e => updateCond(realIdx, { op: e.target.value })} className="w-12 h-7 px-1 rounded bg-base border border-border text-[11px] font-mono text-foreground text-center focus:outline-none focus:border-accent/50">
+                      {operators.map(op => <option key={op} value={op}>{op}</option>)}
+                    </select>
+                    <input type="number" value={c.value ?? 0} onChange={e => updateCond(realIdx, { value: parseFloat(e.target.value) })} step="any" className="w-24 h-7 px-1.5 rounded bg-base border border-border text-[11px] font-mono text-foreground text-center focus:outline-none focus:border-accent/50" />
+                    <button onClick={() => removeCond(realIdx)} className="p-1 rounded text-muted hover:text-danger hover:bg-danger/10 cursor-pointer">
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                )
+              })}
+            </div>
+          )}
         </div>
 
         <label className="space-y-1.5">

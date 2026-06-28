@@ -265,6 +265,34 @@ def set_depth_finalize_time(hour: int, minute: int) -> dict:
     return {"hour": h, "minute": m}
 
 
+def get_review_schedule() -> dict:
+    """定时复盘调度 {"enabled": False, "hour": 16, "minute": 30}。默认关闭。
+
+    复盘依赖盘后数据(日K/enriched, 盘后管道默认 15:30 跑完),
+    故默认时间设为 16:30(数据就绪后), 强制下限 15:30。
+    """
+    d = load().get("review_schedule", {"enabled": False, "hour": 16, "minute": 30})
+    return {
+        "enabled": bool(d.get("enabled", False)),
+        "hour": d.get("hour", 16),
+        "minute": d.get("minute", 30),
+    }
+
+
+def set_review_schedule(enabled: bool, hour: int, minute: int) -> dict:
+    """保存定时复盘调度。强制时间下限 15:30(盘后数据就绪)。
+
+    enabled=False 时时间仍保存(下次开启可沿用), 但调度器不会注册 job。
+    """
+    h = max(0, min(23, hour))
+    m = max(0, min(59, minute))
+    # 下限 15:30: 盘后管道(默认 15:30)完成后才有完整数据复盘
+    if h * 60 + m < 15 * 60 + 30:
+        h, m = 15, 30
+    save({"review_schedule": {"enabled": bool(enabled), "hour": h, "minute": m}})
+    return {"enabled": bool(enabled), "hour": h, "minute": m}
+
+
 
 # ===== 实时监控 =====
 

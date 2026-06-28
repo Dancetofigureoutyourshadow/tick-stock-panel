@@ -6,6 +6,7 @@ import {
   Crown,
   Layers3,
   RefreshCw,
+  Repeat,
   Search,
   Settings2,
   TrendingDown,
@@ -20,6 +21,7 @@ import { QK } from '@/lib/queryKeys'
 import { storage } from '@/lib/storage'
 import { fmtBigNum, fmtPct, priceColorClass } from '@/lib/format'
 import { cn } from '@/lib/cn'
+import { toast } from '@/components/Toast'
 import { resolveDimension, type DimensionGroup, type StockRow } from '@/lib/analysis-adapter'
 
 const KEYWORDS = ['concept', '概念', 'theme', '题材', '板块']
@@ -358,6 +360,14 @@ export function ConceptAnalysis() {
         subtitle={`${marketQuery.data?.as_of ?? rowsQuery.data?.date ?? '最新'} · ${stats.length} 个概念 · ${totalSymbols} 只标的`}
         right={
           <div className="flex items-center gap-1">
+            {/* RPS 轮动计算(占位, 功能开发中) */}
+            <button
+              onClick={() => toast('涨幅RPS轮动功能开发中,敬请期待')}
+              className="inline-flex items-center gap-1 rounded-btn border border-border bg-elevated px-2.5 py-1.5 text-[11px] text-secondary transition-colors hover:border-accent/40 hover:text-accent"
+              title="涨幅RPS轮动(开发中)"
+            >
+              <Repeat className="h-3.5 w-3.5" />涨幅RPS轮动
+            </button>
             <button
               onClick={() => { rowsQuery.refetch(); marketQuery.refetch() }}
               disabled={rowsQuery.isFetching || marketQuery.isFetching}

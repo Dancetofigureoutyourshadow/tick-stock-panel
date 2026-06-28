@@ -7,7 +7,7 @@ from __future__ import annotations
 import logging
 import time
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from app import secrets_store
@@ -314,6 +314,7 @@ def get_preferences() -> dict:
         "limit_ladder_monitor_enabled": preferences.get_limit_ladder_monitor_enabled(),
         "depth_polling_interval": preferences.get_depth_polling_interval(),
         "depth_finalize_time": preferences.get_depth_finalize_time(),
+        "review_schedule": preferences.get_review_schedule(),
     }
 
 
@@ -925,6 +926,51 @@ def update_depth_finalize_time(req: DepthFinalizeTimeIn, request: Request) -> di
             ),
         )
         logger.info("depth_finalize rescheduled to %02d:%02d mon-fri", sched["hour"], sched["minute"])
+
+    return sched
+
+
+class ReviewScheduleIn(BaseModel):
+    enabled: bool
+    hour: int
+    minute: int
+
+
+@router.put("/preferences/review-schedule")
+def update_review_schedule(req: ReviewScheduleIn, request: Request) -> dict:
+    """保存定时复盘调度并立即更新 APScheduler job。
+
+    - enabled=True: 注册/更新 job(工作日定时生成复盘报告)
+    - enabled=False: 移除 job(停止定时复盘)
+    - 校验: 开启时若 AI Key 未配置则拒绝(复盘依赖 AI), 提示用户先配置。
+    - 时间下限 15:30(盘后数据就绪), 由 preferences 层强制。
+    """
+    from app.services import preferences
+
+    if req.enabled:
+        # 复盘必须有 AI Key, 否则每日报错刷日志
+        from app import secrets_store
+        if not secrets_store.get_ai_key():
+            raise HTTPException(
+                status_code=400,
+                detail="复盘依赖 AI,请先在「设置 → AI」配置 API Key 后再开启定时复盘",
+            )
+
+    sched = preferences.set_review_schedule(req.enabled, req.hour, req.minute)
+
+    # 动态操作 APScheduler job
+    from app.jobs.daily_pipeline import _register_review_job, REVIEW_JOB_ID
+    scheduler = getattr(request.app.state, "scheduler", None)
+    if scheduler:
+        if sched["enabled"]:
+            _register_review_job(scheduler, request.app.state.repo, sched["hour"], sched["minute"])
+            logger.info("scheduled_review enabled @%02d:%02d mon-fri", sched["hour"], sched["minute"])
+        else:
+            try:
+                scheduler.remove_job(REVIEW_JOB_ID)
+                logger.info("scheduled_review disabled (job removed)")
+            except Exception:
+                pass  # job 本就不存在(从未开过), 无需处理
 
     return sched
 

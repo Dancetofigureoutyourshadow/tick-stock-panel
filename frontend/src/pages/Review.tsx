@@ -9,10 +9,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { motion } from 'framer-motion'
+import { motion, AnimatePresence } from 'framer-motion'
 import {
   BookOpenCheck, RefreshCw, Sparkles, Trash2, History, ChevronRight, AlertTriangle,
-  Database, Wand2, Copy, Download,
+  Database, Wand2, Copy, Download, Clock, X,
 } from 'lucide-react'
 
 import { api, type OverviewMarket, type AiReviewReport } from '@/lib/api'
@@ -22,6 +22,7 @@ import { fmtBigNum } from '@/lib/format'
 import { PageHeader } from '@/components/PageHeader'
 import { MarkdownRenderer } from '@/components/financials/MarkdownRenderer'
 import { toast } from '@/components/Toast'
+import { usePreferences } from '@/lib/useSharedQueries'
 import { useReviewState } from '@/lib/useReviewStore'
 import {
   startReviewGeneration, resetReview, isReviewGenerating,
@@ -94,6 +95,27 @@ export function Review() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: QK.reviewReports })
       toast('已删除', 'success')
+    },
+    onError: () => { /* request() 已 toast */ },
+  })
+
+  // ===== 定时复盘 =====
+  const [showSchedule, setShowSchedule] = useState(false)
+  const prefs = usePreferences()
+  const reviewSched = prefs.data?.review_schedule ?? { enabled: false, hour: 16, minute: 30 }
+  // 弹窗内的本地草稿: 开关和时间都在本地改, 点「保存」才真正提交(避免开关一拨就关弹窗)
+  const [draft, setDraft] = useState(reviewSched)
+  const openSchedule = useCallback(() => {
+    setDraft(reviewSched)  // 每次打开同步最新服务端值
+    setShowSchedule(true)
+  }, [reviewSched])
+  const reviewMut = useMutation({
+    mutationFn: ({ enabled, hour, minute }: { enabled: boolean; hour: number; minute: number }) =>
+      api.updateReviewSchedule(enabled, hour, minute),
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({ queryKey: QK.preferences })
+      setShowSchedule(false)
+      toast(vars.enabled ? '已开启定时复盘' : '已关闭定时复盘', 'success')
     },
     onError: () => { /* request() 已 toast */ },
   })
@@ -185,6 +207,18 @@ export function Review() {
               title="刷新市场数据"
             >
               <RefreshCw className={cn('h-3 w-3', marketQuery.isFetching && 'animate-spin')} />刷新
+            </button>
+            <button
+              onClick={openSchedule}
+              className={cn(
+                'inline-flex items-center gap-1 rounded-btn border px-2 py-1 text-[11px] transition-colors',
+                reviewSched.enabled
+                  ? 'border-accent/40 bg-accent/10 text-accent hover:bg-accent/20'
+                  : 'border-border bg-elevated text-secondary hover:text-foreground',
+              )}
+              title={reviewSched.enabled ? `定时复盘已开启 · 每日 ${String(reviewSched.hour).padStart(2,'0')}:${String(reviewSched.minute).padStart(2,'0')}` : '定时复盘'}
+            >
+              <Clock className="h-3 w-3" />定时
             </button>
             <button
               onClick={generate}
@@ -281,6 +315,104 @@ export function Review() {
           )}
         </div>
       </div>
+
+      {/* ===== 定时复盘设置弹窗 ===== */}
+      <AnimatePresence>
+        {showSchedule && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+            onClick={() => setShowSchedule(false)}
+          >
+            <motion.div
+              initial={{ scale: 0.96, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.96, opacity: 0 }}
+              className="w-full max-w-md rounded-card border border-border bg-surface p-5 shadow-2xl"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="mb-4 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Clock className="h-4 w-4 text-accent" />
+                  <h3 className="text-sm font-medium text-foreground">定时复盘</h3>
+                </div>
+                <button
+                  onClick={() => setShowSchedule(false)}
+                  className="rounded p-1 text-muted transition-colors hover:bg-elevated hover:text-foreground"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+
+              <p className="mb-4 text-[11px] leading-relaxed text-muted">
+                开启后,每个交易日到点自动生成大盘复盘报告并归档,静默执行(不弹通知)。
+                下次打开本页即可在历史列表看到新报告。
+              </p>
+
+              {/* 开关(只改本地草稿, 不提交) */}
+              <label className="flex items-center justify-between rounded-btn bg-elevated/40 px-3 py-2.5">
+                <span className="text-xs text-foreground">启用定时复盘</span>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={draft.enabled}
+                  onClick={() => setDraft(d => ({ ...d, enabled: !d.enabled }))}
+                  className={cn(
+                    'relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors',
+                    draft.enabled ? 'bg-accent' : 'bg-border',
+                  )}
+                >
+                  <span className={cn('inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform', draft.enabled ? 'translate-x-[18px]' : 'translate-x-1')} />
+                </button>
+              </label>
+
+              {/* 时间设置(仅开启时可编辑, 本地草稿) */}
+              {draft.enabled && (
+                <div className="mt-3 flex items-center gap-2 rounded-btn bg-elevated/40 px-3 py-2.5">
+                  <span className="text-[11px] text-muted">每日</span>
+                  <input
+                    type="number" min={0} max={23} value={draft.hour}
+                    onChange={e => setDraft(d => ({ ...d, hour: Math.max(0, Math.min(23, Number(e.target.value))) }))}
+                    className="w-12 px-1.5 py-1 rounded-btn bg-base border border-border text-xs font-mono text-foreground text-center focus:outline-none focus:border-accent/50"
+                  />
+                  <span className="text-xs text-muted">:</span>
+                  <input
+                    type="number" min={0} max={59} value={draft.minute}
+                    onChange={e => setDraft(d => ({ ...d, minute: Math.max(0, Math.min(59, Number(e.target.value))) }))}
+                    className="w-12 px-1.5 py-1 rounded-btn bg-base border border-border text-xs font-mono text-foreground text-center focus:outline-none focus:border-accent/50"
+                  />
+                  <span className="text-[10px] text-muted/70">不早于 15:30 · 工作日执行</span>
+                </div>
+              )}
+
+              {!draft.enabled && (
+                <p className="mt-3 text-[10px] text-muted/70">
+                  当前: 已关闭。开启后将按设定时间自动复盘。
+                </p>
+              )}
+
+              {/* 操作区: 取消 + 保存(统一提交开关+时间) */}
+              <div className="mt-5 flex justify-end gap-2">
+                <button
+                  onClick={() => setShowSchedule(false)}
+                  className="rounded-btn bg-elevated px-4 py-1.5 text-xs text-secondary transition-colors hover:text-foreground"
+                >
+                  取消
+                </button>
+                <button
+                  onClick={() => reviewMut.mutate({ enabled: draft.enabled, hour: draft.hour, minute: draft.minute })}
+                  disabled={reviewMut.isPending}
+                  className="inline-flex items-center gap-1.5 rounded-btn bg-accent px-4 py-1.5 text-xs font-medium text-white transition-colors hover:bg-accent/90 disabled:opacity-50"
+                >
+                  {reviewMut.isPending ? '保存中…' : '保存'}
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </>
   )
 }

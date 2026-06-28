@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 import threading
 from datetime import date
 from pathlib import Path
@@ -31,6 +32,10 @@ class DataStore:
     def __init__(self, data_dir: Path | None = None) -> None:
         self.data_dir = Path(data_dir or settings.data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
+
+        # 一次性数据迁移: 旧桌面版把数据放在 exe 同级的兄弟目录 TickFlowStockPanel_Data/,
+        # 新版改为 {app}/data/。老用户首次启动时自动把旧数据搬过来, 无感升级。
+        self._migrate_legacy_data_dir()
 
         # 关键子目录(§7.2)
         for sub in (
@@ -66,6 +71,64 @@ class DataStore:
         # DuckDB 内存模式 — 不建 .db 文件(§7.1)
         self.db = duckdb.connect(database=":memory:")
         self._register_views()
+
+    def _migrate_legacy_data_dir(self) -> None:
+        """把旧桌面版数据目录 (<安装目录>/../TickFlowStockPanel_Data/) 迁移到新位置 (<安装目录>/data/)。
+
+        背景: 旧版 data_dir = exe_dir.parent / "TickFlowStockPanel_Data" (兄弟目录),
+        新版改为 exe_dir / "data" (子目录)。老用户首次升级时旧数据在兄弟目录,
+        若不迁移会导致历史行情/策略/回测/监控全部"丢失"(实际还在旧位置)。
+
+        策略 (仅打包桌面版触发, 开发/Docker 不受影响):
+          1. 旧目录存在且新 data/ 还基本为空 → 整目录搬迁 (shutil.move, 跨盘符安全)。
+          2. 新旧目录都已有数据 (用户在两套路径都跑过) → 不自动搬, 仅记日志, 避免覆盖。
+          3. 旧目录不存在 → 新装用户, 无需迁移。
+        所有异常都吞掉只记警告 —— 数据迁移失败绝不能阻塞应用启动。
+        """
+        # 仅打包桌面版需要迁移; 开发/Docker 模式 _PROJECT_ROOT/data 本就是唯一路径
+        if not getattr(sys, "frozen", False):
+            return
+
+        import shutil
+
+        try:
+            legacy_dir = self.data_dir.parent / "TickFlowStockPanel_Data"
+            if not legacy_dir.exists():
+                return  # 新装用户, 无旧数据
+
+            # 新 data/ 目录里已有实质性内容 → 用户已在新路径跑过, 不覆盖
+            # (用 .parquet 作为"有真实数据"的判据, 避免空子目录误判)
+            has_new_data = any(self.data_dir.rglob("*.parquet")) or any(
+                self.data_dir.rglob("*.jsonl")
+            )
+            if has_new_data:
+                logger.info(
+                    "legacy data dir %s exists but new %s already has data, skip migration",
+                    legacy_dir, self.data_dir,
+                )
+                return
+
+            logger.info("migrating legacy data %s -> %s", legacy_dir, self.data_dir)
+            # 逐项 move 而非整目录 move: data/ 可能已被 __init__ 创建了空子目录,
+            # 直接 shutil.move(legacy, data) 会因目标已存在失败。
+            for item in legacy_dir.iterdir():
+                dest = self.data_dir / item.name
+                if dest.exists():
+                    # 同名子目录 (如 kline_daily): 合并内容
+                    if dest.is_dir():
+                        shutil.move(str(item), str(dest / item.name))
+                    else:
+                        item.unlink()  # 同名文件, 以新路径为准, 删旧
+                else:
+                    shutil.move(str(item), str(dest))
+            # 搬完后清理空的旧目录
+            try:
+                shutil.rmtree(legacy_dir)
+            except OSError:
+                logger.warning("legacy dir %s not empty, kept", legacy_dir)
+            logger.info("legacy data migration done")
+        except Exception as e:  # noqa: BLE001
+            logger.warning("legacy data migration failed (startup continues): %s", e)
 
     def _register_views(self) -> None:
         """把 Parquet 目录挂载为 DuckDB 视图(§7.3)。"""

@@ -538,6 +538,69 @@ def _run_tracked(fn, job_label: str) -> None:
         job_store.fail(job_id, f"scheduled {job_label} failed")
 
 
+# ================================================================
+# 定时复盘 (AI 大盘复盘报告)
+# ================================================================
+
+REVIEW_JOB_ID = "scheduled_review"
+
+
+async def _run_scheduled_review(repo) -> None:
+    """定时复盘 job: 调用非流式复盘生成 → 落盘归档(与手动生成同格式)。
+
+    静默执行, 不推送 SSE/系统通知 —— 用户下次打开复盘页即可看到新报告。
+    任何异常都吞掉只记日志, 绝不影响调度器主循环。
+    """
+    try:
+        from app.services.market_recap import recap_market_once
+        from app.services import market_recap_reports
+        from app import secrets_store as ss
+
+        # AI Key 未配置时跳过(避免每日报错刷日志)
+        if not ss.get_ai_key():
+            logger.info("scheduled review skipped: AI key not configured")
+            return
+
+        app_state = _get_app_state()
+        quote_service = getattr(app_state, "quote_service", None) if app_state else None
+        depth_service = getattr(app_state, "depth_service", None) if app_state else None
+
+        content, meta = await recap_market_once(repo, quote_service, depth_service)
+        if not content:
+            logger.warning("scheduled review produced no content (meta=%s)", meta)
+            return
+
+        # 落盘: 与手动生成完全相同的归档格式
+        market_recap_reports.save_report({
+            "as_of": meta.get("as_of"),
+            "focus": "",
+            "content": content,
+            "summary": meta.get("summary", ""),
+            "emotion_score": meta.get("emotion_score"),
+            "emotion_label": meta.get("emotion_label", ""),
+        })
+        logger.info("scheduled review saved: as_of=%s", meta.get("as_of"))
+    except Exception as e:  # noqa: BLE001
+        logger.exception("scheduled review failed: %s", e)
+
+
+def _register_review_job(scheduler, repo, hour: int, minute: int) -> None:
+    """注册/更新定时复盘 job(工作日 mon-fri, Asia/Shanghai)。
+
+    供 start_scheduler(启动时) 和 settings API(改时间时) 共用。
+    用 replace_existing=True, 重复注册只更新 trigger。
+    """
+    scheduler.add_job(
+        lambda: _run_scheduled_review(repo),
+        trigger=CronTrigger(day_of_week="mon-fri",
+                            hour=hour, minute=minute,
+                            timezone="Asia/Shanghai"),
+        id=REVIEW_JOB_ID,
+        misfire_grace_time=7200,  # 复盘非关键, 允许 2 小时内补跑
+        replace_existing=True,
+    )
+
+
 def start_scheduler(repo: KlineRepository, capset: CapabilitySet) -> AsyncIOScheduler:
     """启动调度器。
 
@@ -599,6 +662,16 @@ def start_scheduler(repo: KlineRepository, capset: CapabilitySet) -> AsyncIOSche
         misfire_grace_time=3600,
         replace_existing=True,
     )
+
+    # 定时复盘 (AI 大盘复盘报告): 工作日到点自动生成并归档。
+    # 默认关闭 —— 仅当用户在复盘页开启时才注册 job。
+    # 复用 recap_market_once(非流式) + market_recap_reports.save_report(落盘)。
+    # quote_service / depth_service 通过 _get_app_state() 延迟取用。
+    review_sched = preferences.get_review_schedule()
+    if review_sched["enabled"]:
+        _register_review_job(scheduler, repo, review_sched["hour"], review_sched["minute"])
+        logger.info("scheduled_review enabled @%02d:%02d mon-fri",
+                    review_sched["hour"], review_sched["minute"])
 
     scheduler.start()
     logger.info("scheduler started; instruments@%02d:%02d, pipeline@%02d:%02d, depth@%02d:%02d mon-fri",

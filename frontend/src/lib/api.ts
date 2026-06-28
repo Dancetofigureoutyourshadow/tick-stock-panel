@@ -676,6 +676,7 @@ export interface Preferences {
   limit_ladder_monitor_enabled: boolean
   depth_polling_interval: number
   depth_finalize_time: { hour: number; minute: number }
+  review_schedule: { enabled: boolean; hour: number; minute: number }
   sse_refresh_pages: Record<string, boolean>
   strategy_monitor_enabled: boolean
   strategy_monitor_ids: string[]
@@ -819,6 +820,11 @@ export const api = {
     request<{ hour: number; minute: number }>('/api/settings/preferences/pipeline-schedule', {
       method: 'PUT',
       body: JSON.stringify({ hour, minute }),
+    }),
+  updateReviewSchedule: (enabled: boolean, hour: number, minute: number) =>
+    request<{ enabled: boolean; hour: number; minute: number }>('/api/settings/preferences/review-schedule', {
+      method: 'PUT',
+      body: JSON.stringify({ enabled, hour, minute }),
     }),
   updateDepthPollingInterval: (interval: number) =>
     request<{ depth_polling_interval: number }>('/api/settings/preferences/depth-polling-interval', {

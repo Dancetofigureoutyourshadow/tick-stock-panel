@@ -45,14 +45,11 @@ backend/data/**
 !backend/data/.gitkeep
 data/**
 !data/.gitkeep
-# 扩展数据: 仅放行 ext_gn_ths(概念)与 ext_hy_ths(行业)两个数据源
-# 含 config.json 表结构 + part.parquet 数据文件;其余 ext_data 子目录均不入库
-# (gitignore 否定规则特性: 要放行嵌套文件,需逐级放行目录 + /** 放行内部文件)
-!data/ext_data/
-!data/ext_data/ext_gn_ths/
-!data/ext_data/ext_gn_ths/**
-!data/ext_data/ext_hy_ths/
-!data/ext_data/ext_hy_ths/**
+# data/ 下所有内容(含 ext_data 概念/行业)均不入库:
+#   - 用户运行时数据 (K线/财务/自选/回测等) 本就不该进 git
+#   - 概念/行业改为「首次启动自动从远程接口拉取」(见 app/services/ext_presets.py)
+#     作者更新数据只需改接口 JSON, 用户下次拉取自动同步, 无需发版、无需碰 git。
+# 这样 git pull 物理上无法影响用户本地 data, 杜绝「更新后数据丢失」。
 
 # ===== Secrets =====
 .env

@@ -118,21 +118,23 @@ begin
 end;
 
 // ── 卸载时询问是否删除用户数据 ─────────────────────────────────
-// 用户数据在 %LOCALAPPDATA%\TickFlowStockPanel\ (策略/选股/回测/监控)
-// 默认保留 (重装不丢), 但给用户彻底清除的选项
+// 用户数据在 {app} 同级的 TickFlowStockPanel_Data\ (策略/选股/回测/监控/行情)
+// 注意: 该目录在 {app} 外, 覆盖安装和常规卸载都不会动它, 重装后数据自动恢复。
+// 这里仅在用户明确「彻底卸载」时才清理。
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   DataDir: String;
 begin
   if CurUninstallStep = usPostUninstall then
   begin
-    DataDir := ExpandConstant('{localappdata}\TickFlowStockPanel');
+    // {app}\..\TickFlowStockPanel_Data = 与安装目录同级的独立数据目录
+    DataDir := ExpandConstant('{app}\..\TickFlowStockPanel_Data');
     if DirExists(DataDir) then
     begin
       if SuppressibleMsgBox(
           '是否同时删除用户数据?' + #13#10 + #13#10 +
           '位置: ' + DataDir + #13#10 +
-          '内容: 策略、选股结果、回测记录、监控规则等' + #13#10 + #13#10 +
+          '内容: 行情数据、策略、选股结果、回测记录、监控规则等' + #13#10 + #13#10 +
           '选「是」彻底卸载, 选「否」保留数据(重装后可恢复)。',
           mbConfirmation, MB_YESNO or MB_DEFBUTTON2, IDNO) = IDYES then
       begin

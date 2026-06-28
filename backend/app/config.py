@@ -17,21 +17,29 @@ _IS_FROZEN = getattr(sys, "frozen", False)
 
 
 def _user_data_root() -> Path:
-    """桌面版用户数据根目录 (跨平台持久可写)。
+    """桌面版用户数据根目录。
 
-    Windows: %LOCALAPPDATA%/TickFlowStockPanel/TickFlowStockPanel
-    macOS:   ~/Library/Application Support/TickFlowStockPanel
-    Linux:   ~/.local/share/TickFlowStockPanel
+    定位策略 (按优先级):
+      1. 环境变量 DATA_DIR (pydantic-settings 自动注入到 settings.data_dir, 不在此处理)
+      2. exe 同级的独立数据目录 <安装目录>/../TickFlowStockPanel_Data/
+         —— 在 {app} 外, Inno Setup 覆盖安装/卸载都碰不到; 与 exe 同盘符,
+            用户可直接看到, 不占 C 盘。
+      3. 非 frozen (开发模式): 项目根 data/
 
-    注意: platformdirs 已含应用名, 切勿再拼一层。
+    为什么不用 platformdirs 默认 (%LOCALAPPDATA%) 作为主路径:
+      - 落在 C 盘系统目录, 用户不易察觉, 占系统盘空间
+      - 用户期望「数据跟随程序」(便于备份/迁移)
+    为什么不直接放 {app}/data (exe 旁的 data/):
+      - {app} 在安装目录内, Inno Setup 覆盖安装会覆盖、卸载会清空 → 数据丢失
+    折中: 放 {app} 的同级目录 (兄弟文件夹), 既跟随 exe 又不在 {app} 内。
     """
-    try:
-        from platformdirs import user_data_dir
+    # 打包桌面版: exe 同级的独立数据目录 (../TickFlowStockPanel_Data/)
+    if _IS_FROZEN:
+        exe_dir = Path(sys.executable).resolve().parent
+        return exe_dir.parent / "TickFlowStockPanel_Data"
 
-        return Path(user_data_dir("TickFlowStockPanel"))
-    except Exception:  # noqa: BLE001
-        # platformdirs 不可用时兜底: 可执行文件旁的 data/
-        return Path(sys.executable).resolve().parent / "data"
+    # 开发模式: 项目根 data/
+    return _PROJECT_ROOT / "data"
 
 
 def _resource_root() -> Path:
@@ -84,8 +92,9 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     backtest_range_guard: bool = False
 
-    # Data — frozen: 用户数据目录; 非 frozen: 项目根目录的 data/ (可被 DATA_DIR 覆盖)
-    data_dir: Path = _user_data_root() if _IS_FROZEN else (_PROJECT_ROOT / "data")
+    # Data — frozen: exe 同级 TickFlowStockPanel_Data/; 非 frozen: 项目根 data/
+    # (均可被环境变量 DATA_DIR 覆盖, pydantic-settings 自动注入)
+    data_dir: Path = _user_data_root()
 
     # tiers.yaml 路径 — frozen: 资源目录内; 非 frozen: 项目根目录
     tiers_yaml: Path = _RESOURCE_ROOT / "tiers.yaml" if _IS_FROZEN else _PROJECT_ROOT / "tiers.yaml"

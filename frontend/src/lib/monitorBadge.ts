@@ -20,7 +20,8 @@ const listeners = new Set<() => void>()
 function readSeen(): number {
   try {
     const v = localStorage.getItem(STORAGE_KEY)
-    return v ? parseInt(v, 10) || 0 : -1  // -1 = 未初始化
+    if (v === null) return -1  // 从未设置过 → 未初始化
+    return parseInt(v, 10) || 0
   } catch {
     return -1
   }
@@ -55,8 +56,9 @@ export function setCurrentTotal(total: number): void {
   // total=0 视为未初始化, 不更新 (避免渲染期 data=undefined 传 0 重置 lastSeen)
   if (total <= 0) return
 
-  // 首次初始化: 把已读基线设为当前总数
-  if (lastSeenTotal < 0) {
+  // 首次初始化: lastSeen <= 0 (从未设置 -1, 或历史为 0) → 把已读基线设为当前总数
+  // 否则 lastSeen=0 + total=1 会被误算成"1条未读" (首次进入就显示徽标的 bug)
+  if (lastSeenTotal <= 0) {
     lastSeenTotal = total
     writeSeen(total)
   }

@@ -191,8 +191,12 @@ async def _run_codex_cli(
     timeout: float,
 ) -> str:
     prompt = _codex_prompt(messages, max_tokens=max_tokens)
-    with tempfile.TemporaryDirectory(prefix="tickflow-codex-home-") as codex_home:
-        codex_home_path = Path(codex_home)
+    with tempfile.TemporaryDirectory(prefix="tickflow-codex-run-") as run_dir:
+        run_path = Path(run_dir)
+        codex_home_path = run_path / "codex-home"
+        workspace_path = run_path / "workspace"
+        codex_home_path.mkdir()
+        workspace_path.mkdir()
         output_path = codex_home_path / "last-message.txt"
         _prepare_codex_home(codex_home_path)
 
@@ -211,7 +215,7 @@ async def _run_codex_cli(
         model = current_ai_model().strip()
         if model:
             args.extend(["--model", model])
-        args.extend(["--cd", str(_project_root()), "-"])
+        args.extend(["--cd", str(workspace_path), "-"])
 
         env = os.environ.copy()
         env.setdefault("NO_COLOR", "1")
@@ -249,7 +253,8 @@ async def _run_codex_cli(
 def _codex_prompt(messages: Sequence[Message], *, max_tokens: int) -> str:
     parts = [
         "You are TickFlow Stock Panel's local AI provider.",
-        "This is a text-generation task. Do not inspect or modify local files.",
+        "This is a text-generation task. The working directory is intentionally empty.",
+        "Use only the user-provided prompt content below; do not inspect or modify local files.",
         "Return only the final requested content; do not include execution logs.",
     ]
     if max_tokens > 0:
@@ -343,10 +348,6 @@ def _resolve_windows_desktop_codex() -> str | None:
 
     newest = max(candidates, key=lambda p: p.stat().st_mtime)
     return str(newest)
-
-
-def _project_root() -> Path:
-    return Path(__file__).resolve().parents[3]
 
 
 def _prepare_codex_home(target: Path) -> None:

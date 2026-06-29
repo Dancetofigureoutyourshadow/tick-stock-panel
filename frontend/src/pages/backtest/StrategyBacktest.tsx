@@ -19,6 +19,7 @@ import { SignalPicker } from '@/components/screener/SignalPicker'
 import { startBacktest, stopBacktest, tryReconnect, useBacktestTask } from '@/lib/backtestTask'
 import { useDataStatus, useCapabilities } from '@/lib/useSharedQueries'
 import { EmptyState } from '@/components/EmptyState'
+import { WarmupBadge } from '@/components/WarmupBadge'
 import { DatePicker } from '@/components/DatePicker'
 import { StrategyNavChart } from './charts/StrategyNavChart'
 import { ReturnDistributionChart } from './charts/ReturnDistributionChart'
@@ -660,6 +661,7 @@ export function StrategyBacktest() {
   const [entryFill, setEntryFill] = useState<'close_t' | 'open_t+1'>(saved?.entryFill ?? saved?.matching ?? 'open_t+1')
   const [exitFill, setExitFill] = useState<'close_t' | 'open_t+1'>(saved?.exitFill ?? saved?.matching ?? 'close_t')
   const [fees, setFees] = useState(saved?.fees ?? '2')
+  const [slippage, setSlippage] = useState(saved?.slippage ?? '5')
   const [maxPositions, setMaxPositions] = useState(saved?.maxPositions ?? '10')
   const [maxExposure, setMaxExposure] = useState(saved?.maxExposure ?? '100')
   const [initialCapital, setInitialCapital] = useState(saved?.initialCapital ?? '1000000')
@@ -765,6 +767,7 @@ export function StrategyBacktest() {
         entryFill,
         exitFill,
         fees,
+        slippage,
         maxPositions,
         maxExposure,
         initialCapital,
@@ -789,6 +792,7 @@ export function StrategyBacktest() {
       entry_fill: entryFill,
       exit_fill: exitFill,
       fees_pct: Number(fees) / 10000,
+      slippage_bps: Number(slippage),
       max_positions: Number(maxPositions),
       max_exposure_pct: Number(maxExposure) / 100,
       initial_capital: Number(initialCapital),
@@ -1141,7 +1145,10 @@ export function StrategyBacktest() {
 
         <div className="rounded-btn border border-border bg-surface p-2.5">
           <div className="flex items-center justify-between gap-2">
-            <div className="text-xs font-medium text-foreground">回测区间</div>
+            <div className="flex items-center gap-1.5">
+              <div className="text-xs font-medium text-foreground">回测区间</div>
+              <WarmupBadge />
+            </div>
             <span className="shrink-0 rounded-full border border-accent/25 bg-accent/10 px-2 py-0.5 text-[10px] font-medium text-accent">
               {rangeTitle}
             </span>
@@ -1291,6 +1298,10 @@ export function StrategyBacktest() {
           <div>
             <label className="text-xs font-medium text-secondary block mb-1.5">佣金(万分之)</label>
             <input type="number" value={fees} onChange={e => setFees(e.target.value)} className={INPUT_CLS} />
+          </div>
+          <div>
+            <label className="text-xs font-medium text-secondary block mb-1.5">滑点(万分之)</label>
+            <input type="number" min={0} value={slippage} onChange={e => setSlippage(e.target.value)} className={INPUT_CLS} />
           </div>
         </div>
         )}

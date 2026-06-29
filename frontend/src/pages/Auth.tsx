@@ -166,9 +166,22 @@ export function Auth() {
 
           {/* 提示: 设密码模式告知本机限制 */}
           {isSetup && (
-            <p className="mt-3 text-[10px] leading-relaxed text-muted/70">
-              出于安全考虑, 首次设置密码需在服务器本机或内网访问时操作。公网环境下仅可登录。
-            </p>
+            <div className="mt-3 space-y-1.5 text-[10px] leading-relaxed text-muted/70">
+              <p>
+                出于安全考虑, 首次设置密码需在服务器本机或内网访问时操作。公网环境下仅可登录。
+              </p>
+              <p>
+                详细配置说明见{' '}
+                <a
+                  href="https://github.com/shy3130/tickflow-stock-panel/blob/main/docs/deploy-password.md"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-accent underline-offset-2 hover:underline"
+                >
+                  访问密码部署文档
+                </a>
+              </p>
+            </div>
           )}
         </div>
 

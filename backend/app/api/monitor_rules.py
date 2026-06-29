@@ -47,7 +47,7 @@ class RuleModel(BaseModel):
     logic: str = "and"        # and | or
     cooldown_seconds: int = 3600
     severity: str = "info"    # info | warn | critical
-    webhook_url: str = ""     # Webhook 推送地址 (推送到 QMT 等外部软件, 开发中)
+    webhook_url: str = ""     # Webhook 推送地址 (推送到 QMT 等外部软件, 待定)
     webhook_enabled: bool = False
     message: str = ""
 

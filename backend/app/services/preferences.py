@@ -397,6 +397,43 @@ def set_system_notify_enabled(enabled: bool) -> bool:
     return bool(enabled)
 
 
+def get_feishu_webhook_url() -> str:
+    """飞书自定义机器人 Webhook 地址 — 全局共用一处, 所有启用推送的规则都推到这一个群。"""
+    return load().get("feishu_webhook_url", "")
+
+
+def get_feishu_webhook_secret() -> str:
+    """飞书自定义机器人签名密钥 — 机器人启用「签名校验」时必填, 留空表示不验签。"""
+    return load().get("feishu_webhook_secret", "")
+
+
+def set_feishu_webhook_url(url: str) -> str:
+    """保存飞书 Webhook 地址。传入空串表示清空配置。"""
+    save({"feishu_webhook_url": str(url or "").strip()})
+    return get_feishu_webhook_url()
+
+
+def set_feishu_webhook_secret(secret: str) -> str:
+    """保存飞书签名密钥。传入空串表示不验签。"""
+    save({"feishu_webhook_secret": str(secret or "").strip()})
+    return get_feishu_webhook_secret()
+
+
+def get_webhook_enabled_default() -> bool:
+    """新建监控规则时是否默认勾选「飞书推送」。
+
+    数据模型当前只有一个 webhook_enabled 布尔 (即飞书), QMT/ptrade 待定。
+    此默认值供规则编辑器新建规则时预填, 单条规则仍可独立修改。
+    """
+    return load().get("webhook_enabled_default", False)
+
+
+def set_webhook_enabled_default(enabled: bool) -> bool:
+    """保存飞书推送默认勾选态。"""
+    save({"webhook_enabled_default": bool(enabled)})
+    return get_webhook_enabled_default()
+
+
 def get_screener_auto_run() -> bool:
     """选股页进入时是否自动运行所有策略 (获取命中数)。默认开。"""
     return load().get("screener_auto_run", True)

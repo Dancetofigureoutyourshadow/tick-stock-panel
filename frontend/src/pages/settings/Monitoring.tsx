@@ -3,12 +3,12 @@ import { Link } from 'react-router-dom'
 import { useQueryClient, useMutation, useQuery } from '@tanstack/react-query'
 import {
   Activity,
-  Shield,
   Wifi,
   BarChart3,
   Flame,
   Zap,
-  Bell,
+  Webhook,
+  ChevronDown,
 } from 'lucide-react'
 import {
   usePreferences,
@@ -53,8 +53,9 @@ export function SettingsMonitoringPanel({ highlight }: { highlight?: string } = 
   const realtimeEnabled = prefs?.realtime_quotes_enabled ?? false
   const refreshPages = prefs?.sse_refresh_pages ?? {}
   const limitLadderMonitor = prefs?.limit_ladder_monitor_enabled ?? false
-  const systemNotify = prefs?.system_notify_enabled ?? false
   const hasDepth = !!caps?.capabilities?.['depth5.batch']
+  // 新建监控规则时是否默认勾选飞书推送 (全局默认值, 单条规则可独立修改)
+  const webhookDefault = prefs?.webhook_enabled_default ?? false
   const sidebarIndexSymbols = prefs?.sidebar_index_symbols ?? SIDEBAR_INDEX_OPTIONS.map(i => i.symbol)
   const indicesPinned = prefs?.indices_nav_pinned ?? true
   const isRunning = quoteStatus?.running ?? false
@@ -63,6 +64,17 @@ export function SettingsMonitoringPanel({ highlight }: { highlight?: string } = 
   const minInterval = intervalData?.min_interval ?? 5
   const maxInterval = intervalData?.max_interval ?? 60
   const [intervalDraft, setIntervalDraft] = useState(interval)
+  const feishuWebhookUrl = prefs?.feishu_webhook_url ?? ''
+  const feishuWebhookSecret = prefs?.feishu_webhook_secret ?? ''
+  const [feishuDraft, setFeishuDraft] = useState(feishuWebhookUrl)
+  const [feishuSecretDraft, setFeishuSecretDraft] = useState(feishuWebhookSecret)
+  const [feishuError, setFeishuError] = useState('')
+  // 飞书渠道配置区展开态 (推送通知卡片内)
+  const [channelOpen, setChannelOpen] = useState(false)
+  useEffect(() => {
+    setFeishuDraft(feishuWebhookUrl)
+    setFeishuSecretDraft(feishuWebhookSecret)
+  }, [feishuWebhookUrl, feishuWebhookSecret])
   const watchlistSymbols = prefs?.realtime_watchlist_symbols ?? []
   const watchlist = useQuery({
     queryKey: QK.watchlist,
@@ -107,10 +119,30 @@ export function SettingsMonitoringPanel({ highlight }: { highlight?: string } = 
     qc.invalidateQueries({ queryKey: QK.preferences })
   }, [qc])
 
-  const toggleSystemNotify = useCallback(async (enabled: boolean) => {
-    await api.updateSystemNotify(enabled)
+  const toggleWebhookDefault = useCallback(async (enabled: boolean) => {
+    await api.updateWebhookDefault(enabled)
     qc.invalidateQueries({ queryKey: QK.preferences })
   }, [qc])
+
+  const saveFeishuWebhook = useMutation({
+    mutationFn: ({ url, secret }: { url: string; secret: string }) => api.updateFeishuWebhook(url, secret),
+    onSuccess: () => {
+      setFeishuError('')
+      toast('飞书 Webhook 已保存', 'success')
+      qc.invalidateQueries({ queryKey: QK.preferences })
+    },
+    onError: (err: any) => setFeishuError(String(err?.message ?? '保存失败')),
+  })
+  const FEISHU_PREFIX = 'https://open.feishu.cn/open-apis/bot/v2/hook/'
+  const submitFeishu = useCallback(() => {
+    const url = feishuDraft.trim()
+    const secret = feishuSecretDraft.trim()
+    if (url && !url.startsWith(FEISHU_PREFIX)) {
+      setFeishuError('地址需以 ' + FEISHU_PREFIX + ' 开头')
+      return
+    }
+    saveFeishuWebhook.mutate({ url, secret })
+  }, [feishuDraft, feishuSecretDraft, saveFeishuWebhook])
 
   const runFix = useMutation({
     mutationFn: () => api.runLimitLadderFix(),
@@ -300,29 +332,7 @@ export function SettingsMonitoringPanel({ highlight }: { highlight?: string } = 
 
       {/* ========== 右列 ========== */}
       <div className="space-y-6">
-        {/* 策略监控已迁移至监控中心 */}
-        <Card icon={Shield} title="策略监控">
-          <p className="text-xs text-secondary mb-3">
-            策略监控、个股信号监控、价格监控已统一到「监控中心」页面,支持灵活配置触发条件、冷却期和作用范围。
-          </p>
-          <a
-            href="#/monitor"
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-btn bg-accent/15 text-accent text-xs font-medium hover:bg-accent/25 transition-colors"
-          >
-            前往监控中心配置 →
-          </a>
-          <div className="mt-3 pt-3 border-t border-border">
-            <ToggleRow
-              icon={Bell}
-              label="系统通知"
-              desc="监控告警同时推送到操作系统通知中心（窗口最小化或后台也能收到）"
-              checked={systemNotify}
-              onChange={toggleSystemNotify}
-            />
-          </div>
-        </Card>
-
-        {/* 连板梯队降级修正 */}
+        {/* 连板梯队降级修正 (移至右列顶部) */}
         <div
           id="depth-fix"
           className={`rounded-card transition-all duration-500 ${flash ? 'ring-2 ring-accent/60 ring-offset-2 ring-offset-base scale-[1.01]' : 'ring-0 ring-transparent'}`}
@@ -368,6 +378,122 @@ export function SettingsMonitoringPanel({ highlight }: { highlight?: string } = 
           )}
         </Card>
         </div>
+
+        {/* 推送通知 — 监控告警的外部推送渠道 (全局配置)。
+            飞书已实现; 微信开发中, QMT/ptrade 待定。
+            每个渠道合并成一行: 勾选=新建规则默认推送, 点行展开地址配置。 */}
+        <Card icon={Webhook} title="推送通知">
+          <p className="text-xs text-secondary mb-3">
+            监控规则命中后,可把告警推送到外部。勾选渠道作为<b className="text-foreground/80">新建规则的默认推送</b>,
+            单条规则仍可在编辑页独立修改。
+          </p>
+
+          {/* 渠道列表 — 每行一个渠道, 勾选默认 + 点行展开地址配置 */}
+          <div className="space-y-2">
+            {/* 飞书 (可用): 勾选默认 + 展开地址配置 */}
+            <div className="rounded-btn border border-border/60 bg-base/40 overflow-hidden">
+              <div
+                onClick={() => setChannelOpen(o => !o)}
+                className="flex items-center gap-2 px-2.5 py-2 cursor-pointer transition-colors hover:bg-base/60"
+              >
+                <input
+                  type="checkbox"
+                  checked={webhookDefault}
+                  onChange={e => { e.stopPropagation(); toggleWebhookDefault(e.target.checked) }}
+                  onClick={e => e.stopPropagation()}
+                  title="作为新建规则的默认推送渠道"
+                  className="h-3 w-3 accent-accent cursor-pointer"
+                />
+                <span className="text-[11px] font-medium text-foreground">飞书</span>
+                <span className="text-[9px] text-muted">群机器人</span>
+                {webhookDefault && (
+                  <span className="rounded bg-accent/15 px-1 py-px text-[9px] text-accent">默认</span>
+                )}
+                <span className={`ml-auto text-[9px] ${feishuWebhookUrl ? 'text-emerald-500' : 'text-warning'}`}>
+                  {feishuWebhookUrl ? '已配置' : '未配置'}
+                </span>
+                <ChevronDown className={`h-3 w-3 text-muted transition-transform ${channelOpen ? 'rotate-180' : ''}`} />
+              </div>
+
+              {/* 飞书地址配置 — 行内展开 */}
+              {channelOpen && (
+                <div className="border-t border-border/60 bg-base/30 p-3">
+                  <label className="block space-y-1.5">
+                    <span className="text-[11px] text-muted">Webhook 地址</span>
+                    <input
+                      value={feishuDraft}
+                      onChange={e => setFeishuDraft(e.target.value)}
+                      placeholder={FEISHU_PREFIX + 'xxxxxxxx'}
+                      className="h-9 w-full rounded-btn border border-border bg-base px-3 text-xs font-mono text-foreground focus:outline-none focus:border-accent/50"
+                    />
+                  </label>
+
+                  <label className="block mt-2 space-y-1.5">
+                    <span className="text-[11px] text-muted">签名密钥 (可选 · 启用签名校验时填)</span>
+                    <input
+                      type="password"
+                      value={feishuSecretDraft}
+                      onChange={e => setFeishuSecretDraft(e.target.value)}
+                      placeholder="机器人未启用签名校验则留空"
+                      className="h-9 w-full rounded-btn border border-border bg-base px-3 text-xs font-mono text-foreground focus:outline-none focus:border-accent/50"
+                    />
+                  </label>
+
+                  {feishuError && (
+                    <div className="mt-2 text-[11px] text-danger">{feishuError}</div>
+                  )}
+
+                  <div className="mt-2 flex items-center gap-2">
+                    <button
+                      onClick={submitFeishu}
+                      disabled={saveFeishuWebhook.isPending || (feishuDraft.trim() === feishuWebhookUrl && feishuSecretDraft.trim() === feishuWebhookSecret)}
+                      className="px-3 py-1.5 rounded-btn bg-accent text-base text-xs font-medium disabled:opacity-50 cursor-pointer hover:bg-accent/90 transition-colors"
+                    >
+                      {saveFeishuWebhook.isPending ? '保存中…' : '保存'}
+                    </button>
+                    {feishuWebhookUrl && (
+                      <span className="text-[10px] text-emerald-500">● 已配置</span>
+                    )}
+                  </div>
+
+                  <details className="mt-3 text-[10px] text-muted">
+                    <summary className="cursor-pointer hover:text-secondary">如何获取飞书 Webhook 地址?</summary>
+                    <ol className="mt-1.5 space-y-1 pl-4 list-decimal leading-relaxed">
+                      <li>打开飞书,进入目标群聊 → 群设置 → <b>群机器人</b></li>
+                      <li>点击「添加机器人」→ 选择「<b>自定义机器人</b>」</li>
+                      <li>填写机器人名称后添加,复制生成的 Webhook 地址</li>
+                      <li>安全设置若启用了「<b>签名校验</b>」,把密钥一并复制填到「签名密钥」框</li>
+                      <li>粘贴到上方输入框并保存</li>
+                    </ol>
+                    <p className="mt-1.5 pl-4 text-muted/70">
+                      📖 官方文档:
+                      <a href="https://open.feishu.cn/document/client-docs/bot-v3/add-custom-bot?lang=zh-CN" target="_blank" rel="noreferrer" className="text-accent hover:text-accent/80">
+                        自定义机器人使用指南 ↗
+                      </a>
+                    </p>
+                  </details>
+                </div>
+              )}
+            </div>
+
+            {/* 占位渠道 — 不可点 */}
+            {[
+              { name: '微信', hint: '公众号/企业微信', status: '开发中' },
+              { name: 'QMT', hint: '量化交易终端', status: '待定' },
+              { name: 'ptrade', hint: '量化交易终端', status: '待定' },
+            ].map(ch => (
+              <div
+                key={ch.name}
+                className="flex items-center gap-2 rounded-btn border border-border/40 bg-base/20 px-2.5 py-2 opacity-60"
+              >
+                <input type="checkbox" disabled className="h-3 w-3 accent-accent" />
+                <span className="text-[11px] text-secondary">{ch.name}</span>
+                <span className="text-[9px] text-muted">{ch.hint}</span>
+                <span className="ml-auto rounded bg-muted/10 px-1 py-px text-[9px] text-muted">{ch.status}</span>
+              </div>
+            ))}
+          </div>
+        </Card>
       </div>
     </div>
   )

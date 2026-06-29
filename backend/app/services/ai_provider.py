@@ -353,10 +353,9 @@ def _resolve_windows_desktop_codex() -> str | None:
 def _prepare_codex_home(target: Path) -> None:
     """Create an isolated CODEX_HOME that reuses auth but not fragile config."""
     source = _codex_home()
-    for filename in ("auth.json", ".env"):
-        src = source / filename
-        if src.exists():
-            shutil.copy2(src, target / filename)
+    auth_file = source / "auth.json"
+    if auth_file.exists():
+        shutil.copy2(auth_file, target / "auth.json")
     _write_compatible_codex_config(target / "config.toml")
 
 

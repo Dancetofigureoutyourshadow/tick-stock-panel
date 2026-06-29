@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Activity, ArrowDownRight, ArrowUpRight, BarChart3, BellRing, Database, Flame, Gauge, LineChart, Loader2, Play, RefreshCw, Sparkles, Target, Timer } from 'lucide-react'
+import { Activity, ArrowDownRight, ArrowUpRight, BarChart3, BellRing, Database, Flame, Gauge, Info, LineChart, Loader2, Play, RefreshCw, Sparkles, Target, Timer } from 'lucide-react'
 import { DatePicker } from '@/components/DatePicker'
 import { api, type MarketSnapshotRow, type OverviewDimensionRankItem, type OverviewMarket, type AlertEvent } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
@@ -583,6 +583,9 @@ export function Dashboard() {
   const latestDate = dataStatus.data?.enriched?.latest_date ?? null
   const currentDate = selectedDate ?? data.as_of ?? ''
   const quoteRunning = (!selectedDate || selectedDate === latestDate) && data.quote_status?.running
+  // 实时模式: none / watchlist / full_market。
+  // watchlist (Free 档) 仅自选 ≤5 只实时, 看板呈现的大盘数据实为盘后快照, 需提示避免误读。
+  const quoteMode = data.quote_status?.mode as ('none' | 'watchlist' | 'full_market') | undefined
 
   return (
     <div className="min-h-full bg-base p-3">
@@ -649,6 +652,18 @@ export function Dashboard() {
           </button>
         </div>
       </div>
+
+      {/* Free 档提示: 大盘看板为盘后数据, 仅自选股实时。避免用户误读为全市场实时。 */}
+      {quoteMode === 'watchlist' && (
+        <div className="mb-3 flex items-start gap-2 rounded-card border border-amber-500/30 bg-amber-500/8 px-3 py-2 text-[11px] leading-relaxed">
+          <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-500" />
+          <div className="min-w-0 flex-1 text-secondary">
+            当前为「自选实时」模式,看板展示的大盘数据为<strong className="text-foreground">盘后快照</strong>(最新有数据日),并非盘中实时;
+            仅自选股({data.quote_status?.watchlist_symbol_count ?? 0} 只)支持实时监控。
+            <span className="ml-1 text-accent">全市场实时需 Starter+</span>
+          </div>
+        </div>
+      )}
 
       <div className="mb-3 grid grid-cols-4 gap-2">
         {data.indices.map(item => <IndexTicker key={item.symbol} item={item} />)}

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import gc
+from collections.abc import Callable
 from datetime import datetime, timedelta
 
 import polars as pl
@@ -194,11 +195,13 @@ def sync_and_persist_index_daily(
     start_date: datetime | None = None,
     end_date: datetime | None = None,
     symbols_override: list[str] | None = None,
+    on_chunk_done: Callable[[int, int], None] | None = None,
 ) -> int:
     """同步指数/ETF 日K到独立 parquet,并计算 enriched。
 
     symbols_override 非空时,只拉这些代码(跳过 instruments 表),用于自定义范围。
     否则取 index_instruments 表全量(指数+ETF 合并存储)。
+    on_chunk_done(current, total) 每个批次完成后回调。
     """
     if not capset.has(Cap.KLINE_DAILY_BATCH):
         return 0
@@ -248,6 +251,8 @@ def sync_and_persist_index_daily(
         repo.append_index_enriched(enriched)
         total_rows += raw.height
         logger.info("index/etf daily synced: %d/%d chunks, +%d rows", i + 1, len(chunks), raw.height)
+        if on_chunk_done:
+            on_chunk_done(i + 1, len(chunks))
         del raw, enriched
         gc.collect()
     repo.refresh_index_views()
@@ -292,8 +297,11 @@ def sync_and_persist_etf_daily(
     start_date: datetime | None = None,
     end_date: datetime | None = None,
     symbols_override: list[str] | None = None,
+    on_chunk_done: Callable[[int, int], None] | None = None,
 ) -> int:
-    """同步 ETF 日K到独立 kline_etf_* parquet,并计算 ETF enriched。"""
+    """同步 ETF 日K到独立 kline_etf_* parquet,并计算 ETF enriched。
+    on_chunk_done(current, total) 每个批次完成后回调。
+    """
     if not capset.has(Cap.KLINE_DAILY_BATCH):
         return 0
 
@@ -344,6 +352,8 @@ def sync_and_persist_etf_daily(
         repo.append_etf_enriched(enriched)
         total_rows += raw.height
         logger.info("etf daily synced: %d/%d chunks, +%d rows", i + 1, len(chunks), raw.height)
+        if on_chunk_done:
+            on_chunk_done(i + 1, len(chunks))
         del raw, enriched
         gc.collect()
     repo.refresh_index_views()

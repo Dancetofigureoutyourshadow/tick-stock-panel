@@ -7,7 +7,7 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
-from app.indicators.pipeline import compute_enriched_single
+from app.indicators.pipeline import compute_enriched, compute_enriched_single
 from app.services import kline_sync
 
 logger = logging.getLogger(__name__)
@@ -126,7 +126,16 @@ def get_daily(
             raise HTTPException(status_code=502, detail=f"TickFlow fetch failed: {e}") from e
         if raw.is_empty():
             return {"symbol": symbol, "name": stock_name, "stock_info": stock_info, "rows": []}
-        enriched = compute_enriched_single(raw)
+        # 拉除权因子做前复权 (Starter+ 有权限), 否则空 df → compute_enriched 退回未复权
+        factors = pl.DataFrame()
+        capset = getattr(request.app.state, "capabilities", None)
+        try:
+            from app.tickflow.capabilities import Cap
+            if capset and capset.has(Cap.ADJ_FACTOR):
+                factors = kline_sync.fetch_adj_factor_single(symbol)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("单股除权因子拉取失败 %s: %s", symbol, e)
+        enriched = compute_enriched(raw, factors=factors)
         rows = enriched.tail(days).to_dicts()
         # 即使 live 模式也尝试追加实时蜡烛
         rows = _maybe_inject_live_candle(request, symbol, rows)

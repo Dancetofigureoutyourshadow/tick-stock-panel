@@ -181,7 +181,7 @@ export function Financials() {
         }
       />
 
-      <div className="w-full max-w-none px-8 py-6 space-y-6">
+      <div className="px-8 py-6 space-y-6 max-w-7xl">
         {syncing && (
           <div className="flex items-center gap-2 rounded-card border border-accent/30 bg-accent/[0.06] px-3 py-2 text-xs text-accent">
             <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" />

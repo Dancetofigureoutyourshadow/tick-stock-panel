@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
@@ -42,7 +42,7 @@ import { ExtendHistoryPanel } from '@/components/data/ExtendHistoryPanel'
 import { EnrichedRebuildPanel } from '@/components/data/EnrichedRebuildPanel'
 import { MinuteSyncConfig } from '@/components/data/MinuteSyncConfig'
 import { PipelineScopeConfig } from '@/components/data/PipelineScopeConfig'
-import { PageSettingsModal, getCardVisibility } from '@/components/data/PageSettingsModal'
+import { PageSettingsModal, getCardVisibility, getCardOrder, type CardKey } from '@/components/data/PageSettingsModal'
 import { QuoteConfigCard } from '@/components/data/QuoteConfigCard'
 import { EnrichedSchemaModal } from '@/components/data/SchemaModal'
 import { Skeleton } from '@/components/data/Skeleton'
@@ -316,6 +316,171 @@ export function Data() {
       topRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
     })
   }, [])
+
+  // 按卡片 key 渲染对应的 StatCard (顺序由 getCardOrder 控制, 显隐由 cardVisible 控制)
+  const renderStatCard = (k: CardKey): React.ReactNode => {
+    switch (k) {
+      case 'instruments':
+        return (
+          <StatCard
+            title="个股维表"
+            hint="盘前同步 · 元数据快照"
+            stats={s?.instruments}
+            isInstrument
+            loading={isLoading}
+            active={activeCard === 'instruments'}
+            done={doneStages.has('instruments')}
+            skipped={skippedCards.has('instruments')}
+            stagePct={activeCard === 'instruments' ? (job.data?.stage_pct ?? 0) : 0}
+            tierKey="instruments"
+            capLimits={caps.data?.capabilities}
+            tierLabel={caps.data?.label}
+            auto
+            onShowFields={() => setSchemaTable('instruments')}
+          />
+        )
+      case 'daily':
+        return (
+          <StatCard
+            title="日 K"
+            hint="增量同步 · 全市场"
+            stats={s?.daily}
+            loading={isLoading}
+            active={activeCard === 'daily'}
+            done={doneStages.has('daily')}
+            skipped={skippedCards.has('daily')}
+            stagePct={activeCard === 'daily' ? (job.data?.stage_pct ?? 0) : 0}
+            tierKey="daily"
+            capLimits={caps.data?.capabilities}
+            tierLabel={caps.data?.label}
+            auto
+            onShowFields={() => setSchemaTable('daily')}
+            onSettings={hasData ? () => setOpenSettings(v => v === 'daily' ? null : 'daily') : undefined}
+            settingsOpen={openSettings === 'daily'}
+          />
+        )
+      case 'adj_factor':
+        return (
+          <StatCard
+            title="除权因子"
+            hint="增量同步 · 全市场"
+            stats={s?.adj_factor}
+            loading={isLoading}
+            active={activeCard === 'adj_factor'}
+            done={doneStages.has('adj_factor')}
+            skipped={skippedCards.has('adj_factor')}
+            stagePct={activeCard === 'adj_factor' ? (job.data?.stage_pct ?? 0) : 0}
+            tierKey="adj_factor"
+            capLimits={caps.data?.capabilities}
+            tierLabel={caps.data?.label}
+            auto
+            onShowFields={() => setSchemaTable('adj_factor')}
+          />
+        )
+      case 'enriched':
+        return (
+          <StatCard
+            title="Enriched"
+            hint="复权 OHLCV + 技术指标"
+            stats={s?.enriched}
+            loading={isLoading}
+            active={activeCard === 'enriched'}
+            done={doneStages.has('enriched')}
+            skipped={skippedCards.has('enriched')}
+            stagePct={activeCard === 'enriched' ? (job.data?.stage_pct ?? 0) : 0}
+            tierKey="enriched"
+            capLimits={caps.data?.capabilities}
+            tierLabel={caps.data?.label}
+            auto
+            subLabel="字段 · 指标 · 信号"
+            localBadgeSuffix={`${prefs.data?.enriched_batch_size ?? 1000}只/批`}
+            onShowFields={() => setSchemaTable('enriched')}
+            onSettings={hasData ? () => setOpenSettings(v => v === 'enriched' ? null : 'enriched') : undefined}
+            settingsOpen={openSettings === 'enriched'}
+          />
+        )
+      case 'index':
+        return (
+          <StatCard
+            title="指数"
+            hint="CN_Index · 独立存储"
+            stats={indexOverviewStats}
+            loading={isLoading}
+            active={activeCard === 'index_daily'}
+            done={doneStages.has('index_daily')}
+            skipped={skippedCards.has('index_daily')}
+            stagePct={activeCard === 'index_daily' ? (job.data?.stage_pct ?? 0) : 0}
+            tierKey="daily"
+            capLimits={caps.data?.capabilities}
+            tierLabel={caps.data?.label}
+            auto={indexAuto}
+            subLabel={indexOverviewLabel}
+            fieldTabs={[
+              { label: '维表', table: 'index_instruments' },
+              { label: '日K', table: 'index_daily' },
+              { label: '指标', table: 'index_enriched' },
+            ] as FieldTab[]}
+            onShowFields={(t) => setSchemaTable(t ?? 'index_daily')}
+            onSettings={hasData ? () => setOpenSettings(v => v === 'index' ? null : 'index') : undefined}
+            settingsOpen={openSettings === 'index'}
+          />
+        )
+      case 'etf':
+        return (
+          <StatCard
+            title="ETF"
+            hint="场内基金 · 独立存储"
+            stats={etfOverviewStats}
+            loading={isLoading}
+            tierKey="etf"
+            capLimits={caps.data?.capabilities}
+            tierLabel={caps.data?.label}
+            auto={etfAuto}
+            subLabel="维表 · 日K · 指标"
+            fieldTabs={[
+              { label: '维表', table: 'etf_instruments' },
+              { label: '日K', table: 'etf_daily' },
+              { label: '指标', table: 'etf_enriched' },
+            ] as FieldTab[]}
+            onShowFields={(t) => setSchemaTable(t ?? 'etf_daily')}
+          />
+        )
+      case 'minute':
+        return (
+          <StatCard
+            title="分钟 K"
+            hint="全市场同步"
+            stats={s?.minute}
+            loading={isLoading}
+            active={activeCard === 'minute'}
+            done={doneStages.has('minute')}
+            skipped={skippedCards.has('minute')}
+            stagePct={activeCard === 'minute' ? (job.data?.stage_pct ?? 0) : 0}
+            tierKey="minute"
+            capLimits={caps.data?.capabilities}
+            tierLabel={caps.data?.label}
+            auto={minuteAuto}
+            onShowFields={() => setSchemaTable('minute')}
+            onSettings={hasData ? () => setOpenSettings(v => v === 'minute' ? null : 'minute') : undefined}
+            settingsOpen={openSettings === 'minute'}
+          />
+        )
+      case 'financials':
+        return (
+          <StatCard
+            title="财务数据"
+            hint="利润表 / 资负表 / 现金流 / 指标"
+            stats={s?.financials ? { rows: s.financials.rows } : null}
+            loading={isLoading}
+            tierKey="financials"
+            capLimits={caps.data?.capabilities}
+            tierLabel={caps.data?.label}
+          />
+        )
+      default:
+        return null
+    }
+  }
 
   return (
     <>
@@ -620,155 +785,9 @@ export function Data() {
         <div>
           <SectionTitle icon={Database}>数据画像</SectionTitle>
           <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4 items-stretch">
-            {cardVisible.instruments && (
-            <StatCard
-              title="个股维表"
-              hint="盘前同步 · 元数据快照"
-              stats={s?.instruments}
-              isInstrument
-              loading={isLoading}
-              active={activeCard === 'instruments'}
-              done={doneStages.has('instruments')}
-              skipped={skippedCards.has('instruments')}
-              stagePct={activeCard === 'instruments' ? (job.data?.stage_pct ?? 0) : 0}
-              tierKey="instruments"
-              capLimits={caps.data?.capabilities}
-              tierLabel={caps.data?.label}
-              auto
-              onShowFields={() => setSchemaTable('instruments')}
-            />
-            )}
-            {cardVisible.daily && (
-            <StatCard
-              title="日 K"
-              hint="增量同步 · 全市场"
-              stats={s?.daily}
-              loading={isLoading}
-              active={activeCard === 'daily'}
-              done={doneStages.has('daily')}
-              skipped={skippedCards.has('daily')}
-              stagePct={activeCard === 'daily' ? (job.data?.stage_pct ?? 0) : 0}
-              tierKey="daily"
-              capLimits={caps.data?.capabilities}
-              tierLabel={caps.data?.label}
-              auto
-              onShowFields={() => setSchemaTable('daily')}
-               onSettings={hasData ? () => setOpenSettings(v => v === 'daily' ? null : 'daily') : undefined}
-              settingsOpen={openSettings === 'daily'}
-            />
-            )}
-            {cardVisible.enriched && (
-            <StatCard
-              title="Enriched"
-              hint="复权 OHLCV + 技术指标"
-              stats={s?.enriched}
-              loading={isLoading}
-              active={activeCard === 'enriched'}
-              done={doneStages.has('enriched')}
-              skipped={skippedCards.has('enriched')}
-              stagePct={activeCard === 'enriched' ? (job.data?.stage_pct ?? 0) : 0}
-              tierKey="enriched"
-              capLimits={caps.data?.capabilities}
-              tierLabel={caps.data?.label}
-              auto
-  subLabel="字段 · 指标 · 信号"
-  localBadgeSuffix={`${prefs.data?.enriched_batch_size ?? 1000}只/批`}
-  onShowFields={() => setSchemaTable('enriched')}
-               onSettings={hasData ? () => setOpenSettings(v => v === 'enriched' ? null : 'enriched') : undefined}
-              settingsOpen={openSettings === 'enriched'}
-            />
-            )}
-            {cardVisible.index && (
-            <StatCard
-              title="指数"
-              hint="CN_Index · 独立存储"
-              stats={indexOverviewStats}
-              loading={isLoading}
-              active={activeCard === 'index_daily'}
-              done={doneStages.has('index_daily')}
-              skipped={skippedCards.has('index_daily')}
-              stagePct={activeCard === 'index_daily' ? (job.data?.stage_pct ?? 0) : 0}
-              tierKey="daily"
-              capLimits={caps.data?.capabilities}
-              tierLabel={caps.data?.label}
-              auto={indexAuto}
-              subLabel={indexOverviewLabel}
-              fieldTabs={[
-                { label: '维表', table: 'index_instruments' },
-                { label: '日K', table: 'index_daily' },
-                { label: '指标', table: 'index_enriched' },
-              ] as FieldTab[]}
-              onShowFields={(t) => setSchemaTable(t ?? 'index_daily')}
-              onSettings={hasData ? () => setOpenSettings(v => v === 'index' ? null : 'index') : undefined}
-              settingsOpen={openSettings === 'index'}
-            />
-            )}
-            {cardVisible.etf && (
-            <StatCard
-              title="ETF"
-              hint="场内基金 · 独立存储"
-              stats={etfOverviewStats}
-              loading={isLoading}
-              tierKey="etf"
-              capLimits={caps.data?.capabilities}
-              tierLabel={caps.data?.label}
-              auto={etfAuto}
-              subLabel="维表 · 日K · 指标"
-              fieldTabs={[
-                { label: '维表', table: 'etf_instruments' },
-                { label: '日K', table: 'etf_daily' },
-                { label: '指标', table: 'etf_enriched' },
-              ] as FieldTab[]}
-              onShowFields={(t) => setSchemaTable(t ?? 'etf_daily')}
-            />
-            )}
-            {cardVisible.adj_factor && (
-            <StatCard
-              title="除权因子"
-              hint="增量同步 · 全市场"
-              stats={s?.adj_factor}
-              loading={isLoading}
-              active={activeCard === 'adj_factor'}
-              done={doneStages.has('adj_factor')}
-              skipped={skippedCards.has('adj_factor')}
-              stagePct={activeCard === 'adj_factor' ? (job.data?.stage_pct ?? 0) : 0}
-              tierKey="adj_factor"
-              capLimits={caps.data?.capabilities}
-              tierLabel={caps.data?.label}
-              auto
-              onShowFields={() => setSchemaTable('adj_factor')}
-            />
-            )}
-            {cardVisible.minute && (
-            <StatCard
-              title="分钟 K"
-              hint="全市场同步"
-              stats={s?.minute}
-              loading={isLoading}
-              active={activeCard === 'minute'}
-              done={doneStages.has('minute')}
-              skipped={skippedCards.has('minute')}
-              stagePct={activeCard === 'minute' ? (job.data?.stage_pct ?? 0) : 0}
-              tierKey="minute"
-              capLimits={caps.data?.capabilities}
-              tierLabel={caps.data?.label}
-              auto={minuteAuto}
-              onShowFields={() => setSchemaTable('minute')}
-               onSettings={hasData ? () => setOpenSettings(v => v === 'minute' ? null : 'minute') : undefined}
-              settingsOpen={openSettings === 'minute'}
-            />
-            )}
-            {cardVisible.financials && (
-            <StatCard
-              title="财务数据"
-              hint="利润表 / 资负表 / 现金流 / 指标"
-              stats={s?.financials ? { rows: s.financials.rows } : null}
-              loading={isLoading}
-              tierKey="financials"
-              capLimits={caps.data?.capabilities}
-              tierLabel={caps.data?.label}
-            />
-            )}
+            {getCardOrder().filter(k => cardVisible[k]).map((k: CardKey) => (
+              <Fragment key={k}>{renderStatCard(k)}</Fragment>
+            ))}
             {(extConfigs.data?.items ?? []).map((ext) => (
               <ExtDataStatCard
                 key={ext.id}

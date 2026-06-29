@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect, useRef, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { motion } from 'framer-motion'
-import { Play, FlaskConical, Clock, Loader2, Square, Search, Plus, X, SlidersHorizontal, BarChart3, Gauge, Zap } from 'lucide-react'
+import { Play, FlaskConical, Clock, Loader2, Square, Search, Plus, X, SlidersHorizontal, BarChart3, Gauge, Zap, ListPlus } from 'lucide-react'
 import {
   api,
   type StrategyBacktestResult,
@@ -154,6 +154,7 @@ const buildDefaultOverrides = (detail: StrategyDetail) => ({
   exit_signals: detail.exit_signals.map(toSignalId),
   scoring: { ...detail.scoring },
   stop_loss: detail.stop_loss,
+  take_profit: detail.take_profit,
   trailing_stop: detail.trailing_stop,
   trailing_take_profit_activate: detail.trailing_take_profit_activate,
   trailing_take_profit_drawdown: detail.trailing_take_profit_drawdown,
@@ -192,6 +193,7 @@ function ExitReasonBadge({ reason }: { reason: string }) {
   const config: Record<string, { label: string; cls: string }> = {
     signal: { label: '信号', cls: 'bg-accent/10 text-accent border-accent/30' },
     stop_loss: { label: '止损', cls: 'bg-red-500/10 text-red-400 border-red-500/30' },
+    take_profit: { label: '止盈', cls: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' },
     trailing_stop: { label: '移损', cls: 'bg-orange-500/10 text-orange-400 border-orange-500/30' },
     trailing_take_profit: { label: '回撤止盈', cls: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' },
     max_hold: { label: '超期', cls: 'bg-amber-400/10 text-amber-400 border-amber-400/30' },
@@ -517,6 +519,12 @@ function StockPoolPicker({ value, onChange }: { value: string; onChange: (value:
     staleTime: 30_000,
   })
   const results = search.data?.results ?? []
+  // 自选列表 — 供「从自选导入」一键填入回测范围
+  const watchlist = useQuery({
+    queryKey: QK.watchlist,
+    queryFn: () => api.watchlistList(),
+    staleTime: 30_000,
+  })
 
   useEffect(() => {
     if (results.length === 0) return
@@ -545,43 +553,84 @@ function StockPoolPicker({ value, onChange }: { value: string; onChange: (value:
     setOpen(false)
   }
   const removeSymbol = (symbol: string) => setSymbols(symbols.filter(s => s !== symbol))
+  // 一键导入自选: 合并去重, 顺带回填股票名
+  const importFromWatchlist = () => {
+    const entries = watchlist.data?.symbols ?? []
+    if (entries.length === 0) return
+    setSymbolNames(prev => {
+      const next = { ...prev }
+      entries.forEach(e => { if (e.name) next[e.symbol] = e.name })
+      return next
+    })
+    setSymbols([...symbols, ...entries.map(e => e.symbol)])
+  }
+  const watchlistCount = watchlist.data?.symbols?.length ?? 0
 
   return (
     <div className="space-y-2" ref={ref}>
-      <div className="relative">
-        <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted" />
-        <input
-          type="text"
-          value={query}
-          onChange={e => { setQuery(e.target.value); setOpen(true) }}
-          onFocus={() => { if (query.trim()) setOpen(true) }}
-          placeholder="搜索股票名称/代码添加股票池"
-          className="w-full rounded-input border border-border bg-surface py-1.5 pl-8 pr-2.5 text-xs focus:border-accent focus:outline-none"
-        />
-        {open && results.length > 0 && (
-          <div className="absolute left-0 right-0 top-full z-50 mt-1 max-h-56 overflow-y-auto rounded-card border border-border bg-base shadow-xl">
-            {results.map(r => {
-              const added = symbols.includes(r.symbol)
-              return (
-                <button
-                  key={r.symbol}
-                  type="button"
-                  disabled={added}
-                  onClick={() => addSymbol(r.symbol, r.name)}
-                  className={`flex w-full items-center gap-2 px-3 py-2 text-left text-xs transition-colors ${added ? 'cursor-default text-muted' : 'text-foreground hover:bg-elevated'}`}
-                >
-                  <span className="w-[78px] shrink-0 font-mono">{r.symbol}</span>
-                  <span className="min-w-0 flex-1 truncate text-secondary">{r.name}</span>
-                  <Plus className={`h-3.5 w-3.5 ${added ? 'opacity-30' : 'text-accent'}`} />
-                </button>
-              )
-            })}
-          </div>
-        )}
+      <div className="flex items-center gap-2">
+        <div className="relative flex-1">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted" />
+          <input
+            type="text"
+            value={query}
+            onChange={e => { setQuery(e.target.value); setOpen(true) }}
+            onFocus={() => { if (query.trim()) setOpen(true) }}
+            placeholder="搜索股票名称/代码添加股票池"
+            className="w-full rounded-input border border-border bg-surface py-1.5 pl-8 pr-2.5 text-xs focus:border-accent focus:outline-none"
+          />
+          {open && results.length > 0 && (
+            <div className="absolute left-0 right-0 top-full z-50 mt-1 max-h-56 overflow-y-auto rounded-card border border-border bg-base shadow-xl">
+              {results.map(r => {
+                const added = symbols.includes(r.symbol)
+                return (
+                  <button
+                    key={r.symbol}
+                    type="button"
+                    disabled={added}
+                    onClick={() => addSymbol(r.symbol, r.name)}
+                    className={`flex w-full items-center gap-2 px-3 py-2 text-left text-xs transition-colors ${added ? 'cursor-default text-muted' : 'text-foreground hover:bg-elevated'}`}
+                  >
+                    <span className="w-[78px] shrink-0 font-mono">{r.symbol}</span>
+                    <span className="min-w-0 flex-1 truncate text-secondary">{r.name}</span>
+                    <Plus className={`h-3.5 w-3.5 ${added ? 'opacity-30' : 'text-accent'}`} />
+                  </button>
+                )
+              })}
+            </div>
+          )}
+        </div>
+        {/* 操作按钮 — 紧贴输入框右侧 */}
+        <div className="flex shrink-0 items-center gap-1.5">
+          {/* 当前范围 — 有范围显示个数, 无范围显示全市场 */}
+          <span className={`whitespace-nowrap text-[11px] font-medium ${symbols.length === 0 ? 'text-amber-400' : 'text-accent'}`}>
+            {symbols.length === 0 ? '全市场' : `共 ${symbols.length} 只`}
+          </span>
+          <button
+            type="button"
+            onClick={importFromWatchlist}
+            disabled={watchlist.isLoading || watchlistCount === 0}
+            className="inline-flex items-center gap-1 whitespace-nowrap rounded-input border border-border bg-surface px-2 py-1.5 text-[11px] text-secondary transition-colors hover:border-accent/50 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+            title="把自选列表的个股加入回测范围"
+          >
+            <ListPlus className="h-3 w-3" />
+            {watchlist.isLoading ? '加载…' : watchlistCount === 0 ? '自选空' : `导入自选(${watchlistCount})`}
+          </button>
+          <button
+            type="button"
+            onClick={() => setSymbols([])}
+            disabled={symbols.length === 0}
+            className="inline-flex items-center gap-1 whitespace-nowrap rounded-input border border-border bg-surface px-2 py-1.5 text-[11px] text-secondary transition-colors hover:border-danger/50 hover:text-danger disabled:cursor-not-allowed disabled:opacity-50"
+            title="清空回测范围"
+          >
+            <X className="h-3 w-3" />
+            清空
+          </button>
+        </div>
       </div>
       <div className="flex flex-wrap gap-1.5">
         {symbols.length === 0 ? (
-          <span className="text-[11px] font-medium text-amber-400">留空 = 全市场，由基础过滤和策略条件筛选。</span>
+          <span className="text-[11px] text-muted">默认全市场回测，由基础过滤和策略条件筛选。</span>
         ) : symbols.map(symbol => {
           const name = symbolNames[symbol]
           return (
@@ -899,6 +948,7 @@ export function StrategyBacktest() {
   const scoreMinValue = overrides.score_min == null ? '' : String(overrides.score_min)
   const scoreMaxValue = overrides.score_max == null ? '' : String(overrides.score_max)
   const stopLossPct = overrides.stop_loss == null ? '' : String(Math.abs(Number(overrides.stop_loss)) * 100)
+  const takeProfitPct = overrides.take_profit == null ? '' : String(Math.abs(Number(overrides.take_profit)) * 100)
   const trailingStopPct = overrides.trailing_stop == null ? '' : String(Math.abs(Number(overrides.trailing_stop)) * 100)
   const trailingTakeProfitActivatePct = overrides.trailing_take_profit_activate == null ? '' : String(Math.abs(Number(overrides.trailing_take_profit_activate)) * 100)
   const trailingTakeProfitDrawdownPct = overrides.trailing_take_profit_drawdown == null ? '' : String(Math.abs(Number(overrides.trailing_take_profit_drawdown)) * 100)
@@ -942,6 +992,7 @@ export function StrategyBacktest() {
         `卖点 ${exitSignals.length}`,
         scoreFilterSummary,
         stopLossPct !== '' ? `止损 ${stopLossPct}%` : '止损未设',
+        takeProfitPct !== '' ? `止盈 ${takeProfitPct}%` : '止盈未设',
         trailingStopPct !== '' ? `移损 ${trailingStopPct}%` : '移损未设',
         trailingTakeProfitActivatePct !== '' && trailingTakeProfitDrawdownPct !== '' ? `回撤 ${trailingTakeProfitActivatePct}-${trailingTakeProfitDrawdownPct}点` : '回撤未设',
         maxHoldDaysValue !== '' ? `最长 ${maxHoldDaysValue}天` : '不限持仓',
@@ -1481,6 +1532,9 @@ export function StrategyBacktest() {
                 {result.strategy_info.stop_loss != null && (
                   <span className="text-[10px] text-secondary">止损 {fmtPct(result.strategy_info.stop_loss)}</span>
                 )}
+                {result.strategy_info.take_profit != null && (
+                  <span className="text-[10px] text-secondary">止盈 {fmtPct(result.strategy_info.take_profit)}</span>
+                )}
                 {result.strategy_info.trailing_stop != null && (
                   <span className="text-[10px] text-secondary">移损 {fmtPct(result.strategy_info.trailing_stop)}</span>
                 )}
@@ -1869,7 +1923,7 @@ export function StrategyBacktest() {
               </div>
 
               {settingsTab === 'range' && (
-                <ConfigSection title="回测范围" hint={<span className="font-medium text-amber-400">留空 = 全市场</span>}>
+                <ConfigSection title="回测范围">
                   <StockPoolPicker value={symbols} onChange={setSymbols} />
                   <div className="text-[11px] leading-5 text-muted">默认全市场回测，由基础过滤、策略条件和买卖触发器筛选；需要单票调试或自选池回测时再限定股票池。</div>
                 </ConfigSection>
@@ -2087,6 +2141,21 @@ export function StrategyBacktest() {
                         onChange={e => {
                           const n = numOrNull(e.target.value)
                           updateOverride('stop_loss', n == null ? null : -Math.abs(n) / 100)
+                        }}
+                        className={INPUT_CLS}
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="mb-1 block text-[11px] text-secondary">止盈(%)</span>
+                      <input
+                        type="number"
+                        value={takeProfitPct}
+                        min={1}
+                        max={500}
+                        step={0.5}
+                        onChange={e => {
+                          const n = numOrNull(e.target.value)
+                          updateOverride('take_profit', n == null ? null : clamp(Math.abs(n), 1, 500) / 100)
                         }}
                         className={INPUT_CLS}
                       />

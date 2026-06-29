@@ -103,6 +103,11 @@ class StrategyBacktestService:
         entry_signals = self._effective_signals(overrides, "entry_signals", s.entry_signals)
         exit_signals = self._effective_signals(overrides, "exit_signals", s.exit_signals)
         stop_loss = self._override_value(overrides, "stop_loss", s.stop_loss)
+        take_profit = self._normalize_pct(
+            self._override_value(overrides, "take_profit", getattr(s, "take_profit", None)),
+            0.01,
+            5.0,
+        )
         trailing_stop = self._normalize_pct(
             self._override_value(overrides, "trailing_stop", getattr(s, "trailing_stop", None)),
             0.005,
@@ -195,6 +200,7 @@ class StrategyBacktestService:
             fees_pct=config.fees_pct,
             slippage_bps=config.slippage_bps,
             stop_loss_pct=stop_loss,
+            take_profit_pct=take_profit,
             trailing_stop_pct=trailing_stop,
             trailing_take_profit_activate_pct=trailing_take_profit_activate,
             trailing_take_profit_drawdown_pct=trailing_take_profit_drawdown,
@@ -246,6 +252,7 @@ class StrategyBacktestService:
             "entry_signals": entry_signals,
             "exit_signals": exit_signals,
             "stop_loss": stop_loss,
+            "take_profit": take_profit,
             "trailing_stop": trailing_stop,
             "trailing_take_profit_activate": trailing_take_profit_activate,
             "trailing_take_profit_drawdown": trailing_take_profit_drawdown,

@@ -84,6 +84,7 @@ def _strategy_detail(s: StrategyDef, overrides: dict | None = None) -> dict:
         "entry_signals": s.entry_signals,
         "exit_signals": s.exit_signals,
         "stop_loss": overrides.get("stop_loss", s.stop_loss) if overrides else s.stop_loss,
+        "take_profit": getattr(s, "take_profit", None),
         "trailing_stop": getattr(s, "trailing_stop", None),
         "trailing_take_profit_activate": getattr(s, "trailing_take_profit_activate", None),
         "trailing_take_profit_drawdown": getattr(s, "trailing_take_profit_drawdown", None),

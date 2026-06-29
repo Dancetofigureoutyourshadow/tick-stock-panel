@@ -635,6 +635,8 @@ class QuoteService:
                 return
 
             all_alerts: list[dict] = []
+            rule_events: list[dict] = []
+            engine = None
 
             # 通用监控规则评估 (统一引擎: signal/price/market/strategy)
             if self._app_state:
@@ -675,6 +677,8 @@ class QuoteService:
                                 "change_pct": ev["change_pct"],
                                 "signals": ev["signals"],
                                 "severity": ev.get("severity", "info"),
+                                "conditions": ev.get("conditions") or [],
+                                "logic": ev.get("logic") or "and",
                             })
 
             # Free 自选实时只刷新少量标的, 不写全市场策略缓存。
@@ -696,8 +700,58 @@ class QuoteService:
                 # cooldown 去重已在 MonitorRuleEngine 做过, 这里只负责转发。
                 self._maybe_send_system_notifications(all_alerts)
 
+            # Webhook 推送 (飞书等外部 IM, 由规则 webhook_enabled 开关控制)。
+            # 紧随系统通知, 同样静默降级不阻断主流程。
+            if rule_events:
+                self._maybe_send_webhook(rule_events, engine)
+
         except Exception as e:  # noqa: BLE001
             logger.warning("监控评估失败: %s", e)
+
+    def _maybe_send_webhook(self, rule_events: list[dict], engine) -> None:
+        """把告警通过 Webhook 推送到外部 IM (由规则 webhook_enabled 开关控制)。
+
+        - 全局飞书 URL 未配置: 直接返回
+        - 仅推送 webhook_enabled=True 的规则触发的告警
+        - 失败静默, 不阻断主流程
+        - 去重: 复用 MonitorRuleEngine 的 cooldown, 此处不重复去重
+
+        注意: 用 rule_events (含 rule_id) 而非重建后的 all_alerts,
+        以便反查引擎规则判断是否启用推送。
+        """
+        try:
+            from app.services import preferences
+            from app.services import webhook_adapter
+
+            url = preferences.get_feishu_webhook_url()
+            if not url:
+                return
+            secret = preferences.get_feishu_webhook_secret()
+
+            # 反查规则, 过滤出启用推送的事件
+            source_labels = {
+                "strategy": "策略", "signal": "信号",
+                "price": "价格", "market": "异动",
+            }
+            rules = engine.rules if engine is not None else {}
+            pushed = 0
+            for ev in rule_events:
+                rule = rules.get(ev.get("rule_id"))
+                if not rule or not rule.get("webhook_enabled"):
+                    continue
+                source = ev.get("source", "")
+                source_label = source_labels.get(source, source or "通知")
+                symbol = ev.get("symbol") or ""
+                name = ev.get("name") or ""
+                message = ev.get("message") or ""
+                title = f"TickFlow · {source_label}"
+                body = f"{symbol} {name} {message}".strip() if symbol else (message or name)
+                if webhook_adapter.send_feishu(url, title, body, secret):
+                    pushed += 1
+            if pushed:
+                logger.info("飞书 Webhook 推送: %d 条", pushed)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("Webhook 推送异常 (不影响告警主流程): %s", e)
 
     def _maybe_send_system_notifications(self, all_alerts: list[dict]) -> None:
         """把告警转发到操作系统通知中心 (由 preferences 开关控制)。

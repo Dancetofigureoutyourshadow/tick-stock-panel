@@ -241,8 +241,14 @@ def _normalize_adj_factor(raw) -> pl.DataFrame:
         df = pl.from_pandas(raw.reset_index() if hasattr(raw, "reset_index") else raw)
     if df.is_empty():
         return df
-    rename_map = {"timestamp": "trade_date", "date": "trade_date", "adj_factor": "ex_factor"}
-    df = df.rename({k: v for k, v in rename_map.items() if k in df.columns})
+    # rename: timestamp/date → trade_date, adj_factor → ex_factor
+    # 注意: 新版 SDK 可能同时返回 timestamp 和 trade_date (或 adj_factor 和 ex_factor),
+    # 直接 rename 会产生重复列报错。仅当目标列不存在时才 rename。
+    rename_map: dict[str, str] = {}
+    for src, dst in (("timestamp", "trade_date"), ("date", "trade_date"), ("adj_factor", "ex_factor")):
+        if src in df.columns and dst not in df.columns:
+            rename_map[src] = dst
+    df = df.rename(rename_map)
     if "trade_date" in df.columns:
         if df.schema["trade_date"] in {pl.Int64, pl.Int32, pl.UInt64, pl.UInt32, pl.Float64, pl.Float32}:
             df = df.with_columns(
@@ -479,6 +485,21 @@ def fetch_minute_single(symbol: str, trade_date: date) -> pl.DataFrame:
     if raw is not None and len(raw) > 0:
         return _normalize_minute(raw)
     return pl.DataFrame()
+
+
+def fetch_adj_factor_single(symbol: str) -> pl.DataFrame:
+    """从 TickFlow 实时拉取单股除权因子(不写入本地), 用于单股 K 线即时前复权。
+
+    返回结构: symbol, trade_date, ex_factor (空 DataFrame 表示无除权事件或拉取失败)。
+    与 _apply_adj_factor / compute_enriched 的 factors 参数格式一致。
+    """
+    tf = get_client()
+    try:
+        raw = tf.klines.ex_factors([symbol], as_dataframe=True, show_progress=False)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("fetch_adj_factor_single(%s) failed: %s", symbol, e)
+        return pl.DataFrame()
+    return _normalize_adj_factor(raw)
 
 
 def _latest_minute_datetime(repo: KlineRepository) -> datetime | None:

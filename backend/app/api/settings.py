@@ -307,6 +307,9 @@ def get_preferences() -> dict:
         "strategy_monitor_enabled": preferences.get_strategy_monitor_enabled(),
         "strategy_monitor_ids": preferences.get_strategy_monitor_ids(),
         "system_notify_enabled": preferences.get_system_notify_enabled(),
+        "feishu_webhook_url": preferences.get_feishu_webhook_url(),
+        "feishu_webhook_secret": preferences.get_feishu_webhook_secret(),
+        "webhook_enabled_default": preferences.get_webhook_enabled_default(),
         "sidebar_index_symbols": preferences.get_sidebar_index_symbols(),
         "nav_order": preferences.get_nav_order(),
         "nav_hidden": preferences.get_nav_hidden(),
@@ -552,6 +555,50 @@ def update_system_notify(req: SystemNotifyPrefsIn) -> dict:
     from app.services import preferences
     saved = preferences.set_system_notify_enabled(req.enabled)
     return {"system_notify_enabled": saved}
+
+
+class FeishuWebhookPrefsIn(BaseModel):
+    url: str
+    secret: str = ""
+
+
+@router.put("/preferences/feishu-webhook")
+def update_feishu_webhook(req: FeishuWebhookPrefsIn) -> dict:
+    """飞书 Webhook 地址 + 签名密钥 — 全局一处配置, 所有启用推送的监控规则共用。
+
+    - url: 传入空串表示清空配置; 非空则需为合法的飞书自定义机器人地址。
+    - secret: 机器人启用了「签名校验」时填密钥, 留空表示不验签。
+    """
+    from app.services import preferences
+    from app.services import webhook_adapter
+
+    url = (req.url or "").strip()
+    if url and not webhook_adapter.is_valid_feishu_url(url):
+        raise HTTPException(
+            status_code=400,
+            detail="Webhook 地址非法, 需为飞书自定义机器人地址 "
+                   "(https://open.feishu.cn/open-apis/bot/v2/hook/...)",
+        )
+    saved_url = preferences.set_feishu_webhook_url(url)
+    saved_secret = preferences.set_feishu_webhook_secret((req.secret or "").strip())
+    return {"feishu_webhook_url": saved_url, "feishu_webhook_secret": saved_secret}
+
+
+class WebhookEnabledDefaultIn(BaseModel):
+    enabled: bool
+
+
+@router.put("/preferences/webhook-enabled-default")
+def update_webhook_enabled_default(req: WebhookEnabledDefaultIn) -> dict:
+    """新建监控规则时是否默认勾选「飞书推送」。
+
+    数据模型当前只有飞书一个可用渠道 (QMT/ptrade 待定),故此处仅一个布尔。
+    单条规则仍可在规则编辑页独立修改此项。
+    """
+    from app.services import preferences
+
+    saved = preferences.set_webhook_enabled_default(req.enabled)
+    return {"webhook_enabled_default": saved}
 
 
 @router.put("/preferences/quote-interval")

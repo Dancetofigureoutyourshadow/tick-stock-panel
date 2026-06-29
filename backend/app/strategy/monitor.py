@@ -410,6 +410,10 @@ class MonitorRuleEngine:
                 "change_pct": pct,
                 "signals": hit_sigs,
                 "severity": severity,
+                # 触发条件快照 (signal/price/market 类型): 用于触发记录展示
+                # 「命中了什么条件」。strategy 类型靠策略选股池 diff, 不写条件。
+                "conditions": list(rule.get("conditions", [])) if rtype != "strategy" else [],
+                "logic": rule.get("logic", "and") if rtype != "strategy" else "and",
             }
             events.append(ev)
             if self._alert_handler:

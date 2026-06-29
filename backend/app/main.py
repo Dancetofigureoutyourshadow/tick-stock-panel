@@ -34,6 +34,14 @@ async def lifespan(app: FastAPI):
         __version__, tf_client.current_mode(),
     )
 
+    # 首次启动: 若配置了 AUTH_PASSWORD 环境变量且未设过密码, 用它初始化。
+    # 公网部署免 SSH 端口转发; 已设过密码则不覆盖 (改密码走 UI)。
+    try:
+        from app.services import auth as auth_service
+        auth_service.bootstrap_from_env()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("auth bootstrap failed: %s", e)
+
     # 数据层
     store = DataStore()
     repo = KlineRepository(store)

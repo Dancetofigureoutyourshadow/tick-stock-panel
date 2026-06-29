@@ -108,6 +108,34 @@ def set_password(password: str) -> None:
     logger.info("access password set")
 
 
+def bootstrap_from_env() -> bool:
+    """首次初始化: 若环境变量 AUTH_PASSWORD 已配置且尚未设过密码, 则用它设密码。
+
+    公网服务器部署场景: 避免每次都要 SSH 端口转发才能设首个密码。
+    明文密码只在内存/配置中, 经 set_password() 哈希后写入 auth.json (chmod 0600)。
+    一旦设置成功, 后续重启不再覆盖 (用户改密码走 UI, 不受环境变量影响)。
+
+    Returns:
+        True 表示本次用环境变量初始化了密码; False 表示无需初始化。
+    """
+    from app.config import settings
+
+    pwd = (settings.auth_password or "").strip()
+    if not pwd:
+        return False
+    if is_configured():
+        # 已设过密码, 不覆盖 (避免环境变量反复重置用户在 UI 改的密码)
+        return False
+    try:
+        set_password(pwd)
+        logger.info("access password bootstrapped from AUTH_PASSWORD env (one-time)")
+        return True
+    except ValueError as e:
+        # 密码不合规 (< 6 位), 记日志但不阻断启动
+        logger.warning("AUTH_PASSWORD bootstrap skipped: %s", e)
+        return False
+
+
 def verify_and_create_session(password: str) -> str | None:
     """验证密码, 成功则创建会话并返回 token, 失败返回 None。"""
     d = _load()

@@ -4,7 +4,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { RadioTower, Plus, Trash2, Settings2, Zap, Bell, ListChecks, BellRing, TrendingUp, TrendingDown, Flame } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
 import { EmptyState } from '@/components/EmptyState'
-import { api, type MonitorRule, type AlertEvent } from '@/lib/api'
+import { api, type MonitorRule, type AlertEvent, type MonitorCondition } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
 import { fmtPrice, fmtPct } from '@/lib/format'
 import { cn } from '@/lib/cn'
@@ -367,9 +367,33 @@ function AlertsList({ alertsQuery, confirmClear, setConfirmClear, total, enterTs
                           })()}
                         </span>
                       </div>
-                      <div className="mt-1 flex items-center gap-2">
-                        <span className="text-[11px]">{renderMessage(ev.source, ev.message)}</span>
-                      </div>
+                      {/* 详情行: 命中条件 (signal/price/market) + 当前价 / 或默认消息 */}
+                      {(ev.conditions && ev.conditions.length > 0) ? (
+                        <div className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px]">
+                          <span className="text-muted">命中</span>
+                          {ev.conditions.map((c: MonitorCondition, ci: number) => (
+                            <span key={ci} className="inline-flex items-center gap-0.5">
+                              {ci > 0 && <span className="text-secondary">{ev.logic === 'or' ? '或' : '且'}</span>}
+                              {c.op === 'truth' ? (
+                                <span className="text-accent/80">{cnSignal(c.field)}</span>
+                              ) : (
+                                <span className="text-foreground/80 font-mono">{cnSignal(c.field)}{c.op}{c.value}</span>
+                              )}
+                            </span>
+                          ))}
+                          {ev.price != null && (
+                            <>
+                              <span className="text-muted">·</span>
+                              <span className="text-muted">现价</span>
+                              <span className="font-mono text-foreground/90">{fmtPrice(ev.price)}</span>
+                            </>
+                          )}
+                        </div>
+                      ) : (
+                        <div className="mt-1 flex items-center gap-2">
+                          <span className="text-[11px]">{renderMessage(ev.source, ev.message)}</span>
+                        </div>
+                      )}
                       {ev.signals && ev.signals.length > 0 && (
                         <div className="mt-1.5 flex flex-wrap gap-1">
                           {ev.signals.map((s: string, j: number) => (

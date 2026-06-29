@@ -200,13 +200,18 @@ class FinancialScheduler:
         # 手动同步(run_now)是否正在进行。前端据此显示"同步中"并防重复点击。
         self._is_syncing = False
 
-    def start(self, data_dir: Path, capset: CapabilitySet) -> None:
+    def start(self, data_dir: Path, capset: CapabilitySet, *, auto_schedule: bool = False) -> None:
+        """初始化调度器，并按需启动周期同步后台任务。
+
+        auto_schedule=False (默认): 仅初始化 (设置数据目录/能力 + 恢复 last_sync),
+            供 /api/financials/sync/* 手动同步使用, 不启动自动调度。
+        auto_schedule=True: 额外启动每周一次的 metrics 自动同步 (启动后 60s 首跑)。
+        """
         if not capset.has(Cap.FINANCIAL):
             logger.info("FinancialScheduler skipped: no FINANCIAL capability")
             return
         self._data_dir = data_dir
         self._capset = capset
-        self._running = True
         # 从持久化恢复上次同步时间: 重启后前端仍能显示真实最后同步时间,而非"尚未同步"
         try:
             from app.services import preferences
@@ -227,8 +232,15 @@ class FinancialScheduler:
                 logger.info("FinancialScheduler restored last_sync: %s", list(self._last_sync.keys()))
         except Exception as e:  # noqa: BLE001
             logger.warning("restore financial_sync_times failed: %s", e)
+
+        if not auto_schedule:
+            # 仅初始化 (手动同步用), 不启动周期任务。
+            logger.info("FinancialScheduler initialized (auto-schedule disabled; manual sync only)")
+            return
+
+        self._running = True
         self._task = asyncio.create_task(self._run_loop())
-        logger.info("FinancialScheduler started")
+        logger.info("FinancialScheduler started (auto-schedule enabled)")
 
     def _record_sync(self, table: str) -> None:
         """记录一张表的同步完成时间: 更新内存 + 持久化到 preferences.json。

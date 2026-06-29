@@ -110,6 +110,9 @@ def run_now(
     today = _date.today()
     today_exists = latest_daily and latest_daily >= today
     new_daily_days = 0
+    # 日K范围拉取的起点(分支3补缺口/分支4首次); 实时增量/跳过时为 None。
+    # 供 Step 1.5 除权因子回溯范围对齐: 范围拉取→用日K范围, 非范围→最近N天兜底。
+    daily_range_start: _date | None = None
 
     # A 股日K拉取开关(默认开);关闭时跳过日K同步,保留已有数据
     pull_a_share = _prefs.get_pipeline_pull_a_share()
@@ -130,6 +133,7 @@ def run_now(
         # 也覆盖"今天已有数据但无实时行情权限(free/none)"的降级场景:
         #   此时 start_date = latest_daily = today,batch 刷新当天日K。
         start_date = latest_daily
+        daily_range_start = start_date
         emit("sync_daily", 12, f"获取日K [{start_date} ~ {today}]…")
         logger.info("sync_daily: [%s ~ %s] %s", start_date, today,
                     "refresh today" if today_exists else "gap fill")
@@ -150,6 +154,7 @@ def run_now(
     else:
         # 首次：无任何数据 → batch 拉 1 年
         start_date = today - _td(days=365)
+        daily_range_start = start_date
         emit("sync_daily", 12, f"获取日K [{start_date} ~ {today}]…")
         logger.info("sync_daily: [%s ~ %s] initial fetch", start_date, today)
 
@@ -167,36 +172,22 @@ def run_now(
         logger.info("sync_daily: [%s ~ %s] done", start_date, today)
     _invalidate("daily")
 
-    # Step 1.5: 增量同步除权因子 — 从已有数据最新日期的下一天开始获取
+    # Step 1.5: 同步除权因子 — 范围与日K拉取方式对齐
+    #   日K范围拉取(补缺口/首次) → 除权用日K范围 [daily_range_start, now]
+    #     首次会覆盖整个日K区间内的历史除权事件; 补缺口天然只增量(起点=latest_daily≈昨天)
+    #   日K实时增量/跳过(分支2/分支1) → 除权兜底拉最近 30 天, 补可能遗漏的新除权
+    #     (这两类分支不拉历史日K, 除权不能用日K范围, 只能兜底最近几日)
     written_adj = 0
     affected_symbols: list[str] = []
     if capset.has(Cap.ADJ_FACTOR):
         from datetime import datetime, timedelta
         adj_end = datetime.now()
-        # 从已有除权因子数据的最新日期开始获取，避免重复拉取
-        adj_factor_path = repo.store.data_dir / "adj_factor" / "all.parquet"
-        fallback_start = adj_end - timedelta(days=30)
-        if adj_factor_path.exists():
-            try:
-                from datetime import date as date_cls
-                max_date = pl.scan_parquet(adj_factor_path).select(
-                    pl.col("trade_date").max()
-                ).collect().item()
-                if max_date is not None:
-                    # trade_date 可能是 date / datetime / string 类型
-                    if isinstance(max_date, str):
-                        td = date_cls.fromisoformat(max_date)
-                    elif isinstance(max_date, datetime):
-                        td = max_date.date()
-                    else:
-                        td = max_date
-                    adj_start = datetime.combine(td, datetime.min.time())
-                else:
-                    adj_start = fallback_start
-            except Exception:
-                adj_start = fallback_start
+        if daily_range_start is not None:
+            adj_start = datetime.combine(daily_range_start, datetime.min.time())
         else:
-            adj_start = fallback_start
+            # 日K实时增量/跳过时, 除权兜底拉最近 N 天, 覆盖周末/长假/停机期间的新除权事件。
+            # 15 天: 覆盖春节/国庆最长约10天长假 + 故障恢复缓冲; sync_adj_factor 内部 merge+unique 幂等, 多拉无副作用。
+            adj_start = adj_end - timedelta(days=15)
         adj_start_str = adj_start.strftime("%Y-%m-%d")
         adj_end_str = adj_end.strftime("%Y-%m-%d")
         emit("sync_adj", 50, f"获取除权因子 [{adj_start_str} ~ {adj_end_str}]…")
@@ -312,33 +303,46 @@ def run_now(
         if pull_etf:
             _types.append("ETF")
         emit("sync_index", 88, f"同步{'+'.join(_types)}日K…")
+        # 子阶段进度分配: 88.0(开始) → 89.0(完成), 指数占前半, ETF 占后半
         try:
             if pull_index:
+                emit("sync_index", 88, "同步指数维表…")
                 index_count = index_sync.sync_index_instruments(repo, pull_index=True, pull_etf=False)
+                emit("sync_index", 88, f"指数维表完成,{index_count} 只")
                 index_dir = repo.store.data_dir / "kline_index_enriched"
                 index_dates = sorted(
                     d.name[5:] for d in index_dir.glob("date=*")
                     if d.is_dir() and d.name.startswith("date=")
                 ) if index_dir.exists() else []
                 index_start = _date.fromisoformat(index_dates[-1]) if index_dates else today - _td(days=365)
+
+                def _index_chunk(cur: int, tot: int) -> None:
+                    emit("sync_index", 88, f"指数日K批次 {cur}/{tot}",
+                         stage_pct=int(100 * cur / tot) if tot else 100, skip_log=cur < tot)
+
                 written_index_daily = index_sync.sync_and_persist_index_daily(
                     repo,
                     capset,
                     start_date=_dt.combine(index_start, _dt.min.time()),
                     end_date=_dt.combine(today, _dt.min.time()),
+                    on_chunk_done=_index_chunk,
                 )
+                emit("sync_index", 88, f"指数日K完成,{written_index_daily} 行")
                 _invalidate("index_instruments")
                 _invalidate("index_daily")
                 _invalidate("index_enriched")
 
             if pull_etf:
+                emit("sync_index", 88, "同步 ETF 维表…")
                 etf_count = index_sync.sync_etf_instruments(repo)
+                emit("sync_index", 88, f"ETF 维表完成,{etf_count} 只")
                 etf_symbols: list[str] = []
                 etf_inst = repo.get_etf_instruments()
                 if not etf_inst.is_empty() and "symbol" in etf_inst.columns:
                     etf_symbols = sorted(set(etf_inst["symbol"].to_list()))
                 if etf_symbols and capset.has(Cap.ADJ_FACTOR):
                     try:
+                        emit("sync_index", 88, "同步 ETF 除权因子…")
                         from datetime import datetime, timedelta
                         adj_end = datetime.now()
                         adj_path = repo.store.data_dir / "adj_factor_etf" / "all.parquet"
@@ -361,6 +365,7 @@ def run_now(
                             end_time=adj_end,
                         )
                         etf_adj_symbols = len(affected_etfs)
+                        emit("sync_index", 88, f"ETF 除权因子完成,{etf_adj_symbols} 只")
                     except Exception as e:  # noqa: BLE001
                         logger.warning("ETF adj_factor skipped: %s", e)
                 etf_dir = repo.store.data_dir / "kline_etf_enriched"
@@ -369,12 +374,19 @@ def run_now(
                     if d.is_dir() and d.name.startswith("date=")
                 ) if etf_dir.exists() else []
                 etf_start = _date.fromisoformat(etf_dates[-1]) if etf_dates else today - _td(days=365)
+
+                def _etf_chunk(cur: int, tot: int) -> None:
+                    emit("sync_index", 88, f"ETF 日K批次 {cur}/{tot}",
+                         stage_pct=int(100 * cur / tot) if tot else 100, skip_log=cur < tot)
+
                 written_etf_daily = index_sync.sync_and_persist_etf_daily(
                     repo,
                     capset,
                     start_date=_dt.combine(etf_start, _dt.min.time()),
                     end_date=_dt.combine(today, _dt.min.time()),
+                    on_chunk_done=_etf_chunk,
                 )
+                emit("sync_index", 88, f"ETF 日K完成,{written_etf_daily} 行")
                 _invalidate("etf_instruments")
                 _invalidate("etf_daily")
 

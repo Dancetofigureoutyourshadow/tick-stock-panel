@@ -29,6 +29,21 @@ router = APIRouter(prefix="/api/settings", tags=["settings"])
 DEFAULT_PAID_ENDPOINT = "https://api.tickflow.org"
 
 
+def _sync_financial_scheduler_caps(app_state, capset) -> None:
+    """把重新探测出的能力同步给财务调度器。
+
+    app.state.capabilities 在此已更新, 但 FinancialScheduler 在启动时捕获的是旧引用,
+    需显式刷新, 否则用户升级到 Expert 后点「全部同步」仍会因调度器读旧 capset 而被拒。
+    """
+    fs = getattr(app_state, "financial_scheduler", None)
+    if fs is None:
+        return
+    try:
+        fs.update_capabilities(capset)
+    except Exception as e:  # noqa: BLE001
+        logging.getLogger(__name__).warning("update financial_scheduler capabilities failed: %s", e)
+
+
 class TickflowKeyIn(BaseModel):
     api_key: str
 
@@ -124,6 +139,7 @@ def save_tickflow_key(req: TickflowKeyIn, request: Request) -> dict:
     # 立即重新探测(此时 client 已按档位判定,但首次探测必然走付费端点验证)
     capset = detect_capabilities(force=True)
     request.app.state.capabilities = capset
+    _sync_financial_scheduler_caps(request.app.state, capset)
 
     # ===== 2) 判定为无效 key(连单只日K都拿不到)→ 不存,清除 =====
     if is_invalid_key() or base_tier_name() == "none":
@@ -132,6 +148,7 @@ def save_tickflow_key(req: TickflowKeyIn, request: Request) -> dict:
         tf_client.reset_clients()
         capset = detect_capabilities(force=True)
         request.app.state.capabilities = capset
+        _sync_financial_scheduler_caps(request.app.state, capset)
         return {
             "ok": False,
             "reason": "invalid",
@@ -188,6 +205,7 @@ def clear_tickflow_key(request: Request) -> dict:
 
     capset = detect_capabilities(force=True)
     request.app.state.capabilities = capset
+    _sync_financial_scheduler_caps(request.app.state, capset)
 
     return {
         "ok": True,

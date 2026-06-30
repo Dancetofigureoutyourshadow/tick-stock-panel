@@ -38,8 +38,10 @@ def get_settings() -> dict:
     """返回当前配置概况(Key 脱敏)。"""
     from app.config import settings
     from app.services import preferences
+    from app.services.ai_provider import ai_configured, current_ai_model, current_codex_command
 
     key = secrets_store.get_tickflow_key()
+    ai_provider = secrets_store.get_ai_config("ai_provider", settings.ai_provider)
     return {
         "mode": tf_client.current_mode(),
         "tickflow_api_key_masked": secrets_store.mask(key),
@@ -52,11 +54,13 @@ def get_settings() -> dict:
         # 首次使用引导
         "onboarding_completed": preferences.get_onboarding_completed(),
         # AI 配置
-        "ai_provider": secrets_store.get_ai_config("ai_provider", settings.ai_provider),
+        "ai_provider": ai_provider,
         "ai_base_url": secrets_store.get_ai_config("ai_base_url", settings.ai_base_url),
         "ai_api_key_masked": secrets_store.mask(secrets_store.get_ai_key()),
         "has_ai_key": bool(secrets_store.get_ai_key()),
-        "ai_model": secrets_store.get_ai_config("ai_model", settings.ai_model),
+        "ai_configured": ai_configured(ai_provider),
+        "ai_model": current_ai_model(),
+        "ai_codex_command": current_codex_command(),
         "ai_user_agent": secrets_store.get_ai_config("ai_user_agent", settings.ai_user_agent),
     }
 
@@ -211,6 +215,7 @@ class AiSettingsIn(BaseModel):
     base_url: str = ""
     api_key: str | None = None
     model: str = ""
+    codex_command: str = ""
     user_agent: str = ""
 
 
@@ -218,6 +223,7 @@ class AiSettingsIn(BaseModel):
 def save_ai_settings(req: AiSettingsIn) -> dict:
     """保存 AI 配置（全部持久化到 secrets.json）"""
     from app.config import settings
+    from app.services.ai_provider import ai_configured, current_ai_model, current_ai_provider, current_codex_command, normalize_codex_command
 
     updates: dict = {}
     if req.provider:
@@ -233,9 +239,19 @@ def save_ai_settings(req: AiSettingsIn) -> dict:
         else:
             secrets_store.clear("ai_api_key")
             settings.ai_api_key = ""
-    if req.model:
+    if req.provider == "codex_cli" and not req.model:
+        secrets_store.clear("ai_model")
+        settings.ai_model = ""
+    elif req.model:
         updates["ai_model"] = req.model
         settings.ai_model = req.model
+    if req.provider == "codex_cli":
+        try:
+            codex_command = normalize_codex_command(req.codex_command)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        updates["ai_codex_command"] = codex_command
+        settings.ai_codex_command = codex_command
     # user_agent 允许清空(回到默认浏览器 UA),故无条件持久化
     updates["ai_user_agent"] = req.user_agent
     settings.ai_user_agent = req.user_agent
@@ -243,7 +259,14 @@ def save_ai_settings(req: AiSettingsIn) -> dict:
     if updates:
         secrets_store.save(updates)
 
-    return {"ok": True}
+    provider = current_ai_provider()
+    return {
+        "ok": True,
+        "ai_provider": provider,
+        "ai_model": current_ai_model(),
+        "ai_codex_command": current_codex_command(),
+        "ai_configured": ai_configured(provider),
+    }
 
 
 @router.delete("/ai")
@@ -254,12 +277,13 @@ def clear_ai_settings() -> dict:
     """
     from app.config import settings
 
-    secrets_store.clear("ai_provider", "ai_base_url", "ai_api_key", "ai_model")
+    secrets_store.clear("ai_provider", "ai_base_url", "ai_api_key", "ai_model", "ai_codex_command")
     # 同步重置运行时内存(provider 回默认值,其余置空)
     settings.ai_provider = "openai_compat"
     settings.ai_base_url = ""
     settings.ai_api_key = ""
     settings.ai_model = ""
+    settings.ai_codex_command = "codex"
 
     return {"ok": True}
 

@@ -75,44 +75,18 @@ class AIStrategyGenerator:
         return {"code": code, "meta": meta, "valid": True, "error": None}
 
     async def _call_llm(self, user_prompt: str, guide: str) -> str:
-        """调用 OpenAI 兼容 API（流式，避免 CDN 长连接超时）"""
-        from openai import AsyncOpenAI
-        from app import secrets_store
+        """Call the configured AI provider and return generated strategy code."""
+        from app.services.ai_provider import generate_ai_text
 
-        ai_key = secrets_store.get_ai_key()
-        if not ai_key:
-            raise RuntimeError("AI API Key 未配置，请在设置页面配置")
-
-        # User-Agent: 默认浏览器标识,绕过 Cloudflare 等 CDN/WAF 的 Bot 拦截(Issue #8)。
-        # 用户可在 AI 设置页自定义。
-        from app.config import settings
-        user_agent = secrets_store.get_ai_config("ai_user_agent", "") or settings.ai_user_agent
-
-        client = AsyncOpenAI(
-            api_key=ai_key,
-            base_url=secrets_store.get_ai_config("ai_base_url", "https://api.alysc.top"),
-            timeout=180.0,
-            max_retries=2,
-            default_headers={"User-Agent": user_agent},
-        )
-        # 使用流式请求：CDN 收到首个 token 后会持续转发，不会因等待超时
-        stream = await client.chat.completions.create(
-            model=secrets_store.get_ai_config("ai_model", "gpt-5.5"),
-            messages=[
+        content = await generate_ai_text(
+            [
                 {"role": "system", "content": _SYSTEM_PREFIX + guide},
                 {"role": "user", "content": user_prompt},
             ],
             temperature=0.3,
             max_tokens=3000,
-            stream=True,
         )
-        chunks: list[str] = []
-        async for chunk in stream:
-            delta = chunk.choices[0].delta if chunk.choices else None
-            if delta and delta.content:
-                chunks.append(delta.content)
-        content = "".join(chunks).strip()
-        # 提取代码块
+        # Extract fenced code if the model wrapped the answer in Markdown.
         if "```python" in content:
             content = content.split("```python", 1)[1].split("```", 1)[0].strip()
         elif "```" in content:

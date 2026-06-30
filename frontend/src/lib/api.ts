@@ -638,7 +638,9 @@ export interface SettingsState {
   ai_base_url: string
   ai_api_key_masked: string
   has_ai_key: boolean
+  ai_configured?: boolean
   ai_model: string
+  ai_codex_command?: string
   ai_user_agent: string
 }
 
@@ -749,8 +751,8 @@ export const api = {
     ),
 
   /** 保存 AI 配置 */
-  saveAiSettings: (ai: { provider?: string; base_url?: string; api_key?: string; model?: string; user_agent?: string }) =>
-    request<{ ok: boolean }>('/api/settings/ai', {
+  saveAiSettings: (ai: { provider?: string; base_url?: string; api_key?: string; model?: string; codex_command?: string; user_agent?: string }) =>
+    request<{ ok: boolean; ai_provider?: string; ai_model?: string; ai_codex_command?: string; ai_configured?: boolean }>('/api/settings/ai', {
       method: 'POST',
       body: JSON.stringify(ai),
     }),
@@ -1635,11 +1637,11 @@ export const api = {
 
   /** 检查 AI 配置状态 */
   strategyAiStatus: () =>
-    request<{ configured: boolean; has_key: boolean; has_model: boolean }>('/api/strategies/ai/status'),
+    request<{ configured: boolean; has_key: boolean; has_model: boolean; provider?: string }>('/api/strategies/ai/status'),
 
   /** 测试 AI 连通性 */
   strategyAiTest: () =>
-    request<{ ok: boolean; error?: string; model?: string; usage?: { prompt: number; completion: number } }>(
+    request<{ ok: boolean; error?: string; model?: string; response?: string; usage?: { prompt: number; completion: number } }>(
       '/api/strategies/ai/test',
       { method: 'POST' },
     ),

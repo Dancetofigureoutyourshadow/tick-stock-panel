@@ -287,47 +287,19 @@ async def analyze_stock_stream(
 
     # 5+6. 构建提示词 + 流式调用 LLM(整体 try-except,任何异常都 yield error,避免前端卡死)
     try:
-        from openai import AsyncOpenAI
-        from app import secrets_store
-        from app.config import settings
+        from app.services.ai_provider import stream_ai_text
 
-        # 5. 构建提示词
         kline_tail = _clean_rows(df, _KLINE_KEEP_COLS)
         user_prompt = _build_user_prompt(kline_tail, fins, levels, close, symbol, focus)
-
-        # 6. 流式调用 LLM
-        ai_key = secrets_store.get_ai_key()
-        if not ai_key:
-            yield json.dumps({
-                "type": "error",
-                "message": "AI API Key 未配置,请在「设置 → AI」中配置",
-            }, ensure_ascii=False)
-            return
-
-        user_agent = secrets_store.get_ai_config("ai_user_agent", "") or settings.ai_user_agent
-        client = AsyncOpenAI(
-            api_key=ai_key,
-            base_url=secrets_store.get_ai_config("ai_base_url", "https://api.alysc.top"),
-            timeout=180.0,
-            max_retries=2,
-            default_headers={"User-Agent": user_agent},
-        )
-
-        stream = await client.chat.completions.create(
-            model=secrets_store.get_ai_config("ai_model", "gpt-5.5"),
-            messages=[
+        async for delta in stream_ai_text(
+            [
                 {"role": "system", "content": _SYSTEM_PROMPT},
                 {"role": "user", "content": user_prompt},
             ],
             temperature=0.5,
             max_tokens=4500,
-            stream=True,
-        )
-
-        async for chunk in stream:
-            delta = chunk.choices[0].delta if chunk.choices else None
-            if delta and delta.content:
-                yield json.dumps({"type": "delta", "content": delta.content}, ensure_ascii=False)
+        ):
+            yield json.dumps({"type": "delta", "content": delta}, ensure_ascii=False)
 
     except Exception as e:  # noqa: BLE001
         logger.exception("AI stock analysis failed for %s: %s", symbol, e)

@@ -286,12 +286,19 @@ class BuildRequest(BaseModel):
 
 @router.get("/ai/status")
 def ai_status(request: Request):
-    """检查 AI 配置状态"""
-    from app.config import settings
+    """Check whether the selected AI provider is configured."""
     from app import secrets_store
+    from app.services.ai_provider import ai_configured, current_ai_model, current_ai_provider
+
     has_key = bool(secrets_store.get_ai_key())
-    has_model = bool(settings.ai_model)
-    return {"configured": has_key and has_model, "has_key": has_key, "has_model": has_model}
+    model = current_ai_model()
+    provider = current_ai_provider()
+    return {
+        "configured": ai_configured(provider) and bool(model or provider == "codex_cli"),
+        "has_key": has_key,
+        "has_model": bool(model),
+        "provider": provider,
+    }
 
 
 @router.get("/{strategy_id}/source")
@@ -315,29 +322,17 @@ def get_strategy_source(strategy_id: str, request: Request):
 
 @router.post("/ai/test")
 async def ai_test(request: Request):
-    """测试 AI 连通性 — 发送简单请求验证 Key 和模型"""
-    from app.config import settings
-    from app import secrets_store
-    from openai import AsyncOpenAI
-
-    ai_key = secrets_store.get_ai_key()
-    if not ai_key:
-        return {"ok": False, "error": "未配置 API Key"}
+    """Send a small prompt through the selected AI provider."""
+    from app.services.ai_provider import current_ai_model, current_ai_provider, generate_ai_text
 
     try:
-        # User-Agent: 默认浏览器标识,绕过 Cloudflare 等 CDN/WAF 的 Bot 拦截(Issue #8)。
-        client = AsyncOpenAI(
-            api_key=ai_key,
-            base_url=settings.ai_base_url,
-            default_headers={"User-Agent": settings.ai_user_agent or "Mozilla/5.0"},
-        )
-        resp = await client.chat.completions.create(
-            model=settings.ai_model,
-            messages=[{"role": "user", "content": "回复 OK"}],
-            max_tokens=5,
+        text = await generate_ai_text(
+            [{"role": "user", "content": "Reply exactly: OK"}],
+            temperature=0,
+            max_tokens=8,
             timeout=15,
         )
-        return {"ok": True, "model": resp.model, "usage": {"prompt": resp.usage.prompt_tokens, "completion": resp.usage.completion_tokens} if resp.usage else None}
+        return {"ok": True, "model": current_ai_model() or current_ai_provider(), "response": text[:80]}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 

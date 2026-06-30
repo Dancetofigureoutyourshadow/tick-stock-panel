@@ -424,7 +424,7 @@ export function Screener() {
     },
   })
 
-  // 开发用：重载策略文件
+  // 重新运行策略：重载策略文件 + 重跑全部策略，刷新符合条件的个股
   const reloadStrategies = useMutation({
     mutationFn: api.strategyReload,
     onSuccess: () => {
@@ -496,11 +496,11 @@ export function Screener() {
         subtitle="基于本地 enriched 表 · 毫秒级 SQL"
         right={
           <div className="flex items-center gap-2">
-            {/* 开发用：重载策略 */}
+            {/* 重新运行策略：重载策略文件并重跑全部策略，更新命中个股 */}
             <button
               onClick={() => reloadStrategies.mutate()}
               disabled={reloadStrategies.isPending}
-              title="重载策略文件（开发用）"
+              title="重新加载策略并运行全部策略，刷新当前符合条件的个股"
               className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-btn
                 border border-border bg-surface text-xs font-medium text-muted
                 hover:text-accent hover:border-accent/50 transition-colors cursor-pointer

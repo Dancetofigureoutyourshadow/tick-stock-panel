@@ -12,7 +12,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   BookOpenCheck, RefreshCw, Sparkles, Trash2, History, ChevronRight, AlertTriangle,
-  Database, Wand2, Copy, Download, Clock, X,
+  Database, Wand2, Copy, Download, Clock, X, Check,
 } from 'lucide-react'
 
 import { api, type OverviewMarket, type AiReviewReport } from '@/lib/api'
@@ -102,7 +102,11 @@ export function Review() {
   // ===== 定时复盘 =====
   const [showSchedule, setShowSchedule] = useState(false)
   const prefs = usePreferences()
-  const reviewSched = prefs.data?.review_schedule ?? { enabled: false, hour: 16, minute: 30 }
+  const reviewSched = prefs.data?.review_schedule ?? { enabled: false, hour: 15, minute: 10 }
+  const feishuConfigured = !!(prefs.data?.feishu_webhook_url)
+  // 推送渠道是独立的顶层偏好(多选), 与定时 / 实时行情无关, 常驻可单独设置
+  // []=不推送, ['feishu']=飞书(微信开发中, 仅占位)
+  const reviewPushChannels = prefs.data?.review_push_channels ?? []
   // 弹窗内的本地草稿: 开关和时间都在本地改, 点「保存」才真正提交(避免开关一拨就关弹窗)
   const [draft, setDraft] = useState(reviewSched)
   const openSchedule = useCallback(() => {
@@ -119,6 +123,21 @@ export function Review() {
     },
     onError: () => { /* request() 已 toast */ },
   })
+  // 推送渠道(多选): 独立常驻, 即时生效(勾选渠道即开关, 改了立刻提交)
+  const pushMut = useMutation({
+    mutationFn: (channels: string[]) => api.updateReviewPush(channels),
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({ queryKey: QK.preferences })
+      toast(vars.length === 0 ? '已关闭复盘推送' : '已更新复盘推送渠道', 'success')
+    },
+    onError: () => { /* request() 已 toast */ },
+  })
+  const togglePushChannel = useCallback((ch: string) => {
+    const next = reviewPushChannels.includes(ch)
+      ? reviewPushChannels.filter(c => c !== ch)
+      : [...reviewPushChannels, ch]
+    pushMut.mutate(next)
+  }, [reviewPushChannels, pushMut])
 
   // 自动滚动到报告底部(streaming 时)
   useEffect(() => {
@@ -126,6 +145,15 @@ export function Review() {
       reportEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
     }
   }, [content, phase])
+
+  // 当进入生成中(streaming)时, 清掉「查看历史」状态, 让主区域显示流内容。
+  // 手动 generate 已自带 setViewing(null), 这里主要补定时 SSE 流的场景:
+  // 用户若正看着历史报告, 定时触发生成时也要切回主区域显示流式内容。
+  useEffect(() => {
+    if (phase === 'streaming' && viewing) {
+      setViewing(null)
+    }
+  }, [phase, viewing])
 
   // 自动归档(生成完成后台静默保存)—— 通过回调注入 store,避免 store 直接依赖 qc/marketQuery
   const onGenerationDone = useCallback(async (fullContent: string, doneMeta: { as_of?: string; summary?: string; emotion_score?: number; emotion_label?: string } | null) => {
@@ -347,8 +375,8 @@ export function Review() {
               </div>
 
               <p className="mb-4 text-[11px] leading-relaxed text-muted">
-                开启后,每个交易日到点自动生成大盘复盘报告并归档,静默执行(不弹通知)。
-                下次打开本页即可在历史列表看到新报告。
+                开启后,每个交易日到点自动生成大盘复盘报告并归档,静默执行。
+                下次打开本页即可在历史列表看到新报告;也可选推送到飞书。
               </p>
 
               {/* 开关(只改本地草稿, 不提交) */}
@@ -383,9 +411,55 @@ export function Review() {
                     onChange={e => setDraft(d => ({ ...d, minute: Math.max(0, Math.min(59, Number(e.target.value))) }))}
                     className="w-12 px-1.5 py-1 rounded-btn bg-base border border-border text-xs font-mono text-foreground text-center focus:outline-none focus:border-accent/50"
                   />
-                  <span className="text-[10px] text-muted/70">不早于 15:30 · 工作日执行</span>
+                  <span className="text-[10px] text-muted/70">不早于 15:00 · 工作日执行</span>
                 </div>
               )}
+
+              {/* 推送渠道(多选, 独立常驻, 与定时无关, 即时生效) */}
+              <div className="mt-3 rounded-btn bg-elevated/40 px-3 py-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-foreground">生成后推送完整报告</span>
+                  <span className="text-[10px] text-muted/70">{reviewPushChannels.length === 0 ? '未开启' : `${reviewPushChannels.length} 个渠道`}</span>
+                </div>
+                <div className="mt-2 space-y-1.5">
+                  {/* 飞书(可用, 多选) */}
+                  <button
+                    type="button"
+                    disabled={pushMut.isPending}
+                    onClick={() => togglePushChannel('feishu')}
+                    className={cn(
+                      'flex w-full items-center gap-2 rounded-btn border px-2.5 py-1.5 text-left transition-colors disabled:opacity-50',
+                      reviewPushChannels.includes('feishu')
+                        ? 'border-accent/40 bg-accent/10'
+                        : 'border-border/60 bg-base/40 hover:bg-base/60',
+                    )}
+                  >
+                    <span className={cn('flex h-3 w-3 shrink-0 items-center justify-center rounded border', reviewPushChannels.includes('feishu') ? 'border-accent bg-accent text-white' : 'border-border')}>
+                      {reviewPushChannels.includes('feishu') && <Check className="h-2.5 w-2.5" />}
+                    </span>
+                    <span className="text-[11px] text-foreground">飞书</span>
+                    <span className="text-[9px] text-muted">群机器人</span>
+                    <span className={cn('ml-auto text-[9px]', feishuConfigured ? 'text-emerald-500' : 'text-warning')}>
+                      {feishuConfigured ? '已配置' : '未配置'}
+                    </span>
+                  </button>
+                  {/* 微信(开发中, 占位不可选) */}
+                  <div className="flex items-center gap-2 rounded-btn border border-border/40 bg-base/20 px-2.5 py-1.5 opacity-60">
+                    <span className="flex h-3 w-3 shrink-0 items-center justify-center rounded border border-border" />
+                    <span className="text-[11px] text-secondary">微信</span>
+                    <span className="text-[9px] text-muted">公众号/企业微信</span>
+                    <span className="ml-auto rounded bg-muted/10 px-1 py-px text-[9px] text-muted">开发中</span>
+                  </div>
+                </div>
+                <p className="mt-1.5 text-[10px] leading-relaxed text-muted/70">
+                  手动或定时生成的复盘都会以卡片消息推送完整报告。复用「设置 → 实时监控」的飞书 Webhook。
+                  {reviewPushChannels.includes('feishu') && !feishuConfigured && (
+                    <Link to="/settings?tab=monitoring" className="ml-1 text-accent hover:underline" onClick={() => setShowSchedule(false)}>
+                      前往配置 →
+                    </Link>
+                  )}
+                </p>
+              </div>
 
               {!draft.enabled && (
                 <p className="mt-3 text-[10px] text-muted/70">

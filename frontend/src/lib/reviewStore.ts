@@ -35,6 +35,10 @@ const INITIAL: ReviewState = { phase: 'idle', content: '', error: '', meta: null
 let state: ReviewState = { ...INITIAL }
 let abortCtrl: AbortController | null = null
 
+// 当前生成来源: 'manual'(手动点生成) | 'sse'(定时任务 SSE 推送) | null(空闲)
+// 用于区分两条流, 避免互相丢弃事件或重复归档。
+let generatingSource: 'manual' | 'sse' | null = null
+
 // ===== 订阅机制 =====
 type Listener = () => void
 const listeners = new Set<Listener>()
@@ -76,6 +80,7 @@ export async function startReviewGeneration(
   // 已在生成中,不重复启动
   if (isReviewGenerating()) return
 
+  generatingSource = 'manual'
   state = { phase: 'loading', content: '', error: '', meta: null, focus }
   notify()
 
@@ -109,7 +114,7 @@ export async function startReviewGeneration(
     if (buf && !failed) {
       state = { ...state, phase: 'done' }
       notify()
-      // 自动归档
+      // 自动归档(仅手动流: 定时流由后端归档, SSE done 不走这里)
       if (buf && !failed) {
         onDone?.(buf, doneMeta)
       }
@@ -121,6 +126,7 @@ export async function startReviewGeneration(
     }
   } finally {
     abortCtrl = null
+    generatingSource = null
   }
 }
 
@@ -159,4 +165,56 @@ export function setViewingReport(report: {
 export function resetReview(): void {
   state = { ...INITIAL }
   notify()
+}
+
+/**
+ * 喂入一条来自 SSE 的复盘事件(定时生成时后端推来的)。
+ *
+ * 用途: 定时复盘在后端流式生成, 通过 /api/intraday/stream 的 review_progress 事件
+ * 把 meta/delta/done 等实时推给前端, 前端调本函数把事件写进 store ——
+ * 这样开着复盘页的用户能看到「边生成边显示」, 和手动点生成完全一致。
+ *
+ * 事件格式与 recap_market_stream 产出一致:
+ *   {type:'meta'|'delta'|'error'|'done'|'retry', ...}
+ *
+ * 与手动生成的并发:
+ *  - 若手动正在生成(isReviewGenerating), 忽略 SSE 事件(手动流优先, 避免冲突)。
+ *  - done 带 archived=true(定时场景后端已归档): 不重复调归档接口, 仅切到 done 态。
+ *  - retry: 后端 LLM 断流重试, 清空已累积内容重新开始。
+ */
+export function feedReviewEvent(evt: any): void {
+  if (!evt || typeof evt !== 'object') return
+  const t = evt.type
+
+  // 并发控制: 手动流进行中时, SSE 事件一律忽略(手动流优先, 避免两条流抢同一个 store)
+  // 但若当前是 SSE 流自己在跑(generatingSource==='sse'), 则正常处理后续事件
+  if (generatingSource === 'manual') return
+
+  if (t === 'meta') {
+    // 定时流的第一个事件: 标记来源为 sse, 进入 streaming 态, 重置 content
+    generatingSource = 'sse'
+    state = { phase: 'streaming', content: '', error: '', meta: evt, focus: '' }
+    notify()
+  } else if (t === 'delta' && evt.content) {
+    // 只有 sse 流进行中时才累积(防止 meta 丢失时的孤立 delta)
+    if (generatingSource !== 'sse') return
+    state = { ...state, content: state.content + evt.content, phase: 'streaming' }
+    notify()
+  } else if (t === 'retry') {
+    if (generatingSource !== 'sse') return
+    // 后端重试: 清空已累积内容, 等待新一轮 meta/delta
+    state = { ...state, content: '', phase: 'streaming' }
+    notify()
+  } else if (t === 'error') {
+    if (generatingSource !== 'sse') return
+    state = { ...state, error: evt.message ?? '复盘生成失败', phase: 'error' }
+    notify()
+    generatingSource = null
+  } else if (t === 'done') {
+    if (generatingSource !== 'sse') return
+    // 定时场景 done 带 archived=true: 后端已归档, 前端只切 done 态, 不调归档接口。
+    state = { ...state, phase: 'done' }
+    notify()
+    generatingSource = null
+  }
 }

@@ -265,32 +265,71 @@ def set_depth_finalize_time(hour: int, minute: int) -> dict:
     return {"hour": h, "minute": m}
 
 
-def get_review_schedule() -> dict:
-    """定时复盘调度 {"enabled": False, "hour": 16, "minute": 30}。默认关闭。
+# 复盘推送可选渠道白名单 (微信等暂未实现, 不在白名单内, 前端仅作占位)
+# 多选: 不推送 = 空数组, 而非 'none'
+REVIEW_PUSH_CHANNELS = {"feishu"}
 
-    复盘依赖盘后数据(日K/enriched, 盘后管道默认 15:30 跑完),
-    故默认时间设为 16:30(数据就绪后), 强制下限 15:30。
+
+def get_review_schedule() -> dict:
+    """定时复盘调度 {"enabled": False, "hour": 15, "minute": 10}。默认关闭。
+
+    A股 15:00 收盘, 默认时间设为 15:10(收盘后即时复盘), 强制下限 15:00。
     """
-    d = load().get("review_schedule", {"enabled": False, "hour": 16, "minute": 30})
+    d = load().get("review_schedule", {"enabled": False, "hour": 15, "minute": 10})
     return {
         "enabled": bool(d.get("enabled", False)),
-        "hour": d.get("hour", 16),
-        "minute": d.get("minute", 30),
+        "hour": d.get("hour", 15),
+        "minute": d.get("minute", 10),
     }
 
 
 def set_review_schedule(enabled: bool, hour: int, minute: int) -> dict:
-    """保存定时复盘调度。强制时间下限 15:30(盘后数据就绪)。
+    """保存定时复盘调度。强制时间下限 15:00(A股收盘)。
 
     enabled=False 时时间仍保存(下次开启可沿用), 但调度器不会注册 job。
     """
     h = max(0, min(23, hour))
     m = max(0, min(59, minute))
-    # 下限 15:30: 盘后管道(默认 15:30)完成后才有完整数据复盘
-    if h * 60 + m < 15 * 60 + 30:
-        h, m = 15, 30
+    # 下限 15:00: A股 15:00 收盘, 收盘后才有当日完整数据复盘
+    if h * 60 + m < 15 * 60:
+        h, m = 15, 0
     save({"review_schedule": {"enabled": bool(enabled), "hour": h, "minute": m}})
     return {"enabled": bool(enabled), "hour": h, "minute": m}
+
+
+def get_review_push_channels() -> list[str]:
+    """复盘推送渠道(多选) — 选定的外部工具列表, 复盘归档后逐个推送。
+
+    与 review_schedule / 实时行情完全独立, 常驻可单独设置。
+    空列表 = 不推送; ['feishu'] = 推送到飞书(复用监控中心全局 feishu_webhook_url/secret)。
+
+    向后兼容:
+      - 老多版本单选 review_push_channel=='feishu' → ['feishu']
+      - 更老布尔 review_push_enabled==True → ['feishu']
+    """
+    d = load()
+    raw = d.get("review_push_channels")
+    if isinstance(raw, list):
+        return [c for c in raw if c in REVIEW_PUSH_CHANNELS]
+    # 兼容老单选字符串
+    if d.get("review_push_channel") == "feishu":
+        return ["feishu"]
+    # 兼容更老布尔开关
+    if d.get("review_push_enabled") is True:
+        return ["feishu"]
+    return []
+
+
+def set_review_push_channels(channels: list[str]) -> list[str]:
+    """保存复盘推送渠道(多选)。过滤白名单外的值、去重、保序。空列表 = 不推送。"""
+    seen: set[str] = set()
+    cleaned: list[str] = []
+    for c in channels or []:
+        if c in REVIEW_PUSH_CHANNELS and c not in seen:
+            seen.add(c)
+            cleaned.append(c)
+    save({"review_push_channels": cleaned})
+    return cleaned
 
 
 

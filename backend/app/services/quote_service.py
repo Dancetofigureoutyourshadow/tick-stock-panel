@@ -60,6 +60,10 @@ class QuoteService:
         self._depth_update_event = threading.Event()  # SSE 通知: depth 五档修正后 set (刷新连板梯队)
         self._pending_alerts: list[dict] = []    # 待推送的告警
         self._max_pending_alerts: int = 1000     # 背压上限: 超出丢弃最旧
+        # 复盘进度 SSE 通道: 定时复盘流式生成时, 把 meta/delta/done 事件推给开着页面的前端
+        self._review_event = threading.Event()        # SSE 通知: 有复盘进度事件时 set
+        self._pending_review: list[str] = []          # 待推送的复盘事件(JSON 字符串)
+        self._max_pending_review: int = 200           # 背压上限: 超出丢弃最旧
         self._strategy_monitor = None            # 延迟注入
         self._app_state = None                   # 延迟注入 (FastAPI app.state)
 
@@ -189,6 +193,34 @@ class QuoteService:
             alerts = self._pending_alerts
             self._pending_alerts = []
             return alerts
+
+    # ================================================================
+    # 复盘进度 SSE 通道 — 定时复盘流式生成时, 把事件实时推给前端
+    # ================================================================
+    def push_review_event(self, event_json: str) -> None:
+        """追加一条复盘进度事件(JSON 字符串), 并唤醒 SSE generator。
+
+        事件格式与 recap_market_stream 的产出一致(meta/delta/error/done),
+        前端 reviewStore 直接消费。背压: 超过上限丢弃最旧(复盘流几百条 delta, 200 够用)。
+        """
+        with self._lock:
+            self._pending_review.append(event_json)
+            if len(self._pending_review) > self._max_pending_review:
+                overflow = len(self._pending_review) - self._max_pending_review
+                self._pending_review = self._pending_review[overflow:]
+            self._review_event.set()
+
+    def wait_for_review(self, timeout: float = 30.0) -> bool:
+        """阻塞等待复盘进度事件 (供 SSE 线程使用)。"""
+        self._review_event.clear()
+        return self._review_event.wait(timeout=timeout)
+
+    def pop_review_events(self) -> list[str]:
+        """取走所有待推送的复盘事件 (线程安全)。"""
+        with self._lock:
+            events = self._pending_review
+            self._pending_review = []
+            return events
 
     # ================================================================
     # 档位感知间隔限制
@@ -681,9 +713,9 @@ class QuoteService:
                                 "logic": ev.get("logic") or "and",
                             })
 
-            # Free 自选实时只刷新少量标的, 不写全市场策略缓存。
-            if self._enabled and self._app_state and self.realtime_mode() == "full_market":
-                self._refresh_strategy_cache(enriched_today, enriched_date)
+            # 策略页实时回显: 不写文件 (实时行情每轮更新 enriched, 写文件会被 read_cache
+            # 的 mtime 校验判过期, 反复读不到)。监控引擎本轮已算出的结果存在内存
+            # (latest_strategy_results), 由 /api/screener/cached 端点直接叠加读取。
 
             # 推入待推送队列 + 通知 SSE (含背压保护)
             if all_alerts:
@@ -790,90 +822,6 @@ class QuoteService:
                 notify_adapter.notify(title, body)
         except Exception as e:  # noqa: BLE001
             logger.debug("系统通知发送异常 (不影响告警主流程): %s", e)
-
-    def _refresh_strategy_cache(self, enriched_today: pl.DataFrame, enriched_date: date | None) -> None:
-        """利用已计算好的 enriched 数据，运行策略池并写入缓存。"""
-        import math
-        from dataclasses import asdict
-        from app.services import strategy_cache
-        from app.services.screener import PRESET_STRATEGIES, ScreenerService
-        from app.strategy import config as strategy_config
-
-        try:
-            if enriched_date is None:
-                return
-            as_of = enriched_date
-            data_dir = self._repo.store.data_dir
-            svc = ScreenerService(self._repo)
-            engine = getattr(self._app_state, "strategy_engine", None)
-
-            # 确定要运行的策略: 策略监控池中的策略
-            monitor_ids = self._get_monitor_pool_ids()
-            if not monitor_ids:
-                return
-
-            # 一次加载所有 override
-            all_overrides = strategy_config.list_overrides(data_dir)
-
-            # 历史策略: 只在需要时加载
-            shared_history = None
-            history_strats = []
-            if engine:
-                id_set = set(monitor_ids)
-                history_strats = [
-                    (sid, s) for sid, s in engine._strategies.items()
-                    if s.filter_history_fn and sid in id_set
-                ]
-                if history_strats:
-                    max_lb = max(s.lookback_days for _, s in history_strats)
-                    shared_history = svc._load_enriched_history(as_of, max(1, max_lb))
-
-            results: dict[str, dict] = {}
-            for sid in monitor_ids:
-                try:
-                    overrides = all_overrides.get(sid, {})
-                    bf = overrides.get("basic_filter") if overrides else None
-                    dl = overrides.get("display_limit") if overrides else None
-                    if dl is None and overrides and "display_limit" in overrides:
-                        dl = 0
-
-                    if sid in PRESET_STRATEGIES:
-                        r = svc.run_preset(sid, as_of=as_of, precomputed=enriched_today, basic_filter=bf, display_limit=dl)
-                    elif engine:
-                        r = engine.run(
-                            sid, as_of, overrides=overrides or None,
-                            precomputed=enriched_today, precomputed_history=shared_history,
-                        )
-                        if dl is not None and dl > 0:
-                            r.rows = r.rows[:dl]
-                            r.total = min(r.total, dl)
-                    else:
-                        continue
-
-                    # sanitize NaN/Inf
-                    rows = []
-                    for row_dict in asdict(r).get("rows", []):
-                        for k, v in list(row_dict.items()):
-                            if isinstance(v, float) and not math.isfinite(v):
-                                row_dict[k] = None
-                        rows.append(row_dict)
-                    results[sid] = {"total": r.total, "as_of": str(as_of), "rows": rows}
-                except Exception:  # noqa: BLE001
-                    continue
-
-            if results:
-                strategy_cache.write_cache(data_dir, str(as_of), results)
-
-        except Exception as e:  # noqa: BLE001
-            logger.warning("策略缓存刷新失败: %s", e)
-
-    def _get_monitor_pool_ids(self) -> list[str]:
-        """获取策略监控池中的策略 ID 列表。"""
-        from app.services import preferences
-        ids = preferences.get_strategy_monitor_ids()
-        if not ids:
-            return []
-        return [sid for sid in ids if sid]
 
     @staticmethod
     def _get_strategy_monitor():

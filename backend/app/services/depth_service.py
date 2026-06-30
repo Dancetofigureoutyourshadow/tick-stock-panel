@@ -316,7 +316,18 @@ class DepthService:
                 "status": e.get("status"),
                 "fetched_at": e.get("fetched_ts"),
             })
-        df = pl.DataFrame(rows)
+        # 显式 schema: sealed_up/sealed_down 是 bool 与 None 混合, 不指定 schema
+        # polars 会按首行推断类型, 后续遇到不一致 (bool vs null) 报
+        # "could not append value: false of type: bool to the builder"。
+        df = pl.DataFrame(rows, schema={
+            "symbol": pl.Utf8,
+            "sealed_up": pl.Boolean,
+            "sealed_down": pl.Boolean,
+            "ask1_vol": pl.Int64,
+            "bid1_vol": pl.Int64,
+            "status": pl.Utf8,
+            "fetched_at": pl.Float64,
+        })
         ds = today.isoformat()
         out = self._repo.store.data_dir / "depth5" / f"date={ds}" / "part.parquet"
         out.parent.mkdir(parents=True, exist_ok=True)

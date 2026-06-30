@@ -768,11 +768,34 @@ export function Watchlist() {
     [visibleColumns]
   )
 
+  // 被过滤掉的个股数 (筛选/板块过滤导致的隐藏)
+  const hiddenCount = Math.max(0, allSymbols.length - sortedRows.length)
+
   return (
     <div className="flex flex-col h-full">
       <PageHeader
         title="自选股"
-        subtitle={`${sortedRows.length}/${allSymbols.length} 只`}
+        titleExtra={
+          <span className="inline-flex items-center gap-1.5">
+            {/* 计数胶囊: 显示数/总数, mono 字体突出数字 */}
+            <span className="inline-flex items-baseline gap-0.5 px-2 py-0.5 rounded-md bg-elevated/70 text-[11px]">
+              <span className="font-mono font-semibold text-secondary tabular-nums">{sortedRows.length}</span>
+              <span className="text-muted/50">/</span>
+              <span className="font-mono text-muted tabular-nums">{allSymbols.length}</span>
+              <span className="text-muted/60 ml-0.5">只</span>
+            </span>
+            {/* 过滤提示: 仅在有隐藏时出现, 柔和橙色融入整体 */}
+            {hiddenCount > 0 && (
+              <span
+                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-medium bg-warning/12 text-warning/90 border border-warning/25 whitespace-nowrap"
+                title={`当前有 ${hiddenCount} 只被筛选条件隐藏,清除筛选可查看全部`}
+              >
+                <Filter className="h-2.5 w-2.5" />
+                已过滤 {hiddenCount}
+              </span>
+            )}
+          </span>
+        }
         right={
           <div className="flex items-center gap-2">
             {/* 筛选 / 搜索 */}

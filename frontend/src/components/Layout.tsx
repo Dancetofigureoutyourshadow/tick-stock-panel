@@ -261,7 +261,8 @@ export function Layout() {
   const { data: settingsState } = useSettings()
   const { data: versionData } = useVersion()
   const { data: prefs } = usePreferences()
-  const { data: quoteStatus } = useQuoteStatus()
+  // poll=true: 全局唯一开启条件轮询 (非交易时段 60s 兜底, 交易时段靠 SSE)
+  const { data: quoteStatus } = useQuoteStatus({ poll: true })
   const { data: analysisMenus } = useQuery({
     queryKey: QK.analysisMenus,
     queryFn: api.analysisMenus,

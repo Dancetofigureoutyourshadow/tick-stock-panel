@@ -98,6 +98,13 @@ def save_report(request: Request, req: SaveReportRequest):
         "emotion_score": req.emotion_score,
         "emotion_label": req.emotion_label,
     })
+    # 推送到飞书(可选): 与定时复盘共用同一开关 review_push_enabled 与 _maybe_push_review。
+    # 内部 try/except 静默降级, 不影响归档返回值。
+    from app.jobs.daily_pipeline import _maybe_push_review
+    _maybe_push_review(req.content, {
+        "as_of": req.as_of,
+        "emotion_label": req.emotion_label,
+    })
     return {"ok": True, "report": report}
 
 

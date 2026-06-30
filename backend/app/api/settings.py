@@ -342,6 +342,7 @@ def get_preferences() -> dict:
         "depth_polling_interval": preferences.get_depth_polling_interval(),
         "depth_finalize_time": preferences.get_depth_finalize_time(),
         "review_schedule": preferences.get_review_schedule(),
+        "review_push_channels": preferences.get_review_push_channels(),
     }
 
 
@@ -1014,7 +1015,7 @@ def update_review_schedule(req: ReviewScheduleIn, request: Request) -> dict:
     - enabled=True: 注册/更新 job(工作日定时生成复盘报告)
     - enabled=False: 移除 job(停止定时复盘)
     - 校验: 开启时若 AI Key 未配置则拒绝(复盘依赖 AI), 提示用户先配置。
-    - 时间下限 15:30(盘后数据就绪), 由 preferences 层强制。
+    - 时间下限 15:00(A股收盘), 由 preferences 层强制。
     """
     from app.services import preferences
 
@@ -1044,4 +1045,21 @@ def update_review_schedule(req: ReviewScheduleIn, request: Request) -> dict:
                 pass  # job 本就不存在(从未开过), 无需处理
 
     return sched
+
+
+class ReviewPushIn(BaseModel):
+    channels: list[str]  # 多选: ['feishu'] 等; 空数组=不推送。微信等开发中
+
+
+@router.put("/preferences/review-push")
+def update_review_push(req: ReviewPushIn) -> dict:
+    """复盘推送渠道(多选) — 选定把复盘报告(手动生成 / 定时生成归档后)推送到哪些外部工具。
+
+    纯偏好, 与定时复盘 / 实时行情完全独立, 常驻可单独设置。空数组=不推送。
+    实际推送由归档端点(POST /api/market-recap/reports)与定时任务(_run_scheduled_review)
+    在归档后读取本列表逐个推送。白名单外的渠道会被过滤掉。
+    """
+    from app.services import preferences
+    saved = preferences.set_review_push_channels(req.channels)
+    return {"review_push_channels": saved}
 

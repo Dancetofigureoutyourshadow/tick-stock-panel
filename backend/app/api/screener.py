@@ -278,11 +278,35 @@ def get_cached(
     request: Request,
     ext_columns: Optional[str] = Query(None, description="逗号分隔: config_id.field_name"),
 ):
-    """读取策略结果缓存。返回 None 表示无缓存。"""
+    """读取策略结果缓存, 并叠加监控引擎本轮实时算出的结果。
+
+    - 盘后缓存 (strategy_cache.json): 非监控策略 / 页面秒加载用, run_all 写入。
+    - 监控引擎内存结果 (latest_strategy_results): 实时行情每轮对「加入监控的策略」算出,
+      不落盘 (避免与 read_cache 的 mtime 校验冲突), 在此直接叠加覆盖盘后结果。
+      被监控的策略拿到新鲜数据, 非监控策略仍用盘后缓存。
+    """
     data_dir = request.app.state.repo.store.data_dir
     cached = strategy_cache.read_cache(data_dir)
     if cached is None:
+        cached = {"as_of": None, "results": {}, "updated_at": None}
+
+    # 叠加监控引擎内存里的实时结果 (若有), 用新鲜数据覆盖同策略的盘后结果
+    monitor_engine = getattr(request.app.state, "monitor_engine", None)
+    if monitor_engine is not None:
+        realtime_results = monitor_engine.latest_strategy_results()
+        if realtime_results:
+            results = dict(cached.get("results") or {})
+            results.update(realtime_results)
+            cached = dict(cached)
+            cached["results"] = results
+            # 有实时数据时, 以最新时间戳为准
+            import time as _time
+            cached["updated_at"] = int(_time.time() * 1000)
+
+    # 无任何数据 (盘后缓存空 + 无实时结果) → 返回空标记, 前端据此提示
+    if not cached.get("results") and cached.get("as_of") is None:
         return {"as_of": None, "results": {}, "updated_at": None}
+
     ext_values = _load_ext_value_maps(request.app.state.repo, ext_columns)
     return _cache_payload_with_ext(cached, ext_values)
 

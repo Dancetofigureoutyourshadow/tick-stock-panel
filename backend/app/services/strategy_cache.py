@@ -54,7 +54,14 @@ def _get_enriched_mtime(data_dir: Path, as_of: str) -> float | None:
 
 
 def read_cache(data_dir: Path) -> dict | None:
-    """读取策略缓存文件。返回 None 表示无缓存、读取失败或 enriched 数据已更新导致缓存过期。"""
+    """读取策略缓存文件。返回 None 表示无缓存或读取失败。
+
+    说明: 原先有 enriched mtime 过期校验 (数据文件变化 → 判过期返回 None),
+    但在有实时行情的系统里, enriched parquet 每轮被刷新 → mtime 必然变化 →
+    缓存被永久判死, 策略页读不到数据。且判过期后不触发重算, 只能让用户手动重跑,
+    保护价值有限。故移除: 盘后缓存总能读出, 实时新鲜度由 /api/screener/cached
+    端点叠加监控引擎的内存实时结果 (latest_strategy_results) 来保证。
+    """
     path = _cache_path(data_dir)
     if not path.exists():
         return None
@@ -66,15 +73,6 @@ def read_cache(data_dir: Path) -> dict | None:
     except Exception as e:  # noqa: BLE001
         logger.warning("读取策略缓存失败: %s", e)
         return None
-
-    # 校验 enriched mtime: 数据文件变化 → 缓存过期
-    as_of = cached.get("as_of")
-    stored_mtime = cached.get("enriched_mtime")
-    if as_of and stored_mtime:
-        current_mtime = _get_enriched_mtime(data_dir, as_of)
-        if current_mtime is not None and current_mtime != stored_mtime:
-            logger.info("策略缓存过期: enriched 数据已更新 (as_of=%s)", as_of)
-            return None
 
     return cached
 
@@ -130,7 +128,8 @@ def write_cache(
     # 从 ever_rows 提取 symbol 列表 (用于快速计数)
     today_ever_matched = {sid: sorted(maps.keys()) for sid, maps in today_ever_rows.items()}
 
-    # 记录 enriched parquet 文件的 mtime，用于后续校验缓存是否过期
+    # enriched_mtime: 盘后缓存写入时记录 (向后兼容旧字段)。read_cache 已不再用它
+    # 做过期校验, 实时新鲜度改由 /cached 端点叠加监控引擎内存结果保证。
     enriched_mtime = _get_enriched_mtime(data_dir, as_of)
 
     payload = {

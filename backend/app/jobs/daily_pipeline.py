@@ -558,13 +558,17 @@ REVIEW_JOB_ID = "scheduled_review"
 
 
 async def _run_scheduled_review(repo) -> None:
-    """定时复盘 job: 调用非流式复盘生成 → 落盘归档(与手动生成同格式)。
+    """定时复盘 job: 流式生成复盘 → 实时推 SSE(开着页面可见) → 落盘归档 → 推飞书。
 
-    静默执行, 不推送 SSE/系统通知 —— 用户下次打开复盘页即可看到新报告。
+    与手动「生成复盘」体验一致: 流式事件经 quote_service.push_review_event →
+    /api/intraday/stream 的 review_progress 事件 → 前端 reviewStore, 用户开着复盘页
+    即可看到报告边生成边显示, 切走再回来也能看到生成中/已生成。
+    LLM 偶发断流(peer closed connection)时自动重试最多 2 次。
     任何异常都吞掉只记日志, 绝不影响调度器主循环。
     """
+    import json
+
     try:
-        from app.services.market_recap import recap_market_once
         from app.services import market_recap_reports
         from app import secrets_store as ss
 
@@ -577,9 +581,14 @@ async def _run_scheduled_review(repo) -> None:
         quote_service = getattr(app_state, "quote_service", None) if app_state else None
         depth_service = getattr(app_state, "depth_service", None) if app_state else None
 
-        content, meta = await recap_market_once(repo, quote_service, depth_service)
+        content, meta = await _stream_review_with_retry(repo, quote_service, depth_service)
         if not content:
             logger.warning("scheduled review produced no content (meta=%s)", meta)
+            # 通知前端进入 error 态(若有页面在听)
+            if quote_service:
+                quote_service.push_review_event(json.dumps(
+                    {"type": "error", "message": "复盘生成失败,请稍后手动重试"},
+                    ensure_ascii=False))
             return
 
         # 落盘: 与手动生成完全相同的归档格式
@@ -592,8 +601,122 @@ async def _run_scheduled_review(repo) -> None:
             "emotion_label": meta.get("emotion_label", ""),
         })
         logger.info("scheduled review saved: as_of=%s", meta.get("as_of"))
+
+        # 通知前端: 生成完成且已归档(archived=true 让前端只刷新列表, 不重复归档)
+        if quote_service:
+            quote_service.push_review_event(json.dumps(
+                {"type": "done", "archived": True}, ensure_ascii=False))
+
+        # 推送到飞书(可选): 运行时读取配置, 用户改设置下次触发即生效。
+        # 失败静默降级, 不影响已归档的报告。
+        _maybe_push_review(content, meta)
     except Exception as e:  # noqa: BLE001
         logger.exception("scheduled review failed: %s", e)
+        # 兜底: 异常时通知前端停止「生成中」状态, 避免页面卡在 streaming
+        try:
+            app_state = _get_app_state()
+            qs = getattr(app_state, "quote_service", None) if app_state else None
+            if qs:
+                import json as _json
+                qs.push_review_event(_json.dumps(
+                    {"type": "error", "message": "复盘生成异常,请稍后手动重试"},
+                    ensure_ascii=False))
+        except Exception:  # noqa: BLE001
+            pass
+
+
+async def _stream_review_with_retry(repo, quote_service, depth_service) -> tuple[str, dict]:
+    """流式生成复盘, 每个事件推 SSE + 累积内容。LLM 断流时最多重试 2 次。
+
+    返回 (content, meta)。重试时推一个 retry 事件让前端清空已累积内容重新开始。
+    成功(收到 done/无 error)或耗尽重试后返回。
+    """
+    import asyncio
+    import json
+    from app.services.market_recap import recap_market_stream
+
+    max_attempts = 3  # 初次 + 2 次重试
+    last_meta: dict = {}
+    content_parts: list[str] = []
+
+    for attempt in range(1, max_attempts + 1):
+        content_parts = []  # 每次重试重新累积
+        failed = False
+        try:
+            async for evt_json in recap_market_stream(repo, quote_service, depth_service):
+                evt = json.loads(evt_json)
+                t = evt.get("type")
+
+                # 推给前端(让开着页面的用户实时看到, 与手动一致)
+                if quote_service:
+                    quote_service.push_review_event(evt_json)
+
+                if t == "meta":
+                    last_meta = evt
+                elif t == "delta" and evt.get("content"):
+                    content_parts.append(evt["content"])
+                elif t == "error":
+                    failed = True
+                    logger.warning("scheduled review stream error (attempt %d/%d): %s",
+                                   attempt, max_attempts, evt.get("message"))
+                    break  # 触发重试
+                elif t == "done":
+                    # 正常完成
+                    return "".join(content_parts), last_meta
+            # 流自然结束(无 done 事件)且有内容, 视为成功
+            if content_parts and not failed:
+                return "".join(content_parts), last_meta
+        except Exception as e:  # noqa: BLE001
+            # LLM 断流等异常(httpx.RemoteProtocolError)落到这里
+            failed = True
+            logger.warning("scheduled review stream exception (attempt %d/%d): %s",
+                           attempt, max_attempts, e)
+
+        # 失败: 决定是否重试
+        if attempt < max_attempts:
+            logger.info("scheduled review retrying in 3s (attempt %d → %d)", attempt, attempt + 1)
+            # 通知前端: 即将重试, 清空已累积内容重新开始
+            if quote_service:
+                quote_service.push_review_event(json.dumps(
+                    {"type": "retry", "attempt": attempt + 1}, ensure_ascii=False))
+            await asyncio.sleep(3)
+
+    # 耗尽重试, 返回已累积内容(可能为空)和最后 meta
+    return "".join(content_parts), last_meta
+
+
+def _maybe_push_review(content: str, meta: dict) -> None:
+    """复盘报告归档后, 按 review_push_channels 选定的外部工具逐个推送完整报告。
+
+    定时生成与手动生成共用本函数 (手动归档端点 POST /api/market-recap/reports 也会调用)。
+    channels 为空则不推送; 'feishu' 复用监控中心的全局飞书 Webhook 通道。
+    推送失败静默降级 (Webhook 是辅助通道), 不影响已归档的报告。
+    """
+    try:
+        from app.services import preferences, webhook_adapter
+
+        channels = preferences.get_review_push_channels()
+        if not channels:
+            return
+
+        emotion = f"{meta.get('emotion_label') or ''}".strip()
+        as_of = meta.get("as_of") or ""
+        subtitle = as_of + (f" · 情绪 {emotion}" if emotion else "")
+
+        for ch in channels:
+            if ch == "feishu":
+                url = preferences.get_feishu_webhook_url()
+                if not url:
+                    logger.info("review push(feishu) skipped: webhook not configured")
+                    continue
+                secret = preferences.get_feishu_webhook_secret()
+                ok = webhook_adapter.send_feishu_card(
+                    url, "TickFlow · 每日复盘", subtitle, content, secret
+                )
+                logger.info("review push(feishu) %s", "sent" if ok else "failed")
+            # 未来更多渠道在此追加分支
+    except Exception as e:  # noqa: BLE001
+        logger.warning("review push error: %s", e)
 
 
 def _register_review_job(scheduler, repo, hour: int, minute: int) -> None:
@@ -601,9 +724,14 @@ def _register_review_job(scheduler, repo, hour: int, minute: int) -> None:
 
     供 start_scheduler(启动时) 和 settings API(改时间时) 共用。
     用 replace_existing=True, 重复注册只更新 trigger。
+
+    注意: _run_scheduled_review 是协程函数, 必须把函数对象本身(配合 args)传给
+    add_job, 而非用 lambda 包裹 —— 否则 APScheduler 会把 lambda 当同步函数在线程池
+    执行, 仅得到一个未 await 的协程对象, 复盘实际不会运行。
     """
     scheduler.add_job(
-        lambda: _run_scheduled_review(repo),
+        _run_scheduled_review,
+        args=[repo],
         trigger=CronTrigger(day_of_week="mon-fri",
                             hour=hour, minute=minute,
                             timezone="Asia/Shanghai"),

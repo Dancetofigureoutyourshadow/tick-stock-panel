@@ -24,6 +24,44 @@ from app.strategy import config as _strategy_config
 
 logger = logging.getLogger(__name__)
 
+# 信号 / 字段中文名映射 — 与前端 lib/signals.ts 对齐, 用于告警 message / 推送文案。
+# signal_* 为内置原子信号, 其余为技术指标/行情字段。
+_SIGNAL_CN: dict[str, str] = {
+    # 内置信号
+    "signal_ma_golden_5_20": "MA5上穿MA20", "signal_ma_dead_5_20": "MA5下穿MA20",
+    "signal_ma_golden_20_60": "MA20上穿MA60", "signal_macd_golden": "MACD金叉",
+    "signal_macd_dead": "MACD死叉", "signal_ma20_breakout": "突破MA20",
+    "signal_ma20_breakdown": "跌破MA20", "signal_n_day_high": "60日新高",
+    "signal_n_day_low": "60日新低", "signal_boll_breakout_upper": "突破布林上轨",
+    "signal_boll_breakdown_lower": "跌破布林下轨", "signal_volume_surge": "放量",
+    "signal_limit_up": "涨停", "signal_limit_down": "跌停",
+    "signal_limit_down_recovery": "跌停翘板", "signal_broken_limit_up": "炸板",
+    # 行情字段
+    "close": "收盘价", "open": "开盘价", "high": "最高价", "low": "最低价",
+    "change_pct": "涨跌幅", "change_amount": "涨跌额", "amplitude": "振幅",
+    "turnover_rate": "换手率", "volume": "成交量", "amount": "成交额",
+    # 均线
+    "ma5": "MA5", "ma10": "MA10", "ma20": "MA20", "ma30": "MA30", "ma60": "MA60",
+    "ema5": "EMA5", "ema10": "EMA10", "ema20": "EMA20",
+    # MACD / BOLL / KDJ / RSI
+    "macd_dif": "MACD-DIF", "macd_dea": "MACD-DEA", "macd_hist": "MACD柱",
+    "boll_upper": "布林上轨", "boll_lower": "布林下轨",
+    "kdj_k": "KDJ-K", "kdj_d": "KDJ-D", "kdj_j": "KDJ-J",
+    "rsi_6": "RSI6", "rsi_14": "RSI14", "rsi_24": "RSI24",
+    # 量能 / 动量 / 波动
+    "vol_ratio_5d": "5日量比", "vol_ratio_20d": "20日量比",
+    "vol_ma5": "5日均量", "vol_ma10": "10日均量",
+    "high_60d": "60日最高", "low_60d": "60日最低",
+    "momentum_5d": "5日动量", "momentum_20d": "20日动量", "momentum_60d": "60日动量",
+    "atr_14": "ATR14", "annual_vol_20d": "20日年化波动",
+    "consecutive_limit_ups": "连板数", "consecutive_limit_downs": "跌停连板",
+}
+
+
+def _signal_cn_name(name: str) -> str:
+    """返回信号/字段的中文名, 找不到原样返回 (与前端 cnSignal 对齐)。"""
+    return _SIGNAL_CN.get(name, name)
+
 
 @dataclass
 class StrategyAlert:
@@ -276,6 +314,9 @@ class MonitorRuleEngine:
         self._strategy_pools: dict[str, set[str]] = {}
         # 数据目录 (用于加载策略 overrides)
         self._data_dir = None
+        # 本轮 evaluate() 产出的策略选股结果: strategy_id → {rows, total, as_of}
+        # 供策略页实时回显复用 (/api/screener/cached 端点直接读取此内存结果), 避免重跑
+        self._latest_strategy_results: dict[str, dict] = {}
 
     def set_strategy_engine(self, engine) -> None:
         """注入 StrategyEngine, type=strategy 规则据此跑选股。"""
@@ -325,6 +366,14 @@ class MonitorRuleEngine:
     def rule_count(self) -> int:
         return len(self._rules)
 
+    def latest_strategy_results(self) -> dict[str, dict]:
+        """返回本轮 evaluate() 产出的策略选股结果 (strategy_id → {rows, total, as_of})。
+
+        供策略页实时回显复用: /api/screener/cached 端点直接读取此内存结果,
+        避免对被监控的策略重跑第二遍。无 type=strategy 规则时返回空 dict。
+        """
+        return self._latest_strategy_results
+
     # ── 评估 ───────────────────────────────────────────
     def evaluate(self, df: pl.DataFrame) -> list[dict]:
         """行情更新后评估所有规则。
@@ -339,6 +388,8 @@ class MonitorRuleEngine:
 
         now = time.time()
         events: list[dict] = []
+        # 每轮重置: 只保留本次 evaluate 产出的策略结果
+        self._latest_strategy_results = {}
 
         for rule_id, rule in self._rules.items():
             try:
@@ -395,7 +446,11 @@ class MonitorRuleEngine:
                 message = name  # name 字段即批量消息
             else:
                 resolved_name = name if name else self._name_map.get(sym)
-                message = rule.get("message", "") or self._default_message(rule, ev_type=ev_type, sym=sym, name=resolved_name, pct=pct)
+                message = rule.get("message", "") or self._default_message(
+                    rule, ev_type=ev_type, sym=sym, name=resolved_name,
+                    pct=pct, price=price,
+                    conditions=list(rule.get("conditions", [])) if rule.get("type") != "strategy" else None,
+                )
 
             ev = {
                 "ts": int(now * 1000),
@@ -485,6 +540,22 @@ class MonitorRuleEngine:
         except Exception as e:
             logger.warning("策略 %s 选股执行失败: %s", sid, e)
             return []
+
+        # 记录本轮完整选股结果 (供策略页实时回显: /cached 端点直接读取, 不落盘)。
+        # 与下面的 diff 事件无关 — 无论是否产生 new_entry/dropped, 结果都该可用于回显。
+        try:
+            import math
+            self._latest_strategy_results[sid] = {
+                "total": result.total,
+                "as_of": str(_dt.date.today()),
+                "rows": [
+                    {k: (None if isinstance(v, float) and not math.isfinite(v) else v)
+                     for k, v in row.items()}
+                    for row in result.rows
+                ],
+            }
+        except Exception:  # noqa: BLE001
+            pass
 
         current_pool: set[str] = {r["symbol"] for r in result.rows}
         prev_pool = self._strategy_pools.get(sid)
@@ -582,8 +653,13 @@ class MonitorRuleEngine:
         return results
 
     def _default_message(self, rule: dict, ev_type: str = "", sym: str = "",
-                          name: str = "", pct: Any = None) -> str:
-        """生成默认 message。策略类型按变更方向生成。"""
+                          name: str = "", pct: Any = None, price: Any = None,
+                          conditions: list[dict] | None = None) -> str:
+        """生成默认 message。
+
+        - strategy: 按变更方向生成 (进入/移出 + 涨跌幅)
+        - signal/price/market: 条件摘要 + 现价 + 涨跌幅 (避免笼统的「信号触发」)
+        """
         rtype = rule.get("type", "signal")
         if rtype == "strategy":
             # 从 StrategyEngine 取策略名; 失败则退化为 rule_name 里截取的部分
@@ -613,5 +689,40 @@ class MonitorRuleEngine:
                 return f"策略「{sname}」移出 {name}{pct_text}"
             return f"策略「{sname}」变更"
 
-        name_map = {"signal": "信号触发", "price": "价格触发", "market": "市场异动"}
-        return name_map.get(rtype, "监控触发")
+        # signal / price / market: 条件摘要 + 现价 + 涨跌幅
+        # 条件摘要: 把 conditions (truth/比较) 拼成可读串, 如 "MA20金叉 且 量比>2"
+        cond_text = self._format_conditions_text(rule, conditions)
+        price_text = f"现价 {price}" if price is not None else ""
+        pct_text = ""
+        if pct is not None:
+            sign = "+" if pct >= 0 else ""
+            pct_text = f"{sign}{pct * 100:.1f}%"
+        tail = " · ".join(s for s in (price_text, pct_text) if s)
+        if cond_text and tail:
+            return f"{cond_text} · {tail}"
+        return cond_text or tail or "监控触发"
+
+    @staticmethod
+    def _format_conditions_text(rule: dict, conditions: list[dict] | None) -> str:
+        """把 rule.conditions 拼成可读文本 (用于 message / 推送)。
+
+        op=truth: 直接用信号中文名 (如 "MA20金叉")
+        op=比较: 字段中文名 + 操作符 + 值 (如 "涨跌幅≥5")
+        logic: and → "且", or → "或"
+        """
+        conds = conditions if conditions is not None else list(rule.get("conditions", []))
+        if not conds:
+            return ""
+        logic_word = "且" if rule.get("logic", "and") == "and" else "或"
+        parts: list[str] = []
+        for c in conds:
+            field = c.get("field", "")
+            op = c.get("op", "truth")
+            value = c.get("value")
+            label = _signal_cn_name(field) or field
+            if op == "truth":
+                parts.append(label)
+            else:
+                op_map = {"gte": "≥", "lte": "≤", "gt": ">", "lt": "<", "eq": "="}
+                parts.append(f"{label}{op_map.get(op, op)}{value}")
+        return f" {logic_word} ".join(parts)

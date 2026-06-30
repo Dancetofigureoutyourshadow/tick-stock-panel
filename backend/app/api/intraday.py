@@ -136,6 +136,9 @@ async def quote_stream(request: Request):
                 "depth": asyncio.ensure_future(
                     asyncio.to_thread(qs.wait_for_depth_update, timeout=5.0) if qs else asyncio.sleep(5)
                 ),
+                "review": asyncio.ensure_future(
+                    asyncio.to_thread(qs.wait_for_review, timeout=5.0) if qs else asyncio.sleep(5)
+                ),
             }
 
             done, pending = await asyncio.wait(
@@ -159,6 +162,14 @@ async def quote_stream(request: Request):
                                 "alerts": chunk,
                             }, ensure_ascii=False),
                         }
+
+                # 推送复盘进度 (定时复盘流式生成时) — 前端 reviewStore 直接消费
+                # 事件已是 recap_market_stream 产出的 JSON 字符串, 逐条转发
+                for evt_json in qs.pop_review_events():
+                    yield {
+                        "event": "review_progress",
+                        "data": evt_json,
+                    }
 
             # 推送行情更新 (行情信号触发)
             if tasks["quote"] in done:

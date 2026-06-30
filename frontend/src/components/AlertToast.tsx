@@ -161,10 +161,10 @@ export function AlertToastContainer() {
                   {ev.price != null && <span className="text-[10px] font-mono text-muted shrink-0">{fmtPrice(ev.price)}</span>}
                 </div>
               ) : (
-                <div className="mt-1 flex items-center gap-2 pl-0.5">
+                <div className="mt-1 flex items-center gap-1.5 pl-0.5">
                   <Bell className={cn('h-3 w-3 shrink-0', sev.replace('bg-', 'text-'))} />
+                  {/* message 已含「条件摘要 · 现价 · 涨跌幅」(后端生成), 直接展示避免重复 */}
                   {ev.message && <span className="text-[11px] text-foreground/70 truncate flex-1">{ev.message}</span>}
-                  {ev.price != null && <span className="text-[10px] font-mono text-muted shrink-0">{fmtPrice(ev.price)}</span>}
                 </div>
               )}
             </motion.div>

@@ -29,9 +29,10 @@ import { Logo } from './components/Logo'
 function OnboardingGuard({ children }: { children: React.ReactNode }) {
   const settings = useSettings()
 
-  // 加载中 或 正在后台重新请求 → 显示占位,避免用旧缓存误判
-  // (根治 invalidate 触发重取未返回时, 守卫用旧 onboarding_completed=false 误重定向的竞态)
-  if (settings.isLoading || settings.isFetching) {
+  // 仅首次加载(本地无缓存)时显示占位。
+  // 后台重取 (isFetching) 时本地已有上一份缓存可用, 直接放行, 避免切页时整屏 logo 闪烁。
+  // 防误重定向已由 Onboarding/AI 等处 invalidate 前的 setQueryData 同步缓存兜底。
+  if (settings.isLoading) {
     return (
       <div className="min-h-screen bg-base grid place-items-center">
         <div className="flex flex-col items-center gap-3 text-muted">

@@ -1800,6 +1800,7 @@ export interface PullConfig {
   last_status?: string | null
   last_message?: string | null
   last_rows?: number | null
+  next_run?: string | null
 }
 
 export interface ExtDataConfig {

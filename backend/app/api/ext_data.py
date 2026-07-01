@@ -575,6 +575,13 @@ def configure_pull(request: Request, config_id: str, body: PullConfigReq):
     # 刷新调度器
     pull_scheduler.refresh(_data_dir(request))
 
+    # 关闭定时拉取时清理残留的 next_run, 避免前端展示一个永不执行的"下次"
+    if not config.pull.enabled:
+        cleared = store.get(config_id)
+        if cleared and cleared.pull and cleared.pull.next_run:
+            cleared.pull.next_run = None
+            store.upsert(cleared)
+
     return {"status": "ok", "pull": config.pull.to_dict()}
 
 
@@ -630,8 +637,25 @@ async def run_pull(request: Request, config_id: str):
     try:
         n, d = await fetch_and_ingest(config, _data_dir(request))
         _refresh_views(request)
+        # 写回执行状态, 让前端"上次执行"面板立即反映
+        updated = store.get(config_id)
+        if updated and updated.pull:
+            from datetime import datetime, timezone
+            updated.pull.last_run = datetime.now(timezone.utc).isoformat()
+            updated.pull.last_status = "success"
+            updated.pull.last_message = f"{n} rows @ {d}"
+            updated.pull.last_rows = n
+            store.upsert(updated)
         return {"status": "ok", "rows": n, "date": d}
     except Exception as e:
+        # 失败也写回状态, 记录错误信息
+        failed = store.get(config_id)
+        if failed and failed.pull:
+            from datetime import datetime, timezone
+            failed.pull.last_run = datetime.now(timezone.utc).isoformat()
+            failed.pull.last_status = "error"
+            failed.pull.last_message = str(e)[:200]
+            store.upsert(failed)
         raise HTTPException(400, f"拉取失败: {e}") from e
 
 

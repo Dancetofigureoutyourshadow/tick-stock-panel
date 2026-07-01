@@ -1153,7 +1153,11 @@ export function LimitUpLadder() {
   const extColumnsParam = useMemo(() => buildExtColumnsParam(extFields), [extFields])
 
   const { data, isLoading, refetch, isFetching } = useQuery({
-    queryKey: [QK.limitLadder(asOf || undefined), extColumnsParam, direction],
+    // key 必须扁平: ['limit-ladder', asOf, extColumns, direction]。
+    // QK.limitLadder() 返回数组, 不能整块塞进 key —— 那样第 0 元素会变成嵌套数组
+    // ['limit-ladder', asOf], 与四处 invalidate 用的字符串前缀 ['limit-ladder'] 类型
+    // 不匹配(partialMatchKey 因 typeof 不同而失配), 导致修正/SSE 推送后页面不刷新。
+    queryKey: [...QK.limitLadder(asOf || undefined), extColumnsParam, direction],
     queryFn: () => api.limitLadder(asOf || undefined, extColumnsParam, direction),
     staleTime: 5 * 60_000,
   })

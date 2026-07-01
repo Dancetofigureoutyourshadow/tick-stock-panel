@@ -38,6 +38,7 @@ class PullConfig:
         "url", "method", "headers", "body", "response_path",
         "field_map", "schedule_minutes", "enabled",
         "last_run", "last_status", "last_message", "last_rows",
+        "next_run",
     )
 
     def __init__(
@@ -54,6 +55,7 @@ class PullConfig:
         last_status: str | None = None,
         last_message: str | None = None,
         last_rows: int | None = None,
+        next_run: str | None = None,
     ) -> None:
         self.url = url
         self.method = method              # GET | POST
@@ -67,6 +69,7 @@ class PullConfig:
         self.last_status = last_status      # "success" | "error"
         self.last_message = last_message
         self.last_rows = last_rows
+        self.next_run = next_run            # 下次预计运行 (ISO, 调度器写入)
 
     def to_dict(self) -> dict:
         return {
@@ -82,6 +85,7 @@ class PullConfig:
             "last_status": self.last_status,
             "last_message": self.last_message,
             "last_rows": self.last_rows,
+            "next_run": self.next_run,
         }
 
     @classmethod
@@ -101,6 +105,7 @@ class PullConfig:
             last_status=d.get("last_status"),
             last_message=d.get("last_message"),
             last_rows=d.get("last_rows"),
+            next_run=d.get("next_run"),
         )
 
 
@@ -407,8 +412,10 @@ def write_ext_parquet(
                 existing = pl.read_parquet(out_path)
                 key = "symbol" if "symbol" in df.columns else df.columns[0]
                 df = pl.concat([existing, df]).unique(subset=[key], keep="last")
-            except Exception:
-                pass
+            except Exception as e:
+                # schema 不一致 (列不同) 时 concat 失败 → 直接用新 df 覆盖。
+                # 记日志而非静默吞掉, 便于排查"数据结构错乱"类问题。
+                logger.warning("扩展表 %s 合并去重失败, 将覆盖写入: %s", config.id, e)
     else:
         # 时序: timeseries/ 下按日期分区
         out_dir = cfg_dir / "timeseries" / f"date={snap}"
@@ -421,8 +428,8 @@ def write_ext_parquet(
                 existing = pl.read_parquet(out_path)
                 key = "symbol" if "symbol" in df.columns else df.columns[0]
                 df = pl.concat([existing, df]).unique(subset=[key], keep="last")
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("扩展表 %s 合并去重失败, 将覆盖写入: %s", config.id, e)
 
     df = cast_df_to_schema(df, config.fields)
     df.write_parquet(out_path)

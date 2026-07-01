@@ -319,6 +319,14 @@ export interface OverviewMarket {
   industry_rank: { leading: OverviewDimensionRankItem[]; lagging: OverviewDimensionRankItem[] }
 }
 
+// ===== 概念涨幅轮动矩阵 =====
+// dates: 日期字符串列表(最新在最前); columns: {日期: [[概念名, 涨幅小数], ...]} 每列各自降序
+export interface RpsRotationData {
+  dates: string[]
+  columns: Record<string, [string, number][]>
+  concept_count: number
+}
+
 // ===== 大盘复盘 =====
 export interface AiReviewReport {
   id: string
@@ -1093,6 +1101,10 @@ export const api = {
   marketSnapshot: () =>
     request<{ as_of: string | null; rows: MarketSnapshotRow[] }>('/api/screener/market-snapshot'),
   overviewMarket: (asOf?: string) => request<OverviewMarket>(`/api/overview/market${asOf ? `?as_of=${asOf}` : ''}`),
+
+  // 概念涨幅轮动矩阵: 每列(日期)各自把所有概念按当天涨幅从高到低排序
+  rpsRotation: (days: number) =>
+    request<RpsRotationData>(`/api/rps/rotation?days=${days}`),
 
   limitLadder: (asOf?: string, extColumns?: string, direction?: 'up' | 'down') => {
     const params = new URLSearchParams()

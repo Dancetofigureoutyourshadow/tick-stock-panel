@@ -772,11 +772,16 @@ def start_scheduler(repo: KlineRepository, capset: CapabilitySet) -> AsyncIOSche
     )
 
     # 盘后: 日 K + enriched（时间由偏好决定）
+    def _pipeline_then_refresh(on_progress=None):
+        # 与手动触发 (/api/pipeline/run) 对齐: 管道落盘后重建 Polars 内存缓存,
+        # 否则 live_agg 的昨日连板数等基准列会停留在旧交易日, 次日开盘连板梯队
+        # 整体少算一档 (仅手动触发或重启才会刷缓存, cron 调度路径此前漏了这步)。
+        result = run_now(repo, capset, on_progress=on_progress)
+        repo.refresh_cache()
+        return result
+
     scheduler.add_job(
-        lambda: _run_tracked(
-            lambda on_progress=None: run_now(repo, capset, on_progress=on_progress),
-            "daily_pipeline",
-        ),
+        lambda: _run_tracked(_pipeline_then_refresh, "daily_pipeline"),
         trigger=CronTrigger(day_of_week="mon-fri",
                             hour=sched["hour"], minute=sched["minute"],
                             timezone="Asia/Shanghai"),

@@ -282,6 +282,7 @@ class KlineRepository:
         self._enriched_cache_date: date | None = None
         self._live_agg_cache: pl.DataFrame | None = None       # 预计算聚合表 (~5500行)
         self._live_agg_cache_date: date | None = None
+        self._live_agg_check_date: date | None = None          # 上次跨日校验时的 today (快路径节流)
         self._instruments_cache: pl.DataFrame | None = None
         # 完整 enriched 历史 (含所有指标, 供 filter_history 策略使用)
         self._enriched_history_cache: pl.DataFrame | None = None  # ~100万行
@@ -337,6 +338,7 @@ class KlineRepository:
         self._enriched_history_start = None
         self._live_agg_cache = None
         self._live_agg_cache_date = None
+        self._live_agg_check_date = None
         self._instruments_cache = None
         self._index_instruments_cache = None
         self._etf_enriched_cache = None
@@ -796,9 +798,36 @@ class KlineRepository:
         return df.sort(["symbol", "date"])
 
     def get_live_agg(self) -> pl.DataFrame:
-        """返回盘中实时指标预计算聚合表。如无缓存则懒加载。"""
+        """返回盘中实时指标预计算聚合表。如无缓存则懒加载。
+
+        live_agg 的核心列 _prev_consec_up/down (昨日连板数) 取自基准日 enriched。
+        基准日由 _live_agg_baseline_date 决定: 盘中(today 有实时分区) 取上一交易日,
+        非盘中(磁盘最新日 < today) 取该最新日本身。一旦跨日, 期望基准日会前移,
+        旧缓存会把连板数整体少算一档, 故这里除首次懒加载外还要校验基准日是否仍
+        符合当前预期, 不符则重建 (无需等盘后管道刷缓存)。
+
+        性能: get_live_agg 被每轮实时行情调用 (expert 档 1s 一次)。跨日只在
+        date.today() 翻天时发生, 故先用 today 做廉价的 fast-path (μs 级),
+        仅当 today 变化时才查磁盘确认 (DuckDB 扫 132 万行约 100ms+) 并按需重建。
+        """
         if self._live_agg_cache is None:
             self._refresh_enriched()
+            self._live_agg_check_date = date.today()  # 刚建过, 当天不必再查磁盘
+        else:
+            today = date.today()
+            if self._live_agg_check_date != today:
+                # today 翻天了 (次日开盘首次轮询): 校验基准日是否需要前移重建。
+                # 同一天内多次调用直接跳过, 避免每轮都扫 parquet。
+                self._live_agg_check_date = today
+                disk_latest = self._latest_enriched_date_duckdb()
+                if disk_latest is not None:
+                    expected = self._live_agg_baseline_date(disk_latest)
+                    if self._live_agg_cache_date != expected:
+                        logger.info(
+                            "live_agg 跨日失效, 重建: 缓存基准=%s, 期望基准=%s",
+                            self._live_agg_cache_date, expected,
+                        )
+                        self._refresh_enriched()
         if self._live_agg_cache is None:
             return pl.DataFrame()
         return self._live_agg_cache

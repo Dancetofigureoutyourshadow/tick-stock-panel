@@ -314,6 +314,10 @@ class MonitorRuleEngine:
         self._strategy_pools: dict[str, set[str]] = {}
         # 数据目录 (用于加载策略 overrides)
         self._data_dir = None
+        # 历史窗口加载器: (target_date, lookback_days) → 多日 enriched DataFrame。
+        # 用于声明 filter_history 的策略 (如反包), 实时监控时拼历史窗口 + 今日行情跑选股。
+        # 为 None 时, filter_history 策略仍会被跳过 (保持旧行为, 不破坏无历史场景)。
+        self._history_loader: Callable[[_dt.date, int], "pl.DataFrame"] | None = None
         # 本轮 evaluate() 产出的策略选股结果: strategy_id → {rows, total, as_of}
         # 供策略页实时回显复用 (/api/screener/cached 端点直接读取此内存结果), 避免重跑
         self._latest_strategy_results: dict[str, dict] = {}
@@ -325,6 +329,15 @@ class MonitorRuleEngine:
     def set_data_dir(self, data_dir) -> None:
         """注入数据目录, 用于加载策略的用户覆盖配置。"""
         self._data_dir = data_dir
+
+    def set_history_loader(self, fn) -> None:
+        """注入历史窗口加载器, 用于声明 filter_history 的策略跑实时监控。
+
+        loader 签名: (target_date, lookback_days) → 多日 enriched DataFrame。
+        复用 ScreenerService._load_enriched_history (三级缓存, 命中 ~0ms)。
+        为 None 时 filter_history 策略退回到跳过逻辑 (不破坏无历史场景)。
+        """
+        self._history_loader = fn
 
     def set_name_map(self, name_map: dict[str, str]) -> None:
         """注入 symbol → 股票名 映射, 用于在告警事件里回填 name 字段。
@@ -517,11 +530,6 @@ class MonitorRuleEngine:
         if s is None:
             return []
 
-        # 需要历史数据的策略跳过 (实时监控不支持 history loader)
-        if s.filter_history_fn:
-            logger.debug("策略 %s 需要历史数据, 跳过实时监控", sid)
-            return []
-
         # 运行策略选股: 复用当前 enriched DataFrame 跳过数据加载
         overrides = {}
         if self._data_dir:
@@ -530,13 +538,43 @@ class MonitorRuleEngine:
             except Exception:
                 pass
 
+        # 声明 filter_history 的策略 (如反包) 需要多日历史窗口才能判定形态。
+        # 旧实现因"实时监控不支持 history loader"直接跳过 → 反包等策略盘中永不触发。
+        # 现接入 history_loader, 拼历史窗口 + 今日实时行情, 经 precomputed_history 喂给引擎。
+        # loader 为 None (未装配) 时退回跳过, 保持旧行为, 不破坏无历史场景。
+        run_kwargs: dict = {
+            "as_of": _dt.date.today(),
+            "overrides": overrides,
+        }
+        if s.filter_history_fn:
+            if self._history_loader is None:
+                logger.debug("策略 %s 需要历史数据但未注入 history_loader, 跳过实时监控", sid)
+                return []
+            try:
+                today = _dt.date.today()
+                lookback = max(1, getattr(s, "lookback_days", 30))
+                hist_df = self._history_loader(today, lookback)
+                if hist_df is None or hist_df.is_empty():
+                    logger.debug("策略 %s 历史数据为空, 跳过本轮实时监控", sid)
+                    return []
+                # 历史窗口可能与今日已落盘数据重叠: 排掉 hist_df 中 date==today 的行,
+                # 今日行情始终以实时 df 为准 (盘中逐轮更新, 最接近收盘真相)。
+                # 否则 today 行重复会污染 filter_history 的 .over("symbol") 窗口判定。
+                if "date" in hist_df.columns:
+                    hist_df = hist_df.filter(pl.col("date") != today)
+                # 拼接历史窗口 + 今日实时行情 (filter_history 用 .over("symbol") 窗口, 多日天然可用)
+                run_kwargs["precomputed_history"] = pl.concat(
+                    [hist_df, df], how="diagonal_relaxed"
+                )
+            except Exception as e:
+                logger.warning("策略 %s 加载历史窗口失败, 跳过: %s", sid, e)
+                return []
+        else:
+            # 普通策略: 复用当前 enriched DataFrame 跳过数据加载
+            run_kwargs["precomputed"] = df
+
         try:
-            result = self._strategy_engine.run(
-                sid,
-                as_of=_dt.date.today(),
-                precomputed=df,
-                overrides=overrides,
-            )
+            result = self._strategy_engine.run(sid, **run_kwargs)
         except Exception as e:
             logger.warning("策略 %s 选股执行失败: %s", sid, e)
             return []

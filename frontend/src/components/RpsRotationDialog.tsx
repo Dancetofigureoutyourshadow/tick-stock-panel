@@ -1,11 +1,12 @@
 import { useState, useMemo, useRef, useEffect, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { X, Repeat, Sparkles, ArrowDownUp, Search } from 'lucide-react'
+import { X, Repeat, Sparkles, ArrowDownUp, RefreshCw, AlertCircle } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
 import { cn } from '@/lib/cn'
 import { fmtPct } from '@/lib/format'
+import { MarkdownRenderer } from '@/components/financials/MarkdownRenderer'
 
 interface Props {
   onClose: () => void
@@ -35,11 +36,44 @@ function shortDate(s: string): string {
   return `${Number(m[2])}/${m[3]}`
 }
 
+// 排名 → 前景色(A 股语义: 红=强, 绿=弱)。前 10 红, 后 10 绿, 中间默认强调色。
+// total 兜底: 概念总数未知时只判前 10, 不判后 10。
+function rankColorClass(rank: number, total: number): string {
+  if (rank <= 10) return 'text-bull'
+  if (total > 20 && rank > total - 10) return 'text-bear'
+  return 'text-accent'
+}
+
 export function RpsRotationDialog({ onClose }: Props) {
   const [days, setDays] = useState(DEFAULT_DAYS)
   const [reversed, setReversed] = useState(false)        // false=高→低, true=低→高
   const [selected, setSelected] = useState<string | null>(null)  // 点中的概念名, 高亮追踪
-  const [search, setSearch] = useState('')
+
+  // ---- AI 轮动分析状态 (组件内, 不建全局 store: 切页即关对话框) ----
+  const [analysis, setAnalysis] = useState('')            // 累积的 Markdown 报告
+  const [analyzing, setAnalyzing] = useState(false)       // 生成中
+  const [analysisError, setAnalysisError] = useState('')  // 错误信息
+  const [analysisMeta, setAnalysisMeta] = useState<{ summary?: string } | null>(null)
+  const [focus, setFocus] = useState('')                  // 用户追加的关注点
+
+  const runAnalysis = useCallback(async (daysParam: number, focusParam: string) => {
+    setAnalyzing(true)
+    setAnalysis('')
+    setAnalysisError('')
+    setAnalysisMeta(null)
+    try {
+      for await (const ev of api.rotationAnalyzeStream(daysParam, focusParam)) {
+        if (ev.type === 'meta') setAnalysisMeta({ summary: ev.summary })
+        else if (ev.type === 'delta') setAnalysis(a => a + (ev.content ?? ''))
+        else if (ev.type === 'error') setAnalysisError(ev.message ?? '未知错误')
+        // done: 无操作
+      }
+    } catch (e) {
+      setAnalysisError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setAnalyzing(false)
+    }
+  }, [])
 
   // 数据请求: React Query 缓存, 同 days 5 分钟内重开秒开
   const { data, isLoading, error } = useQuery({
@@ -68,7 +102,16 @@ export function RpsRotationDialog({ onClose }: Props) {
   // 监听滚动容器 scrollTop, 只渲染 [firstIdx, lastIdx] 范围内的行。
   // 387 行只画可视的 ~25 行 + overscan, DOM 恒定 ~30 行 × N 列, 滚动 60fps。
   const scrollRef = useRef<HTMLDivElement>(null)
+  // AI 报告区滚动容器: 流式生成时自动滚到底部
+  const analysisRef = useRef<HTMLDivElement>(null)
   const [visibleRange, setVisibleRange] = useState({ start: 0, end: 25 })
+
+  // 流式生成中: analysis 每次追加都把报告区滚到底部, 跟踪最新文字
+  useEffect(() => {
+    if (!analyzing) return
+    const el = analysisRef.current
+    if (el) el.scrollTop = el.scrollHeight
+  }, [analysis, analyzing])
 
   const handleScroll = useCallback(() => {
     const el = scrollRef.current
@@ -92,25 +135,19 @@ export function RpsRotationDialog({ onClose }: Props) {
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
 
-  // 搜索命中: 找出该概念在(未翻转的)每列中的排名, 用于跳转高亮
-  // 仅在有搜索词时计算, 避免每次渲染都遍历
-  const searchMatch = useMemo(() => {
-    const q = search.trim()
-    if (!q || rowCount === 0) return null
-    // 在最新日期列里找第一个含搜索词的概念, 返回它的显示行号(考虑翻转)
-    const latest = dates[0]
-    const col = columns[latest] ?? []
-    const rawIdx = col.findIndex(([name]) => name.includes(q))
-    if (rawIdx < 0) return null
-    return reversed ? rowCount - 1 - rawIdx : rawIdx
-  }, [search, columns, dates, reversed, rowCount])
-
-  // 搜索命中时自动滚到该行
-  useEffect(() => {
-    if (searchMatch == null) return
-    const el = scrollRef.current
-    if (el) el.scrollTo({ top: searchMatch * ROW_HEIGHT - el.clientHeight / 2, behavior: 'smooth' })
-  }, [searchMatch])
+  // 选中概念的追踪行: 找出它在每个日期列的(排名, 涨幅)。
+  // 每列已按涨幅降序排好, 故排名 = 该概念在数组里的索引 + 1。
+  // 未入选该日(概念当天无数据)显示空, 便于横向看排名变化。
+  const selectedRow = useMemo(() => {
+    if (!selected) return null
+    const cells: ({ rank: number; pct: number } | null)[] = []
+    for (const d of dates) {
+      const col = columns[d] ?? []
+      const idx = col.findIndex(([name]) => name === selected)
+      cells.push(idx >= 0 ? { rank: idx + 1, pct: col[idx][1] } : null)
+    }
+    return cells
+  }, [selected, dates, columns])
 
   const renderRows = useMemo(() => {
     const rows: JSX.Element[] = []
@@ -196,17 +233,66 @@ export function RpsRotationDialog({ onClose }: Props) {
             </button>
           </div>
 
-          {/* 上半区: AI 分析占位 */}
-          <div className="shrink-0 border-b border-border">
-            <div className="flex items-center gap-1.5 px-4 py-1.5 bg-elevated/30">
-              <Sparkles className="h-3.5 w-3.5 text-accent/60" />
-              <span className="text-[11px] text-muted">AI 轮动分析</span>
-            </div>
-            <div className="px-4 py-3 text-center">
-              <div className="inline-flex items-center gap-1.5 text-[11px] text-muted/60">
-                <Sparkles className="h-3.5 w-3.5" />
-                <span>AI 轮动分析功能开发中,敬请期待</span>
+          {/* 上半区: AI 轮动分析 */}
+          <div className="shrink-0 border-b border-border flex flex-col max-h-[42%]">
+            {/* 标题栏: 标题 + meta 摘要 + focus 输入 + 触发按钮 */}
+            <div className="flex items-center gap-2 px-4 py-1.5 bg-elevated/30 shrink-0">
+              <Sparkles className={cn('h-3.5 w-3.5 text-accent/60', analyzing && 'animate-pulse')} />
+              <span className="text-[11px] text-muted shrink-0">AI 轮动分析</span>
+              {analysisMeta?.summary && (
+                <span className="text-[11px] text-accent/80 truncate">{analysisMeta.summary}</span>
+              )}
+              <div className="flex items-center gap-1.5 ml-auto">
+                <input
+                  type="text"
+                  value={focus}
+                  onChange={e => setFocus(e.target.value)}
+                  placeholder="关注点(可选)"
+                  disabled={analyzing}
+                  className="w-28 px-2 py-0.5 text-[11px] bg-elevated/50 border border-border rounded-btn text-foreground placeholder:text-muted/50 focus:outline-none focus:border-accent/40 disabled:opacity-50"
+                />
+                <button
+                  onClick={() => runAnalysis(days, focus)}
+                  disabled={analyzing}
+                  className={cn(
+                    'inline-flex items-center gap-1 px-2 py-0.5 rounded-btn text-[11px] transition-colors cursor-pointer border',
+                    analyzing
+                      ? 'opacity-60 cursor-not-allowed border-border text-muted'
+                      : 'bg-accent/10 text-accent border-accent/30 hover:bg-accent/20',
+                  )}
+                >
+                  {analyzing
+                    ? <><RefreshCw className="h-3 w-3 animate-spin" />分析中</>
+                    : analysis
+                      ? <><RefreshCw className="h-3 w-3" />重新分析</>
+                      : <><Sparkles className="h-3 w-3" />生成分析</>}
+                </button>
               </div>
+            </div>
+
+            {/* 报告内容区: 四态渲染 */}
+            <div ref={analysisRef} className="flex-1 min-h-0 overflow-auto">
+              {analysisError ? (
+                <div className="flex items-center gap-2 px-4 py-4 text-[11px] text-danger">
+                  <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+                  <span>{analysisError}</span>
+                  <button
+                    onClick={() => runAnalysis(days, focus)}
+                    className="ml-auto text-accent hover:underline shrink-0"
+                  >重试</button>
+                </div>
+              ) : analysis || analyzing ? (
+                <div className="px-4 py-2.5 text-[12px] leading-relaxed">
+                  <MarkdownRenderer content={analysis} />
+                  {analyzing && (
+                    <span className="inline-block w-1.5 h-3.5 bg-accent animate-pulse align-middle ml-0.5" />
+                  )}
+                </div>
+              ) : (
+                <div className="px-4 py-4 text-center text-[11px] text-muted/60">
+                  点击「生成分析」,AI 将从主线研判 / 新晋强势 / 退潮预警 / 机构vs游资 等角度分析最近 {days} 天的概念轮动
+                </div>
+              )}
             </div>
           </div>
 
@@ -238,16 +324,6 @@ export function RpsRotationDialog({ onClose }: Props) {
               <ArrowDownUp className="h-3 w-3" />
               {reversed ? '低→高' : '高→低'}
             </button>
-            <div className="relative flex-1 max-w-[220px] ml-auto">
-              <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3 w-3 text-muted/50" />
-              <input
-                type="text"
-                value={search}
-                onChange={e => setSearch(e.target.value)}
-                placeholder="搜索概念定位…"
-                className="w-full pl-7 pr-2 py-1 text-[11px] bg-elevated/50 border border-border rounded-btn text-foreground placeholder:text-muted/50 focus:outline-none focus:border-accent/40"
-              />
-            </div>
             {selected && (
               <button
                 onClick={() => setSelected(null)}
@@ -295,6 +371,46 @@ export function RpsRotationDialog({ onClose }: Props) {
                         </th>
                       ))}
                     </tr>
+                    {/* 选中概念追踪行: 在日期表头下方单独一行, 横向展示它在各日的排名+涨幅 */}
+                    <AnimatePresence>
+                      {selected && selectedRow && (
+                        <motion.tr
+                          initial={{ opacity: 0, height: 0 }}
+                          animate={{ opacity: 1, height: 'auto' }}
+                          exit={{ opacity: 0, height: 0 }}
+                          transition={{ duration: 0.15 }}
+                          className="border-b border-accent/20 bg-accent/5"
+                        >
+                          <td className="sticky left-0 z-30 bg-surface px-2 py-1 text-center border-r border-border/40">
+                            <span className="text-[10px] text-accent truncate block max-w-[44px]" title={selected}>
+                              {selected}
+                            </span>
+                          </td>
+                          {selectedRow.map((cell, i) => (
+                            <td key={i} className="px-2 py-1 text-center whitespace-nowrap align-middle">
+                              {cell ? (
+                                <div className="flex flex-col items-center gap-0.5 leading-tight">
+                                  <span className={cn(
+                                    'text-[11px] font-medium tabular-nums',
+                                    rankColorClass(cell.rank, conceptCount),
+                                  )}>
+                                    #{cell.rank}
+                                  </span>
+                                  <span className={cn(
+                                    'text-[10px] tabular-nums',
+                                    cell.pct > 0 ? 'text-bull' : cell.pct < 0 ? 'text-bear' : 'text-muted',
+                                  )}>
+                                    {fmtPct(cell.pct)}
+                                  </span>
+                                </div>
+                              ) : (
+                                <span className="text-[10px] text-muted/40">—</span>
+                              )}
+                            </td>
+                          ))}
+                        </motion.tr>
+                      )}
+                    </AnimatePresence>
                   </thead>
                   <tbody>
                     {/* 顶部占位: 把滚动位置撑起来 */}

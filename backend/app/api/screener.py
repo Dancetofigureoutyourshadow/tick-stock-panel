@@ -199,8 +199,12 @@ def strategies(request: Request):
                 desc = (overrides.get("description") or meta.get("description", "")) if overrides else meta.get("description", "")
                 presets.append({"id": sid, "name": name, "description": desc, "source": meta.get("source", "custom")})
                 seen_ids.add(sid)
+        # 暴露加载失败的策略,让前端可见(避免"策略静默消失"误判为正常)
+        load_errors = engine.load_errors() if engine else []
+    else:
+        load_errors = []
 
-    return {"presets": presets}
+    return {"presets": presets, "load_errors": load_errors}
 
 
 @router.post("/run")

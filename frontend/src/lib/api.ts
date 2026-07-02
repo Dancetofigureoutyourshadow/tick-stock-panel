@@ -242,6 +242,11 @@ export interface ScreenerStrategy {
   source?: string
 }
 
+export interface StrategyLoadError {
+  file: string
+  error: string
+}
+
 export interface ScreenerResult {
   as_of: string
   strategy: string | null
@@ -1080,7 +1085,7 @@ export const api = {
         : '/api/watchlist/enriched',
     ),
 
-  screenerStrategies: () => request<{ presets: ScreenerStrategy[] }>('/api/screener/strategies'),
+  screenerStrategies: () => request<{ presets: ScreenerStrategy[]; load_errors?: StrategyLoadError[] }>('/api/screener/strategies'),
   screenerRunPreset: (strategy_id: string, pool?: string[], asOf?: string, extColumns?: string) =>
     request<ScreenerResult>('/api/screener/run_preset', {
       method: 'POST',

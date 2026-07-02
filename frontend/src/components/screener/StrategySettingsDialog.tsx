@@ -217,6 +217,7 @@ export function StrategySettingsDialog({ strategyId, onClose, onSaved, onAiModif
   const [editingScoring, setEditingScoring] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+  const [deleteError, setDeleteError] = useState('')
 
   // 辅助：更新 basicFilter 某个 key
   const setBF = useCallback((key: string, value: any) => {
@@ -303,12 +304,16 @@ export function StrategySettingsDialog({ strategyId, onClose, onSaved, onAiModif
   const handleDelete = async () => {
     if (!strategyId) return
     setDeleting(true)
+    setDeleteError('')
     try {
       await api.strategyDelete(strategyId)
       onDeleted?.()
       onClose()
-    } catch { /* ignore */ }
-    finally { setDeleting(false); setShowDeleteConfirm(false) }
+      setShowDeleteConfirm(false)
+    } catch (e: any) {
+      // request() 已弹 toast, 这里再在确认弹窗内显式提示, 并保持弹窗打开让用户知晓删除失败。
+      setDeleteError(String(e?.message ?? '删除失败,请重试'))
+    } finally { setDeleting(false) }
   }
 
   if (!strategyId) return null
@@ -546,7 +551,7 @@ export function StrategySettingsDialog({ strategyId, onClose, onSaved, onAiModif
                 <RotateCcw className="h-3.5 w-3.5" />{resetting ? '重置中…' : '重置默认'}
               </button>
               {(detail?.source === 'ai' || detail?.source === 'custom') && (
-                <button onClick={() => setShowDeleteConfirm(true)}
+                <button onClick={() => { setDeleteError(''); setShowDeleteConfirm(true) }}
                   className="text-[10px] text-muted/40 hover:text-danger transition-colors">删除策略</button>
               )}
             </div>
@@ -591,6 +596,11 @@ export function StrategySettingsDialog({ strategyId, onClose, onSaved, onAiModif
               <div className="text-[11px] text-danger/70 bg-danger/[0.04] rounded-lg px-3 py-2 border border-danger/10">
                 删除后无法恢复，策略文件、配置和关联数据将被永久清除。
               </div>
+              {deleteError && (
+                <div className="text-[11px] text-danger bg-danger/10 rounded-lg px-3 py-2 border border-danger/20">
+                  {deleteError}
+                </div>
+              )}
               <div className="flex gap-2 pt-2">
                 <button onClick={() => setShowDeleteConfirm(false)}
                   className="flex-1 h-8 rounded-lg border border-border text-xs text-secondary hover:text-foreground">取消</button>

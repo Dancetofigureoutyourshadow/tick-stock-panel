@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { motion } from 'framer-motion'
 import { ScanSearch, Clock, TrendingUp, Star, Filter, Layers, Network, Sparkles, RefreshCw, Settings2, Store } from 'lucide-react'
 import { api, genRuleId, type ScreenerStrategy, type ScreenerResult } from '@/lib/api'
+import { toast } from '@/components/Toast'
 import { useDataStatus, usePreferences } from '@/lib/useSharedQueries'
 import { useWatchlistBatchAdd } from '@/lib/useSharedMutations'
 import { QK } from '@/lib/queryKeys'
@@ -146,11 +147,23 @@ export function Screener() {
 
   // 策略列表加载后,自动清除池中失效的自定义策略(如本地开发残留的、
   // 当前后端已不存在的策略 ID),避免"策略池"对话框持续显示失效项。
-  // availableStrategyIds 初始为空集合时跳过,防止首次渲染误清整个池。
+  // 关键: 仅当本次拉取成功且返回非空列表时才 prune。
+  // 拉取中/失败/返回空(如引擎 reload 瞬时把某策略跳过)时一律不碰池,
+  // 否则会把用户池里仍有效的 ID 永久清空并写入 localStorage,导致卡片全没。
   useEffect(() => {
-    if (availableStrategyIds.size === 0) return
+    if (strategies.isError) return        // 拉取失败: 不 prune
+    if (!strategies.isSuccess) return     // 加载中: 不 prune
+    if (availableStrategyIds.size === 0) return  // 空列表: 不 prune
     prune(availableStrategyIds)
-  }, [availableStrategyIds, prune])
+  }, [availableStrategyIds, prune, strategies.isError, strategies.isSuccess])
+
+  // 策略文件加载失败时提示用户(避免"策略静默消失"被误判为正常)
+  const loadErrors = strategies.data?.load_errors ?? []
+  useEffect(() => {
+    for (const e of loadErrors) {
+      toast(`策略「${e.file}」加载失败：${e.error}`, 'error')
+    }
+  }, [loadErrors])
 
   // 进入页面自动跑策略池中的策略，获取命中数
   const runAll = useMutation({

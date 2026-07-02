@@ -1381,8 +1381,9 @@ def compute_enriched_today(
 def _compute_limit_signals_today(df: pl.DataFrame, instruments: pl.DataFrame) -> pl.DataFrame:
     """盘中增量版的涨跌停/换手率/炸板/连板计算。"""
     inst_cols = ["symbol"]
-    if "float_shares" in instruments.columns:
-        inst_cols.append("float_shares")
+    for c in ["float_shares", "limit_up", "limit_down"]:
+        if c in instruments.columns:
+            inst_cols.append(c)
     inst_subset = instruments.select(inst_cols).unique(subset=["symbol"])
     if "name" in instruments.columns:
         st_flag = (
@@ -1431,14 +1432,31 @@ def _compute_limit_signals_today(df: pl.DataFrame, instruments: pl.DataFrame) ->
     limit_up_price = _limit_price(prev_raw, limit_pct, up=True)
     limit_down_price = _limit_price(prev_raw, limit_pct, up=False)
 
+    # 生效涨跌停价: 优先用维表权威值 (instruments.limit_up/down, 交易所级别精确价),
+    # 维表缺失 (新股上市前 5 日: limit_up 为 null 或哨兵 100000) 回退自算理论价。
+    # 哨兵阈值 10000 用于识别 "新股无涨跌停限制" 的占位值 (实际涨停价不可能上万)。
+    _SENTINEL = 10000.0
+    if "limit_up" in df.columns:
+        effective_limit_up = pl.when(
+            pl.col("limit_up").is_not_null() & (pl.col("limit_up") < _SENTINEL)
+        ).then(pl.col("limit_up")).otherwise(limit_up_price)
+    else:
+        effective_limit_up = limit_up_price
+    if "limit_down" in df.columns:
+        effective_limit_down = pl.when(
+            pl.col("limit_down").is_not_null() & (pl.col("limit_down") < _SENTINEL)
+        ).then(pl.col("limit_down")).otherwise(limit_down_price)
+    else:
+        effective_limit_down = limit_down_price
+
     is_limit_up = (
         pl.when((prev_raw > 0) & (pl.col("raw_close") > 0))
-          .then((pl.col("raw_close") - limit_up_price).abs() < 0.005)
+          .then(pl.col("raw_close") >= (effective_limit_up - 0.005))
           .otherwise(None).cast(pl.Boolean)
     )
     is_limit_down = (
         pl.when((prev_raw > 0) & (pl.col("raw_close") > 0))
-          .then((pl.col("raw_close") - limit_down_price).abs() < 0.005)
+          .then(pl.col("raw_close") <= (effective_limit_down + 0.005))
           .otherwise(None).cast(pl.Boolean)
     )
 
@@ -1449,7 +1467,7 @@ def _compute_limit_signals_today(df: pl.DataFrame, instruments: pl.DataFrame) ->
         pl.when(prev_raw > 0)
           .then(
               (~is_limit_down.fill_null(True))
-              & (pl.col("low") <= limit_down_price + 0.005)
+              & (pl.col("low") <= effective_limit_down + 0.005)
               & (pl.col("close") > pl.col("open"))
           ).otherwise(None).cast(pl.Boolean)
           .alias("signal_limit_down_recovery"),
@@ -1457,7 +1475,7 @@ def _compute_limit_signals_today(df: pl.DataFrame, instruments: pl.DataFrame) ->
         pl.when((prev_raw > 0) & (pl.col("raw_high") > 0))
           .then(
               (~is_limit_up.fill_null(True))
-              & (pl.col("raw_high") >= limit_up_price - 0.005)
+              & (pl.col("raw_high") >= effective_limit_up - 0.005)
           ).otherwise(None).cast(pl.Boolean)
           .alias("signal_broken_limit_up"),
     ])
@@ -1482,7 +1500,7 @@ def _compute_limit_signals_today(df: pl.DataFrame, instruments: pl.DataFrame) ->
     ])
 
     # 清理
-    cleanup = ["_limit_pct", "_is_st"]
+    cleanup = ["_limit_pct", "_is_st", "limit_up", "limit_down"]
     for c in df.columns:
         if c.endswith("_inst"):
             cleanup.append(c)

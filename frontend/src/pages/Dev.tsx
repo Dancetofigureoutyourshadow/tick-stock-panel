@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { Loader2, Search, AlertTriangle, CheckCircle2, XCircle, FlaskConical, Activity } from 'lucide-react'
+import { Loader2, Search, AlertTriangle, CheckCircle2, XCircle, FlaskConical, Activity, Bell } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
 import { api } from '@/lib/api'
 import { cn } from '@/lib/cn'
@@ -315,15 +315,143 @@ function SeedPanel() {
   )
 }
 
+// ── 封单监控模拟触发 ──────────────────────────────────
+function LadderTestPanel() {
+  const [result, setResult] = useState<Awaited<ReturnType<typeof api.monitorRuleTestLadder>> | null>(null)
+  const [error, setError] = useState('')
+  const [pushMsg, setPushMsg] = useState('')
+
+  const testMut = useMutation({
+    mutationFn: () => api.monitorRuleTestLadder(),
+    onSuccess: (data) => { setResult(data); setError('') },
+    onError: (e: any) => { setError(e?.message ?? String(e)); setResult(null) },
+  })
+
+  const triggerMut = useMutation({
+    mutationFn: () => api.monitorRuleTriggerLadder(),
+    onSuccess: (data) => {
+      setPushMsg(`✅ 已真实触发 ${data.triggered} 条预警 (落盘 + 飞书 + SSE)`)
+      setTimeout(() => setPushMsg(''), 6000)
+    },
+    onError: (e: any) => {
+      setPushMsg(`❌ 触发失败: ${e?.message ?? String(e)}`)
+      setTimeout(() => setPushMsg(''), 6000)
+    },
+  })
+
+  const fmtVal = (v: number | null | undefined, metric: string) => {
+    if (v == null) return '—'
+    if (metric === 'sealed_amount') return `${(v / 1e8).toFixed(4)} 亿`
+    return `${v.toLocaleString()} 手`
+  }
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <h2 className="text-sm font-semibold text-foreground">封单监控模拟触发</h2>
+        <p className="mt-1 text-xs text-muted">
+          用当前 depth 封单数据 + 最新日 enriched, 评估所有 ladder 规则。
+        </p>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-3 rounded-btn bg-elevated p-4">
+        <button
+          onClick={() => testMut.mutate()}
+          disabled={testMut.isPending}
+          className="flex items-center gap-1.5 rounded-btn bg-accent px-4 py-1.5 text-sm font-medium text-base hover:bg-accent/90 disabled:opacity-50 cursor-pointer"
+        >
+          {testMut.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Bell className="h-4 w-4" />}
+          模拟触发
+        </button>
+        <button
+          onClick={() => {
+            if (confirm('将真实推送飞书 + 写入监控中心 + 触发 SSE 通知。确认?')) {
+              triggerMut.mutate()
+            }
+          }}
+          disabled={triggerMut.isPending}
+          className="flex items-center gap-1.5 rounded-btn border border-amber-400/40 bg-amber-400/10 px-4 py-1.5 text-sm font-medium text-amber-400 hover:bg-amber-400/20 disabled:opacity-50 cursor-pointer"
+        >
+          {triggerMut.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Bell className="h-4 w-4" />}
+          真实触发预警
+        </button>
+        {result && (
+          <span className="text-xs text-muted">
+            日期 {result.as_of} · 封单股 {result.sealed_count} · 触发 {result.triggered.length} · 未触发 {result.not_triggered.length}
+          </span>
+        )}
+      </div>
+
+      <div className="rounded-btn border border-amber-400/30 bg-amber-400/5 p-3 text-xs text-muted">
+        <span className="font-medium text-amber-400">模拟触发</span>:纯条件判断,不落盘不推送。
+        <span className="font-medium text-amber-400 ml-2">真实触发</span>:走完整链路(落盘 alerts.jsonl + 推送飞书 + SSE 通知),会在监控中心和飞书看到预警。
+      </div>
+
+      {pushMsg && (
+        <div className="rounded-btn border border-accent/40 bg-accent/10 p-3 text-sm text-accent">{pushMsg}</div>
+      )}
+
+      {error && (
+        <div className="flex items-center gap-2 rounded-btn border border-danger/40 bg-danger/10 p-3 text-sm text-danger">
+          <AlertTriangle className="h-4 w-4 shrink-0" />
+          <span>{error}</span>
+        </div>
+      )}
+
+      {result && result.triggered.length > 0 && (
+        <div className="space-y-2">
+          <h3 className="text-sm font-medium text-emerald-400">✅ 会触发 ({result.triggered.length})</h3>
+          {result.triggered.map((ev) => (
+            <div key={ev.rule_id} className="rounded-btn border border-emerald-400/30 bg-emerald-400/5 p-3 text-sm">
+              <div className="flex items-center gap-2 mb-1">
+                <span className="font-medium text-foreground">{ev.symbol}</span>
+                {ev.name && <span className="text-secondary">{ev.name}</span>}
+                <span className="ml-auto rounded bg-emerald-400/15 px-1.5 py-0.5 text-xs text-emerald-400">{ev.type}</span>
+              </div>
+              <div className="text-xs text-secondary">{ev.message}</div>
+              <div className="mt-1 text-xs text-muted tabular-nums">
+                当前封单: {fmtVal(ev.sealed_metric === 'sealed_amount' ? ev.current_sealed_amount : ev.current_sealed_vol, ev.sealed_metric)}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {result && result.not_triggered.length > 0 && (
+        <div className="space-y-2">
+          <h3 className="text-sm font-medium text-muted">⚪ 未触发 ({result.not_triggered.length})</h3>
+          {result.not_triggered.map((r) => (
+            <div key={r.rule_id} className="rounded-btn border border-border bg-surface/40 p-3 text-sm">
+              <div className="flex items-center gap-2 mb-1">
+                <span className="font-medium text-foreground">{r.symbol}</span>
+                <span className="text-secondary text-xs">{r.rule_name}</span>
+              </div>
+              <div className="text-xs text-muted tabular-nums">
+                阈值 {fmtVal(r.threshold, r.metric)} · 当前 {fmtVal(r.current_value, r.metric)} · {r.reason}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {result && result.triggered.length === 0 && result.not_triggered.length === 0 && (
+        <div className="rounded-btn border border-border bg-surface/40 p-4 text-center text-sm text-muted">
+          无 ladder 监控规则,请先在连板梯队页设置封单监控
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Dev 主页面 ────────────────────────────────────────
 export function Dev() {
-  const [tab, setTab] = useState<'minute' | 'seed'>('seed')
+  const [tab, setTab] = useState<'minute' | 'seed' | 'ladder'>('seed')
 
   return (
     <div className="flex flex-col h-full">
       <PageHeader
-        title="开发者工具"
-        subtitle="调试与测试 · 不暴露在菜单"
+        title="系统工具"
+        subtitle="数据诊断与预警调试"
         right={
           <div className="flex items-center gap-1 rounded-btn bg-elevated p-0.5">
             <button
@@ -334,6 +462,15 @@ export function Dev() {
               )}
             >
               <FlaskConical className="h-3.5 w-3.5" />演示数据
+            </button>
+            <button
+              onClick={() => setTab('ladder')}
+              className={cn(
+                'inline-flex items-center gap-1.5 rounded px-2.5 py-1 text-xs font-medium transition-colors cursor-pointer',
+                tab === 'ladder' ? 'bg-surface text-foreground shadow-sm' : 'text-muted hover:text-secondary',
+              )}
+            >
+              <Bell className="h-3.5 w-3.5" />封单监控
             </button>
             <button
               onClick={() => setTab('minute')}
@@ -349,7 +486,7 @@ export function Dev() {
       />
       <div className="flex-1 overflow-auto px-5 py-4">
         <div className="mx-auto max-w-3xl space-y-4">
-          {tab === 'minute' ? <MinuteProbePanel /> : <SeedPanel />}
+          {tab === 'minute' ? <MinuteProbePanel /> : tab === 'ladder' ? <LadderTestPanel /> : <SeedPanel />}
         </div>
       </div>
     </div>

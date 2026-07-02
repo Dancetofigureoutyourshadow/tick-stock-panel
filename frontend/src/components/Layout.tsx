@@ -43,6 +43,7 @@ import {
   CheckCircle2,
   BookOpenCheck,
   ExternalLink,
+  X,
 } from 'lucide-react'
 import { Logo } from './Logo'
 import { api, type IndexQuote } from '@/lib/api'
@@ -296,6 +297,8 @@ export function Layout() {
   const navigate = useNavigate()
   const version = versionData?.version
   const realtimeEnabled = prefs?.realtime_quotes_enabled ?? false
+  // Free 档监控限制提示: 可手动关闭, 不持久化 (刷新后恢复显示)
+  const [dismissFreeHint, setDismissFreeHint] = useState(false)
   const indicesPinned = prefs?.indices_nav_pinned ?? true
   const sidebarIndexSymbols = prefs?.sidebar_index_symbols ?? CORE_INDEXES.map(p => p.symbol)
   const sidebarIndexes = CORE_INDEXES.filter(item => sidebarIndexSymbols.includes(item.symbol))
@@ -518,11 +521,23 @@ export function Layout() {
 
           {/* 状态提示 */}
           {realtimeEnabled && !isNoneTier && (
-            <div className="mt-1.5 text-[10px] leading-snug">
+            <div className="mt-1.5 text-[10px] leading-snug space-y-0.5">
+              {isWatchlistMode && !dismissFreeHint && (
+                <div className="flex items-start gap-1 text-amber-400/80">
+                  <span className="flex-1">监控自选股前 5 只，全市场监控需 Starter+</span>
+                  <button
+                    onClick={() => setDismissFreeHint(true)}
+                    className="text-amber-400/50 hover:text-amber-400 shrink-0 transition-colors"
+                    title="关闭提示"
+                  >
+                    <X className="h-2.5 w-2.5" />
+                  </button>
+                </div>
+              )}
               {isRunning && isTrading ? (
-                <span className="text-accent">行情运行中</span>
+                <div className="text-accent">行情运行中</div>
               ) : realtimeEnabled && !isTrading ? (
-                <span className="text-warning/70">非交易时段，将在交易时间自动开启</span>
+                <div className="text-warning/70">非交易时段，将在交易时间自动开启</div>
               ) : null}
             </div>
           )}

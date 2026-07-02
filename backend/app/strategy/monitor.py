@@ -387,6 +387,15 @@ class MonitorRuleEngine:
         """
         return self._latest_strategy_results
 
+    def has_rule_type(self, rtype: str) -> bool:
+        """是否存在指定类型的 (已启用) 规则。供 quote_service 判断是否需要注入特殊数据。"""
+        if not self._rules:
+            return False
+        return any(
+            r.get("enabled", True) and r.get("type") == rtype
+            for r in self._rules.values()
+        )
+
     # ── 评估 ───────────────────────────────────────────
     def evaluate(self, df: pl.DataFrame) -> list[dict]:
         """行情更新后评估所有规则。
@@ -427,6 +436,9 @@ class MonitorRuleEngine:
         if rtype == "strategy":
             # 策略类型: 跑策略选股 → 对比上期选股池 → 产出 new_entry/dropped 事件
             hit_rows = self._match_strategy(scoped, rule)
+        elif rtype == "ladder":
+            # 连板梯队封单监控: 独立处理 (需带预警封单值, 走专属 message)
+            return self._evaluate_ladder(scoped, rule, now)
         else:
             # signal / price / market: 通用条件匹配
             for sym, name, price, pct, hit_sigs in self._match_conditions(scoped, rule):
@@ -689,6 +701,85 @@ class MonitorRuleEngine:
             ]
             results.append((sym, name, price, pct, hit_sigs))
         return results
+
+    def _evaluate_ladder(self, scoped: pl.DataFrame, rule: dict, now: float) -> list[dict]:
+        """评估连板梯队封单监控规则。
+
+        封单量从注入的临时列 _sealed_vol (手) 读取 (由 quote_service 评估前注入)。
+        命中条件: 封单比较值 <= threshold (且封单 > 0, 排除无 depth 数据的股票)。
+        涨停(direction=up) → 炸板预警; 跌停(direction=down) → 翘板预警。
+        """
+        if "_sealed_vol" not in scoped.columns:
+            return []  # 无封单数据 (depth 未拉取), 安全降级
+
+        metric = rule.get("metric", "sealed_vol")
+        threshold = rule.get("threshold", 0)
+        direction = rule.get("direction", "up")
+        cooldown = rule.get("cooldown_seconds", 600)
+        severity = rule.get("severity", "warn")
+
+        # 比较值: sealed_vol 直接用 (手), sealed_amount = 手 × 100股 × close
+        if metric == "sealed_amount":
+            cmp_expr = pl.col("_sealed_vol") * 100 * pl.col("close")
+            unit = "元"
+        else:
+            cmp_expr = pl.col("_sealed_vol")
+            unit = "手"
+
+        # 命中: 封单 > 0 (有数据) 且 比较值 <= 阈值
+        hit = scoped.filter(
+            pl.col("_sealed_vol").is_not_null()
+            & (pl.col("_sealed_vol") > 0)
+            & (cmp_expr <= threshold)
+        )
+        if hit.is_empty():
+            return []
+
+        warn_label = "炸板预警" if direction == "up" else "翘板预警"
+        events: list[dict] = []
+        for row in hit.iter_rows(named=True):
+            sym = row.get("symbol", "")
+            key = (rule["id"], sym)
+            last = self._last_fire.get(key)
+            if last is not None and (now - last) < cooldown:
+                continue
+            self._last_fire[key] = now
+
+            name = row.get("name") or self._name_map.get(sym) or sym
+            price = row.get("close")
+            pct = row.get("change_pct")
+            sealed_vol = row.get("_sealed_vol")
+            # 预警封单值 (展示用)
+            sealed_value = sealed_vol * 100 * (price or 0) if metric == "sealed_amount" else sealed_vol
+
+            # message 体现预警封单量 + 阈值
+            if metric == "sealed_amount":
+                sv_text = f"{sealed_value / 1e4:.0f}万{unit}"
+                th_text = f"{threshold / 1e4:.0f}万{unit}"
+            else:
+                sv_text = f"{sealed_value:,.0f} {unit}"
+                th_text = f"{threshold:,.0f} {unit}"
+            message = f"{warn_label} · 封单 {sv_text} ≤ {th_text}"
+
+            events.append({
+                "ts": int(now * 1000),
+                "rule_id": rule["id"],
+                "rule_name": rule.get("name", ""),
+                "source": "ladder",
+                "type": warn_label,
+                "symbol": sym,
+                "name": name,
+                "message": message,
+                "price": price,
+                "change_pct": pct,
+                "signals": [],
+                "severity": severity,
+                "conditions": [],
+                "logic": "and",
+                "sealed_value": sealed_value,   # 预警封单量/额 (飞书+记录展示)
+                "sealed_metric": metric,
+            })
+        return events
 
     def _default_message(self, rule: dict, ev_type: str = "", sym: str = "",
                           name: str = "", pct: Any = None, price: Any = None,

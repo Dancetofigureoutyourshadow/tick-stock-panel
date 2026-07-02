@@ -685,7 +685,11 @@ class QuoteService:
                             })
                     except Exception as e:  # noqa: BLE001
                         logger.debug("name_map 构建失败 (不影响监控): %s", e)
-                    rule_events = engine.evaluate(enriched_today)
+                    # 连板梯队封单监控: 有 ladder 规则时, 从 depth_service 注入封单量到 enriched
+                    eval_df = enriched_today
+                    if engine.has_rule_type("ladder"):
+                        eval_df = self._inject_sealed_vol(enriched_today, enriched_date)
+                    rule_events = engine.evaluate(eval_df)
                     if rule_events:
                         # 落盘到 alerts.jsonl
                         try:
@@ -739,6 +743,42 @@ class QuoteService:
 
         except Exception as e:  # noqa: BLE001
             logger.warning("监控评估失败: %s", e)
+
+    def _inject_sealed_vol(self, enriched_today: pl.DataFrame, enriched_date) -> pl.DataFrame:
+        """从 depth_service 取封单量, 作为临时列 _sealed_vol 注入 enriched 副本。
+
+        涨停封单(买一量) + 跌停封单(卖一量)合并, 供 ladder 规则评估。
+        depth 未就绪时返回原 df (不注入, ladder 规则安全降级不触发)。
+        """
+        try:
+            depth_svc = getattr(self._app_state, "depth_service", None)
+            if not depth_svc:
+                return enriched_today
+            # enriched_date 可能是 date 或字符串, 统一为 date
+            from datetime import date as date_cls
+            target_date = enriched_date if isinstance(enriched_date, date_cls) else date_cls.fromisoformat(str(enriched_date))
+            # 取涨停 + 跌停封单, 合并 {symbol: vol}
+            up_map = depth_svc.get_sealed_map(target_date, is_down=False)
+            down_map = depth_svc.get_sealed_map(target_date, is_down=True)
+            sealed: dict[str, int] = {}
+            for m in (up_map, down_map):
+                for sym, info in m.items():
+                    vol = (info or {}).get("vol")
+                    if vol and vol > 0:
+                        sealed[sym] = vol  # 后者覆盖前者 (同 symbol 不可能在涨跌停都封单)
+            if not sealed:
+                return enriched_today
+            # 构造 (symbol, _sealed_vol) DataFrame, join 到 enriched 副本
+            sealed_df = pl.DataFrame({
+                "symbol": list(sealed.keys()),
+                "_sealed_vol": list(sealed.values()),
+            })
+            # 若已有残留列先移除 (避免重复 join 报错)
+            df = enriched_today.drop("_sealed_vol") if "_sealed_vol" in enriched_today.columns else enriched_today
+            return df.join(sealed_df, on="symbol", how="left")
+        except Exception as e:  # noqa: BLE001
+            logger.debug("封单注入失败 (ladder 规则将不触发): %s", e)
+            return enriched_today
 
     def _maybe_send_webhook(self, rule_events: list[dict], engine) -> None:
         """把告警通过 Webhook 推送到外部 IM (由规则 webhook_enabled 开关控制)。

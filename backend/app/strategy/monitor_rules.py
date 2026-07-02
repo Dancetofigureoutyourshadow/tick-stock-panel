@@ -26,12 +26,16 @@ logger = logging.getLogger(__name__)
 
 # ── 常量 ────────────────────────────────────────────────
 ID_RE = re.compile(r"^[a-z0-9_]{1,40}$")
-RULE_TYPES = {"strategy", "signal", "price", "market"}
+RULE_TYPES = {"strategy", "signal", "price", "market", "ladder"}
 SCOPES = {"symbols", "all", "sector"}
 LOGICS = {"and", "or"}
 DIRECTIONS = {"entry", "exit", "both"}
 SEVERITIES = {"info", "warn", "critical"}
 OPS = {">", ">=", "<", "<=", "==", "!="}
+# ladder 规则: 封单监控的指标 (量=手, 额=元)
+LADDER_METRICS = {"sealed_vol", "sealed_amount"}
+# ladder 规则: 方向 (up=涨停炸板预警, down=跌停翘板预警)
+LADDER_DIRECTIONS = {"up", "down"}
 
 # 布尔信号列前缀 (op=truth 时 field 取这些)
 _SIGNAL_PREFIXES = ("signal_", "csg_")
@@ -107,6 +111,15 @@ def validate(rule: dict) -> None:
             raise ValueError("策略类型规则必须指定 strategy_id")
         if rule.get("direction", "entry") not in DIRECTIONS:
             raise ValueError(f"direction 必须是 {DIRECTIONS} 之一")
+    elif rule.get("type") == "ladder":
+        # 连板梯队封单监控: 需 metric + threshold + direction(up/down), 不用 conditions
+        if rule.get("metric", "sealed_vol") not in LADDER_METRICS:
+            raise ValueError(f"metric 必须是 {LADDER_METRICS} 之一")
+        if rule.get("direction", "up") not in LADDER_DIRECTIONS:
+            raise ValueError(f"direction 必须是 {LADDER_DIRECTIONS} 之一 (up=涨停炸板, down=跌停翘板)")
+        thr = rule.get("threshold")
+        if not isinstance(thr, (int, float)) or thr < 0:
+            raise ValueError("threshold 必须是非负数字 (封单 ≤ 此值时报警)")
     else:
         # 信号/价格/市场类型: 需要 conditions
         conds = rule.get("conditions")
@@ -158,8 +171,12 @@ def normalize(rule: dict) -> dict:
     r.setdefault("symbols", [])
     r.setdefault("sector", None)
     r.setdefault("strategy_id", None)
-    r.setdefault("direction", "entry")
+    # direction 默认值: ladder 用 "up", 其余用 "entry"
+    r.setdefault("direction", "up" if r.get("type") == "ladder" else "entry")
     r.setdefault("conditions", [])
+    # ladder 专属默认字段
+    r.setdefault("metric", "sealed_vol")
+    r.setdefault("threshold", 0)
     r.setdefault("logic", "and")
     r.setdefault("cooldown_seconds", 3600)
     r.setdefault("severity", "info")

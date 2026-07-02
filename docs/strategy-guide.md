@@ -10,6 +10,8 @@
 - 自定义策略: `data/strategies/custom/`，建议文件名和 ID 使用 `custom_时间戳`
 - AI 生成策略: `data/strategies/ai/`，文件名和 ID 使用 `ai_时间戳`
 
+> ⚠️ **铁律**：AI/自定义生成的策略**只能**放入 `data/strategies/ai/` 或 `data/strategies/custom/`。严禁放入 `backend/app/strategy/builtin/`（内置策略目录，仅项目维护者可改），严禁借策略定制功能创建多个文件或修改任何项目源代码。
+
 ## 2. 文件结构模板
 
 ```python

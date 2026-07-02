@@ -80,6 +80,7 @@ class StrategyEngine:
         self._loader = enriched_loader
         self._history_loader = enriched_history_loader
         self._strategies: dict[str, StrategyDef] = {}
+        self._load_errors: list[dict] = []  # 加载失败的策略 [{file, error}]
         self._strategy_dirs = strategy_dirs or []
         self._load_all()
 
@@ -89,6 +90,7 @@ class StrategyEngine:
 
     def _load_all(self) -> None:
         self._strategies.clear()
+        self._load_errors = []
         for d in self._strategy_dirs:
             if not d.exists():
                 continue
@@ -100,7 +102,13 @@ class StrategyEngine:
                     self._strategies[s.meta["id"]] = s
                     logger.debug("loaded strategy: %s (%s)", s.meta["id"], s.source)
                 except Exception as e:
+                    # 不再静默吞掉: 记录失败项, 供前端可见(避免"策略静默消失"误判)。
                     logger.warning("load strategy %s failed: %s", f.name, e)
+                    self._load_errors.append({"file": f.name, "error": str(e)})
+
+    def load_errors(self) -> list[dict]:
+        """返回最近一次 _load_all 中加载失败的策略 [{file, error}]。"""
+        return list(self._load_errors)
 
     @staticmethod
     def _load_file(path: Path) -> StrategyDef:

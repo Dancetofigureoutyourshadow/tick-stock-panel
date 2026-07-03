@@ -463,7 +463,7 @@ export function StrategyBuilderDialog({ open, onClose, onSavedId, mode = 'create
                         <span><strong className="text-foreground/80">模式 B：历史窗口</strong> — <code className="text-[10px] font-mono text-foreground/80">filter_history(df, params) → pl.DataFrame</code> + <code className="text-[10px] font-mono text-foreground/80">LOOKBACK_DAYS</code></span>
                       </div>
                     </div>
-                    <p>完整规范见 <span className="text-accent">docs/strategy-guide.md</span></p>
+                    <p>完整规范见 <span className="text-accent">backend/app/strategy/prompts/strategy-guide.md</span></p>
                   </div>
                 </div>
                 <div className="space-y-2">

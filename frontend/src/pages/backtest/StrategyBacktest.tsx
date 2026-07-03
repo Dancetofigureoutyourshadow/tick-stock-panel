@@ -186,7 +186,8 @@ const fmtLots = (v: number | null | undefined) => {
 }
 
 const statValueColor = (v: number | null | undefined) => {
-  if (v == null || Number.isNaN(v) || v === 0) return '#f8fafc'
+  // 中性值继承页面前景色 (亮暗主题都可读), 不再写死近白色
+  if (v == null || Number.isNaN(v) || v === 0) return 'inherit'
   return v > 0 ? '#f87171' : '#34d399'
 }
 
@@ -383,7 +384,7 @@ function Stat({ label, value, color }: { label: ReactNode; value: string; color?
       <div className="text-[11px] text-secondary">{label}</div>
       <div
         className="mt-1 break-words text-sm font-mono font-semibold leading-tight tracking-tight num xl:text-base"
-        style={{ color: color ?? '#f8fafc' }}
+        style={{ color: color ?? 'inherit' }}
         title={value}
       >
         {value}

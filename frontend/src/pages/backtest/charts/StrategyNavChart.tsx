@@ -1,12 +1,14 @@
 import { useMemo } from 'react'
 import { useECharts } from './useECharts'
 import type { StrategyBacktestResult } from '@/lib/api'
+import { useChartTheme } from '@/lib/theme'
 
 interface Props {
   result: StrategyBacktestResult
 }
 
 export function StrategyNavChart({ result }: Props) {
+  const ct = useChartTheme()
   const option = useMemo(() => {
     if (!result.equity_curve.length) return null
 
@@ -28,7 +30,7 @@ export function StrategyNavChart({ result }: Props) {
       animation: false,
       axisPointer: {
         link: [{ xAxisIndex: 'all' }],
-        label: { backgroundColor: '#334155' },
+        label: { backgroundColor: ct.crosshairLabelBg },
       },
       grid: [
         { left: 64, right: hasBenchmark ? 64 : 16, top: 14, bottom: '40%' },
@@ -39,14 +41,14 @@ export function StrategyNavChart({ result }: Props) {
           type: 'category', data: dates, gridIndex: 0,
           axisLabel: { show: false }, axisTick: { show: false },
           axisPointer: { show: true, type: 'line' },
-          axisLine: { lineStyle: { color: '#334155' } },
+          axisLine: { lineStyle: { color: ct.border } },
         },
         {
           type: 'category', data: dates, gridIndex: 1,
-          axisLabel: { color: '#64748b', fontSize: 10, interval: Math.floor(dates.length / 6) },
+          axisLabel: { color: ct.text, fontSize: 10, interval: Math.floor(dates.length / 6) },
           axisTick: { show: false },
           axisPointer: { show: true, type: 'line' },
-          axisLine: { lineStyle: { color: '#334155' } },
+          axisLine: { lineStyle: { color: ct.border } },
         },
       ],
       yAxis: [
@@ -54,13 +56,13 @@ export function StrategyNavChart({ result }: Props) {
           type: 'value', gridIndex: 0,
           scale: true,
           name: hasBenchmark ? '上证点位' : '策略资金',
-          nameTextStyle: { color: hasBenchmark ? 'rgba(148,163,184,0.55)' : '#64748b', fontSize: 10, padding: [0, 0, 4, 0] },
+          nameTextStyle: { color: hasBenchmark ? ct.text : ct.text, fontSize: 10, padding: [0, 0, 4, 0] },
           axisLabel: {
-            color: hasBenchmark ? 'rgba(148,163,184,0.55)' : '#64748b',
+            color: hasBenchmark ? ct.text : ct.text,
             fontSize: 10,
             formatter: hasBenchmark ? ((v: number) => v.toFixed(0)) : axisMoneyFmt,
           },
-          splitLine: { lineStyle: { color: '#1e293b' } },
+          splitLine: { lineStyle: { color: ct.grid } },
           axisLine: { show: false },
         },
         {
@@ -68,10 +70,10 @@ export function StrategyNavChart({ result }: Props) {
           position: 'right',
           scale: true,
           name: hasBenchmark ? '策略资金' : '',
-          nameTextStyle: { color: '#64748b', fontSize: 10, padding: [0, 0, 4, 0] },
+          nameTextStyle: { color: ct.text, fontSize: 10, padding: [0, 0, 4, 0] },
           axisLabel: {
             show: hasBenchmark,
-            color: '#64748b',
+            color: ct.text,
             fontSize: 10,
             formatter: axisMoneyFmt,
           },
@@ -83,10 +85,10 @@ export function StrategyNavChart({ result }: Props) {
           position: 'right',
           max: 0,
           axisLabel: {
-            color: '#64748b', fontSize: 10,
+            color: ct.text, fontSize: 10,
             formatter: (v: number) => `${v.toFixed(1)}%`,
           },
-          splitLine: { lineStyle: { color: '#1e293b' } },
+          splitLine: { lineStyle: { color: ct.grid } },
           axisLine: { show: false },
         },
       ],
@@ -105,22 +107,22 @@ export function StrategyNavChart({ result }: Props) {
           filterMode: 'filter',
           height: 16,
           bottom: 10,
-          borderColor: 'rgba(148,163,184,0.18)',
-          backgroundColor: 'rgba(15,23,42,0.55)',
+          borderColor: ct.border,
+          backgroundColor: ct.zoomFill,
           fillerColor: 'rgba(59,130,246,0.18)',
-          handleStyle: { color: '#64748b', borderColor: '#94a3b8' },
-          textStyle: { color: '#64748b', fontSize: 10 },
+          handleStyle: { color: ct.text, borderColor: '#94a3b8' },
+          textStyle: { color: ct.text, fontSize: 10 },
           brushSelect: false,
         },
       ],
       tooltip: {
         trigger: 'axis',
-        backgroundColor: 'rgba(15,23,42,0.95)',
-        borderColor: 'rgba(148,163,184,0.2)',
-        textStyle: { color: '#e2e8f0', fontSize: 12 },
+        backgroundColor: ct.tooltipBg,
+        borderColor: ct.tooltipBorder,
+        textStyle: { color: ct.tooltipText, fontSize: 12 },
         formatter: (params: any) => {
           const date = params[0]?.axisValue ?? ''
-          let html = `<div style="font-size:11px;color:#94a3b8;margin-bottom:4px">${date}</div>`
+          let html = `<div style="font-size:11px;color:${ct.text};margin-bottom:4px">${date}</div>`
           for (const p of params) {
             if (p.value == null) continue
             const isDrawdown = p.seriesName === '回撤'
@@ -180,9 +182,9 @@ export function StrategyNavChart({ result }: Props) {
         },
       ],
     } as any
-  }, [result.equity_curve, result.drawdown_curve, result.benchmark_curve, result.run_id])
+  }, [result.equity_curve, result.drawdown_curve, result.benchmark_curve, result.run_id, ct])
 
-  const chartRef = useECharts(option, [result.run_id])
+  const chartRef = useECharts(option, [result.run_id, ct])
 
   return (
     <div>

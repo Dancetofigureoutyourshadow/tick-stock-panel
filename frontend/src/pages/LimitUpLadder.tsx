@@ -10,6 +10,7 @@ import { storage } from '@/lib/storage'
 import { fmtPct, priceColorClass } from '@/lib/format'
 import { PageHeader } from '@/components/PageHeader'
 import { EmptyState } from '@/components/EmptyState'
+import { useTheme } from '@/lib/theme'
 import { useCapabilities, usePreferences } from '@/lib/useSharedQueries'
 import { SealedBadge } from '@/components/SealedBadge'
 import type { ExtColumnDisplayConfig } from '@/lib/watchlist-columns'
@@ -149,7 +150,8 @@ const STATUS_STYLE: Record<string, { bg: string; bar: string; nameCls: string; c
   limit_up: {
     bg: '',
     bar: 'border-l-2 border-bull/50',
-    nameCls: 'text-rose-50 text-[13px]',
+    // 亮色用深酒红, 暗色保持近白 — 卡片底是淡红渐变, 双主题都要有对比度
+    nameCls: 'text-rose-900 dark:text-rose-50 text-[13px]',
     codeCls: 'text-muted/80',
     badge: '',
     badgeText: '',
@@ -162,7 +164,7 @@ const STATUS_STYLE: Record<string, { bg: string; bar: string; nameCls: string; c
   limit_down: {
     bg: '',
     bar: 'border-l-2 border-bear/50',
-    nameCls: 'text-green-50 text-[13px]',
+    nameCls: 'text-emerald-900 dark:text-green-50 text-[13px]',
     codeCls: 'text-muted/80',
     badge: '',
     badgeText: '',
@@ -778,12 +780,14 @@ function TagStats({ title, tiers, extFields, fieldKey, color, selectedTag, onSel
   tiers: LimitLadderTier[]
   extFields: ExtFieldConfig
   fieldKey: 'concept' | 'industry'
-  color: { text: [number, number, number]; bg: [number, number, number] }
+  /** text=暗色文字, textLight=亮色文字 (亮底需要更深的色阶), bg=底色 */
+  color: { text: [number, number, number]; textLight: [number, number, number]; bg: [number, number, number] }
   selectedTag: { fieldKey: 'concept' | 'industry'; tag: string } | null
   onSelect: (sel: { fieldKey: 'concept' | 'industry'; tag: string } | null) => void
   direction: Direction
 }) {
   const [expanded, setExpanded] = useState(false)
+  const isDark = useTheme() === 'dark'
   const mainStatus = direction === 'down' ? 'limit_down' : 'limit_up'
 
   const stats = useMemo(() => {
@@ -805,7 +809,7 @@ function TagStats({ title, tiers, extFields, fieldKey, color, selectedTag, onSel
   if (stats.length === 0) return null
 
   const maxCount = stats[0]?.[1] ?? 1
-  const [r, g, b] = color.text
+  const [r, g, b] = isDark ? color.text : color.textLight
   const [br, bg, bb] = color.bg
   const needsExpand = stats.length > 10
 
@@ -839,10 +843,13 @@ function TagStats({ title, tiers, extFields, fieldKey, color, selectedTag, onSel
                 onClick={() => onSelect(isSelected ? null : { fieldKey, tag: name })}
                 className="text-[11px] px-2 py-1 rounded-sm whitespace-nowrap cursor-pointer hover:brightness-110 transition-all"
                 style={{
-                  color: isSelected ? '#fff' : `rgba(${r},${g},${b},${0.6 + intensity * 0.4})`,
+                  // 亮色: 深色阶文字 + 更淡的底; 选中态不用白字 (黄底白字在亮色下不可读)
+                  color: isSelected
+                    ? (isDark ? '#fff' : `rgb(${r},${g},${b})`)
+                    : `rgba(${r},${g},${b},${isDark ? 0.6 + intensity * 0.4 : 0.75 + intensity * 0.25})`,
                   backgroundColor: isSelected
-                    ? `rgba(${br},${bg},${bb},0.7)`
-                    : `rgba(${br},${bg},${bb},${intensity * 0.2})`,
+                    ? `rgba(${br},${bg},${bb},${isDark ? 0.7 : 0.28})`
+                    : `rgba(${br},${bg},${bb},${intensity * (isDark ? 0.2 : 0.14)})`,
                   outline: isSelected ? `1px solid rgba(${r},${g},${b},0.8)` : 'none',
                   outlineOffset: 1,
                 }}
@@ -883,6 +890,7 @@ function TierGroup({ tier, defaultOpen, extFields, filterKeys, bf, onStockClick,
   onMonitorChange: () => void
   hasDepth: boolean
 }) {
+  const isDarkTheme = useTheme() === 'dark'
   const [open, setOpen] = useState(defaultOpen)
   const cfg = { ...DEFAULT_BF, ...bf }
   const mainStatus = direction === 'down' ? 'limit_down' : 'limit_up'
@@ -963,7 +971,7 @@ function TierGroup({ tier, defaultOpen, extFields, filterKeys, bf, onStockClick,
               <div className="px-3 pt-1 pb-2 space-y-1">
                 {groupConceptStats.length > 0 && (
                   <div className="flex flex-wrap gap-1 items-center">
-                    <span className="text-[9px] tracking-wider text-yellow-400/70 mr-0.5">概念</span>
+                    <span className="text-[9px] tracking-wider text-yellow-700/80 dark:text-yellow-400/70 mr-0.5">概念</span>
                     {groupConceptStats.slice(0, 20).map(([name, count]) => {
                       const isSelected = selectedTag?.fieldKey === 'concept' && selectedTag?.tag === name
                       return (
@@ -972,9 +980,13 @@ function TierGroup({ tier, defaultOpen, extFields, filterKeys, bf, onStockClick,
                           onClick={() => onSelectTag(isSelected ? null : { fieldKey: 'concept', tag: name })}
                           className="text-[10px] px-1.5 py-0.5 rounded-sm whitespace-nowrap cursor-pointer hover:brightness-110 transition-all"
                           style={{
-                            color: isSelected ? '#fff' : 'rgba(250,204,21,0.8)',
-                            backgroundColor: isSelected ? 'rgba(234,179,8,0.7)' : 'rgba(234,179,8,0.12)',
-                            outline: isSelected ? '1px solid rgba(250,204,21,0.8)' : 'none',
+                            color: isSelected
+                              ? (isDarkTheme ? '#fff' : 'rgb(161,98,7)')
+                              : (isDarkTheme ? 'rgba(250,204,21,0.8)' : 'rgba(161,98,7,0.9)'),
+                            backgroundColor: isSelected
+                              ? `rgba(234,179,8,${isDarkTheme ? 0.7 : 0.28})`
+                              : `rgba(234,179,8,${isDarkTheme ? 0.12 : 0.1})`,
+                            outline: isSelected ? `1px solid rgba(${isDarkTheme ? '250,204,21' : '161,98,7'},0.8)` : 'none',
                             outlineOffset: 1,
                           }}
                         >
@@ -986,7 +998,7 @@ function TierGroup({ tier, defaultOpen, extFields, filterKeys, bf, onStockClick,
                 )}
                 {groupIndustryStats.length > 0 && (
                   <div className="flex flex-wrap gap-1 items-center">
-                    <span className="text-[9px] tracking-wider text-blue-400/70 mr-0.5">行业</span>
+                    <span className="text-[9px] tracking-wider text-blue-700/80 dark:text-blue-400/70 mr-0.5">行业</span>
                     {groupIndustryStats.slice(0, 20).map(([name, count]) => {
                       const isSelected = selectedTag?.fieldKey === 'industry' && selectedTag?.tag === name
                       return (
@@ -995,9 +1007,13 @@ function TierGroup({ tier, defaultOpen, extFields, filterKeys, bf, onStockClick,
                           onClick={() => onSelectTag(isSelected ? null : { fieldKey: 'industry', tag: name })}
                           className="text-[10px] px-1.5 py-0.5 rounded-sm whitespace-nowrap cursor-pointer hover:brightness-110 transition-all"
                           style={{
-                            color: isSelected ? '#fff' : 'rgba(96,165,250,0.8)',
-                            backgroundColor: isSelected ? 'rgba(59,130,246,0.7)' : 'rgba(59,130,246,0.12)',
-                            outline: isSelected ? '1px solid rgba(96,165,250,0.8)' : 'none',
+                            color: isSelected
+                              ? (isDarkTheme ? '#fff' : 'rgb(29,78,216)')
+                              : (isDarkTheme ? 'rgba(96,165,250,0.8)' : 'rgba(29,78,216,0.9)'),
+                            backgroundColor: isSelected
+                              ? `rgba(59,130,246,${isDarkTheme ? 0.7 : 0.22})`
+                              : `rgba(59,130,246,${isDarkTheme ? 0.12 : 0.08})`,
+                            outline: isSelected ? `1px solid rgba(${isDarkTheme ? '96,165,250' : '29,78,216'},0.8)` : 'none',
                             outlineOffset: 1,
                           }}
                         >
@@ -1627,7 +1643,7 @@ export function LimitUpLadder() {
           tiers={tiers}
           extFields={resolveExtFields(extFields, showConcept, showIndustry)}
           fieldKey="concept"
-          color={{ text: [250, 204, 21], bg: [234, 179, 8] }}
+          color={{ text: [250, 204, 21], textLight: [161, 98, 7], bg: [234, 179, 8] }}
           selectedTag={selectedTag}
           onSelect={handleSelectTag}
           direction={direction}
@@ -1640,7 +1656,7 @@ export function LimitUpLadder() {
           tiers={tiers}
           extFields={resolveExtFields(extFields, showConcept, showIndustry)}
           fieldKey="industry"
-          color={{ text: [96, 165, 250], bg: [59, 130, 246] }}
+          color={{ text: [96, 165, 250], textLight: [29, 78, 216], bg: [59, 130, 246] }}
           selectedTag={selectedTag}
           onSelect={handleSelectTag}
           direction={direction}

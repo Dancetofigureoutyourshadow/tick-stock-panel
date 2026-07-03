@@ -1,4 +1,5 @@
 import { useEffect, useRef, useMemo, useState } from 'react'
+import { chartTheme, getTheme, useTheme } from '@/lib/theme'
 import * as echarts from 'echarts'
 import type { ECharts, EChartsOption } from 'echarts'
 import type { KlineRow, LevelSeries } from '@/lib/api'
@@ -18,15 +19,16 @@ import type { KlineRow, LevelSeries } from '@/lib/api'
  *   - 指标副图: 后续如需 MACD/KDJ,按 SUB_CHARTS 模式扩展
  */
 
-// ===== 配色(与主图一致的红涨绿跌,深色背景) =====
+// ===== 配色(红涨绿跌, 双主题通用); 画布轴/网格主题相关色走 CT() =====
 const THEME = {
   bull: '#C74040',
   bear: '#2D9B65',
-  text: '#A1A1AA',
-  grid: 'rgba(255,255,255,0.04)',
   volUp: 'rgba(240,68,56,0.5)',
   volDown: 'rgba(18,183,106,0.5)',
 }
+
+/** 当前主题的图表调色板 (buildOption 渲染时调用; 切换由组件 effect 触发重建)。 */
+const CT = () => chartTheme(getTheme())
 
 // ===== 价位类型(与后端 levels.py 的 LEVEL_TYPES 对齐) =====
 export type LevelType = 'sr' | 'pivot' | 'extreme' | 'boll' | 'keltner_s' | 'keltner_m' | 'keltner_l' | 'atr_stop' | 'gap' | 'fib' | 'round'
@@ -123,6 +125,8 @@ export function AnalysisKChart({
 }: Props) {
   const chartRef = useRef<HTMLDivElement>(null)
   const chartInstRef = useRef<ECharts | null>(null)
+  // 主题: buildOption 内部用 CT() 动态取色, 这里只负责切换时触发重建
+  const theme = useTheme()
   const [activeTypes, setActiveTypes] = useState<Set<LevelType>>(new Set(defaultLevelTypes))
   /** 枢轴点显示到第几档:1=只P+R1/S1, 2=到R2/S2, 3=全档(R3/S3) */
   const [pivotRank, setPivotRank] = useState<1 | 2 | 3>(1)
@@ -289,8 +293,8 @@ export function AnalysisKChart({
       xAxis: [
         {
           type: 'category', data: dates, boundaryGap: true,
-          axisLine: { lineStyle: { color: THEME.grid } },
-          axisLabel: { color: THEME.text, fontSize: 10 },
+          axisLine: { lineStyle: { color: CT().grid } },
+          axisLabel: { color: CT().text, fontSize: 10 },
           splitLine: { show: false },
           axisPointer: { show: true, label: { show: false } },
         },
@@ -300,19 +304,19 @@ export function AnalysisKChart({
         },
       ],
       yAxis: [
-        { scale: true, splitLine: { lineStyle: { color: THEME.grid } },
-          axisLabel: { color: THEME.text, fontSize: 10, fontFamily: 'JetBrains Mono, monospace' } },
+        { scale: true, splitLine: { lineStyle: { color: CT().grid } },
+          axisLabel: { color: CT().text, fontSize: 10, fontFamily: 'JetBrains Mono, monospace' } },
         { scale: true, gridIndex: 1, splitNumber: 2,
           // 成交量区不画背景横线
           splitLine: { show: false },
-          axisLabel: { color: THEME.text, fontSize: 9, fontFamily: 'JetBrains Mono, monospace',
+          axisLabel: { color: CT().text, fontSize: 9, fontFamily: 'JetBrains Mono, monospace',
                        formatter: (v: number) => fmtVol(v) } },
       ],
       dataZoom: [
         { type: 'inside', xAxisIndex: [0, 1], start: zoomStart, end: 100 },
         { type: 'slider', xAxisIndex: [0, 1], bottom: sliderBottom, height: SLIDER_H, start: zoomStart, end: 100,
-          borderColor: 'transparent', fillerColor: 'rgba(255,255,255,0.06)',
-          handleStyle: { color: '#52525B' }, textStyle: { color: THEME.text, fontSize: 10 } },
+          borderColor: 'transparent', fillerColor: CT().zoomFill,
+          handleStyle: { color: '#52525B' }, textStyle: { color: CT().text, fontSize: 10 } },
       ],
       // 不弹 hover tooltip(用户要求);但保留十字线 axisPointer 作为缩放/定位参照
       tooltip: { show: false },
@@ -335,7 +339,7 @@ export function AnalysisKChart({
     }
     chartInstRef.current.setOption(buildOption(), true)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows, levels, series, seriesDates, activeTypes, pivotRank, markers, ranges, height])
+  }, [rows, levels, series, seriesDates, activeTypes, pivotRank, markers, ranges, height, theme])
 
   // resize
   useEffect(() => {
@@ -464,7 +468,7 @@ function LevelOverview({
   }
 
   const Row = ({ p }: { p: PriceLevel }) => {
-    const color = LEVEL_GROUPS.find(g => g.key === p.type)?.color ?? THEME.text
+    const color = LEVEL_GROUPS.find(g => g.key === p.type)?.color ?? CT().text
     return (
       <div className="flex items-center gap-2 py-0.5">
         <span className="h-1.5 w-1.5 rounded-full shrink-0" style={{ backgroundColor: color }} />

@@ -1,7 +1,20 @@
 <!doctype html>
-<html lang="zh-CN" class="dark">
+<html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
+    <script>
+      // 预渲染主题脚本: 首屏前设置 html.dark, 避免亮暗闪烁 (FOUC)。
+      // 默认暗色; 用户切过亮色后 (localStorage tf-theme=light) 保持亮色。
+      (function () {
+        try {
+          if (localStorage.getItem('tf-theme') !== 'light') {
+            document.documentElement.classList.add('dark')
+          }
+        } catch (e) {
+          document.documentElement.classList.add('dark')
+        }
+      })()
+    </script>
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="theme-color" content="#8B5CF6" />

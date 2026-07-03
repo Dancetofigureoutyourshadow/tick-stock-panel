@@ -325,24 +325,25 @@ function EmotionRadar({ radar, score }: { radar: OverviewMarket['radar']; score:
             <stop offset="0%" stopColor={`${color}57`} />
             <stop offset="100%" stopColor={`${color}1f`} />
           </radialGradient>
+          {/* 中心/网格用 CSS 变量取色, 亮暗主题自动切换 (SVG 属性支持 hsl(var(--x))) */}
           <radialGradient id="emotionRadarCenter" cx="50%" cy="50%" r="55%">
-            <stop offset="0%" stopColor="rgba(15,23,42,0.92)" />
-            <stop offset="68%" stopColor="rgba(15,23,42,0.70)" />
-            <stop offset="100%" stopColor="rgba(15,23,42,0)" />
+            <stop offset="0%" stopColor="hsl(var(--surface) / 0.92)" />
+            <stop offset="68%" stopColor="hsl(var(--surface) / 0.70)" />
+            <stop offset="100%" stopColor="hsl(var(--surface) / 0)" />
           </radialGradient>
         </defs>
         {gridPolygons.map(g => (
           <polygon
             key={g.level}
             points={g.points}
-            fill={g.idx % 2 === 0 ? 'rgba(30,41,59,0.26)' : 'rgba(15,23,42,0.16)'}
-            stroke={g.level === 1 ? 'rgba(148,163,184,0.22)' : 'rgba(148,163,184,0.12)'}
+            fill={g.idx % 2 === 0 ? 'hsl(var(--elevated) / 0.55)' : 'hsl(var(--elevated) / 0.3)'}
+            stroke={g.level === 1 ? 'hsl(var(--border) / 0.9)' : 'hsl(var(--border) / 0.5)'}
             strokeWidth={g.level === 1 ? 1.2 : 0.8}
           />
         ))}
-        {points.map(p => <line key={p.key} x1={cx} y1={cy} x2={p.gx} y2={p.gy} stroke="rgba(148,163,184,0.08)" />)}
+        {points.map(p => <line key={p.key} x1={cx} y1={cy} x2={p.gx} y2={p.gy} stroke="hsl(var(--border) / 0.4)" />)}
         <polygon points={polygon} fill="url(#emotionRadarFill)" stroke={color} strokeWidth="2" />
-        {points.map(p => <circle key={p.key} cx={p.x} cy={p.y} r="2.8" fill={color} stroke="rgba(15,23,42,0.9)" strokeWidth="1" />)}
+        {points.map(p => <circle key={p.key} cx={p.x} cy={p.y} r="2.8" fill={color} stroke="hsl(var(--surface) / 0.9)" strokeWidth="1" />)}
         <circle cx={cx} cy={cy} r="29" fill="url(#emotionRadarCenter)" />
         <text x={cx} y={cy + 7} textAnchor="middle" className="fill-foreground font-mono text-[24px] font-bold">{score}</text>
         {points.map(p => (

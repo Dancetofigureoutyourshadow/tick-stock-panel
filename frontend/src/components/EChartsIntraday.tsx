@@ -2,19 +2,17 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import * as echarts from 'echarts'
 import type { ECharts, EChartsOption } from 'echarts'
 import type { MinuteKlineRow } from '@/lib/api'
+import { useChartTheme, type ChartTheme } from '@/lib/theme'
 
 type YMode = 'adaptive' | 'limit'
 
+// 序列颜色 (双主题通用); 画布轴/网格/十字线等主题相关色走 ChartTheme
 const THEME = {
   line: '#3B82F6',
   areaFill: 'rgba(59,130,246,0.40)',
   avgLine: '#F59E0B',
-  refLine: 'rgba(255,255,255,0.25)',
   volUp: 'rgba(240,68,56,0.6)',
   volDown: 'rgba(18,183,106,0.6)',
-  text: '#A1A1AA',
-  grid: 'rgba(255,255,255,0.04)',
-  border: '#27272A',
 }
 
 interface Props {
@@ -108,7 +106,7 @@ function getLimitPrices(prevClose: number, symbol?: string): {
   return { limitUp, limitDown, upPct, downPct }
 }
 
-function buildOption(data: MinuteKlineRow[], prevClose: number | undefined, avgPrices: number[], lineColor: string, areaColor: string, yMode: YMode, symbol?: string, showLimitLines = true, showAvgLine = true): EChartsOption {
+function buildOption(data: MinuteKlineRow[], prevClose: number | undefined, avgPrices: number[], lineColor: string, areaColor: string, yMode: YMode, ct: ChartTheme, symbol?: string, showLimitLines = true, showAvgLine = true): EChartsOption {
   // 将数据映射到全天时间轴上的正确位置
   const timeIndexMap = new Map(FULL_DAY_TIMES.map((t, i) => [t, i]))
   const closes = new Array(FULL_DAY_TIMES.length).fill(null) as (number | null)[]
@@ -150,7 +148,7 @@ function buildOption(data: MinuteKlineRow[], prevClose: number | undefined, avgP
   if (prevClose != null) {
     markLineData.push({
       yAxis: prevClose,
-      lineStyle: { color: THEME.refLine, type: 'dashed', width: 1 },
+      lineStyle: { color: ct.crosshair, type: 'dashed', width: 1 },
       label: { show: false },
       symbol: 'none',
     })
@@ -237,16 +235,16 @@ function buildOption(data: MinuteKlineRow[], prevClose: number | undefined, avgP
         type: 'cross',
         label: {
           show: true,
-          backgroundColor: 'rgba(39,39,42,0.9)',
-          borderColor: 'rgba(255,255,255,0.1)',
+          backgroundColor: ct.tooltipBg,
+          borderColor: ct.tooltipBorder,
           borderWidth: 1,
           padding: [2, 5],
-          color: '#A1A1AA',
+          color: ct.tooltipText,
           fontSize: 10,
           fontFamily: 'JetBrains Mono, monospace',
         },
-        crossStyle: { color: 'rgba(255,255,255,0.2)', type: 'dashed', width: 1 },
-        lineStyle: { color: 'rgba(255,255,255,0.2)', type: 'dashed', width: 1 },
+        crossStyle: { color: ct.crosshair, type: 'dashed', width: 1 },
+        lineStyle: { color: ct.crosshair, type: 'dashed', width: 1 },
       },
     },
     axisPointer: {
@@ -263,14 +261,14 @@ function buildOption(data: MinuteKlineRow[], prevClose: number | undefined, avgP
         boundaryGap: false,
         axisPointer: {
           show: true,
-          lineStyle: { color: 'rgba(255,255,255,0.2)', type: 'dashed', width: 1 },
+          lineStyle: { color: ct.crosshair, type: 'dashed', width: 1 },
           label: {
             show: true,
-            backgroundColor: 'rgba(39,39,42,0.9)',
-            borderColor: 'rgba(255,255,255,0.1)',
+            backgroundColor: ct.tooltipBg,
+            borderColor: ct.tooltipBorder,
             borderWidth: 1,
             padding: [2, 4],
-            color: '#A1A1AA',
+            color: ct.tooltipText,
             fontSize: 10,
             fontFamily: 'JetBrains Mono, monospace',
             formatter: (params: any) => {
@@ -280,7 +278,7 @@ function buildOption(data: MinuteKlineRow[], prevClose: number | undefined, avgP
         },
         axisLine: { show: false },
         axisLabel: {
-          color: THEME.text,
+          color: ct.text,
           fontSize: 10,
           fontFamily: 'JetBrains Mono, monospace',
           formatter: xAxisLabelFormatter,
@@ -289,7 +287,7 @@ function buildOption(data: MinuteKlineRow[], prevClose: number | undefined, avgP
         axisTick: { show: false },
         splitLine: {
           show: true,
-          lineStyle: { color: 'rgba(255,255,255,0.04)' },
+          lineStyle: { color: ct.grid },
         },
       },
       {
@@ -312,7 +310,7 @@ function buildOption(data: MinuteKlineRow[], prevClose: number | undefined, avgP
         splitArea: { show: false },
         axisLine: { show: false },
         axisTick: { show: false },
-        splitLine: { lineStyle: { color: THEME.grid } },
+        splitLine: { lineStyle: { color: ct.grid } },
         axisPointer: {
           label: {
             formatter: (params: any) => {
@@ -322,7 +320,7 @@ function buildOption(data: MinuteKlineRow[], prevClose: number | undefined, avgP
           },
         },
         axisLabel: {
-          color: THEME.text,
+          color: ct.text,
           fontSize: 10,
           fontFamily: 'JetBrains Mono, monospace',
           formatter: (v: number) => v.toFixed(2),
@@ -360,7 +358,7 @@ function buildOption(data: MinuteKlineRow[], prevClose: number | undefined, avgP
           },
         },
         axisLabel: {
-          color: THEME.text,
+          color: ct.text,
           fontSize: 10,
           fontFamily: 'JetBrains Mono, monospace',
           formatter: (v: number) => {
@@ -420,6 +418,7 @@ export function EChartsIntraday({ data, height = 320, prevClose, date, symbol, o
 
   const [infoIdx, setInfoIdx] = useState(data.length - 1)
   const [yMode, setYMode] = useState<YMode>('adaptive')
+  const ct = useChartTheme()
   const avgPrices = useMemo(() => computeAvgPrice(data), [data])
 
   // 分时线颜色：基于最新价 vs 昨收
@@ -494,11 +493,11 @@ export function EChartsIntraday({ data, height = 320, prevClose, date, symbol, o
       }
       fullDayToDataIdx.current = mapping
 
-      chart.setOption(buildOption(data, prevClose, avgPrices, lineColor, areaFill, yMode, symbol, showLimitLines, showAvgLine), true)
+      chart.setOption(buildOption(data, prevClose, avgPrices, lineColor, areaFill, yMode, ct, symbol, showLimitLines, showAvgLine), true)
     } else {
       chart.clear()
     }
-  }, [data, prevClose, height, lineColor, areaFill, yMode, symbol, showLimitLines, showAvgLine])
+  }, [data, prevClose, height, lineColor, areaFill, yMode, ct, symbol, showLimitLines, showAvgLine])
 
   useEffect(() => {
     return () => {
@@ -548,7 +547,7 @@ export function EChartsIntraday({ data, height = 320, prevClose, date, symbol, o
           </button>
         </div>
       </div>}
-      <div style={{ backgroundColor: 'rgba(39,39,42,0.6)' }}>
+      <div style={{ backgroundColor: ct.infoBarBg }}>
         {/* 第一行: 日期 + OHLC */}
         <div className="flex items-center gap-x-2 px-2 font-mono text-[11px] select-none flex-wrap" style={{ height: 20 }}>
           {!d && <span className="text-muted">—</span>}

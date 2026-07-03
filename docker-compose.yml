@@ -10,6 +10,10 @@ services:
     container_name: TickFlow_Stock_Panel
     ports:
       - "${PORT:-3018}:3018"
+    environment:
+      # 容器默认 UTC 会误判 A 股交易时段, 显式设上海时间。
+      # 与 Dockerfile 内的 ENV TZ 双保险, 也方便用 .env 覆盖。
+      TZ: Asia/Shanghai
     env_file:
       - .env
     volumes:

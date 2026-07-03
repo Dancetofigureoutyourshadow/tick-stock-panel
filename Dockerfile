@@ -32,6 +32,17 @@ ARG PYPI_FALLBACK=https://mirrors.aliyun.com/pypi/simple
 ARG BACKEND_EXTRAS=
 WORKDIR /app
 
+# 显式设置上海时区 + 安装 tzdata。
+# 容器默认 UTC, 不设的话 datetime.now() / date.today() 会用 UTC,
+# 导致 A 股交易时段判断(依赖上海时间)在海外/UTC 服务器上永远误判为休市。
+# 代码层(app/timezone.py)已用 Asia/Shanghai 显式时区做双保险,
+# 这里再设容器时区, 保证 date.today() 等裸时间调用也对。
+ENV TZ=Asia/Shanghai
+RUN apt-get update && apt-get install -y --no-install-recommends tzdata && \
+    ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && \
+    echo $TZ > /etc/timezone && \
+    rm -rf /var/lib/apt/lists/*
+
 # 安装 uv(快) —— 国内镜像下三重兜底:主源 → 备用源 → 官方源,
 # 任一成功即可,避免单一镜像同步延迟/故障导致构建失败。
 # uv 发版极频繁,国内镜像同步存在时间窗口,不锁版本且无 fallback 时

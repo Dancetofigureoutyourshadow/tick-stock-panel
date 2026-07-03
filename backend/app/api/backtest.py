@@ -191,6 +191,8 @@ class StrategyBacktestRequest(BaseModel):
     entry_fill: Literal["close_t", "open_t+1"] | None = None
     exit_fill: Literal["close_t", "open_t+1"] | None = None
     fees_pct: float = 0.0002
+    commission_pct: float | None = None
+    stamp_tax_pct: float | None = None
     slippage_bps: float = 5.0
     max_positions: int = 10
     max_exposure_pct: float = 1.0
@@ -224,6 +226,8 @@ def strategy_run(req: StrategyBacktestRequest, request: Request):
         entry_fill=req.entry_fill,
         exit_fill=req.exit_fill,
         fees_pct=req.fees_pct,
+        commission_pct=req.commission_pct,
+        stamp_tax_pct=req.stamp_tax_pct,
         slippage_bps=req.slippage_bps,
         max_positions=req.max_positions,
         max_exposure_pct=req.max_exposure_pct,
@@ -277,8 +281,9 @@ def _make_job_key(
     max_positions: int, max_exposure_pct: float, initial_capital: float, position_sizing: str,
     params: str | None, overrides: str | None,
     mode: str = "position", holding_days: int = 5,
+    commission_pct: float | None = None, stamp_tax_pct: float | None = None,
 ) -> str:
-    raw = f"{strategy_id}|{symbols}|{start}|{end}|{matching}|{entry_fill}|{exit_fill}|{fees_pct}|{slippage_bps}|{max_positions}|{max_exposure_pct}|{initial_capital}|{position_sizing}|{params}|{overrides}|{mode}|{holding_days}"
+    raw = f"{strategy_id}|{symbols}|{start}|{end}|{matching}|{entry_fill}|{exit_fill}|{fees_pct}|{slippage_bps}|{max_positions}|{max_exposure_pct}|{initial_capital}|{position_sizing}|{params}|{overrides}|{mode}|{holding_days}|{commission_pct}|{stamp_tax_pct}"
     return hashlib.md5(raw.encode()).hexdigest()[:12]
 
 
@@ -293,6 +298,8 @@ async def strategy_stream(
     entry_fill: str | None = None,
     exit_fill: str | None = None,
     fees_pct: float = 0.0002,
+    commission_pct: float | None = None,
+    stamp_tax_pct: float | None = None,
     slippage_bps: float = 5.0,
     max_positions: int = 10,
     max_exposure_pct: float = 1.0,
@@ -341,6 +348,7 @@ async def strategy_stream(
         fees_pct, slippage_bps, max_positions, max_exposure_pct, initial_capital, position_sizing,
         params, overrides,
         mode, holding_days,
+        commission_pct, stamp_tax_pct,
     )
 
     _cleanup_stale_jobs()
@@ -374,6 +382,8 @@ async def strategy_stream(
                 entry_fill=entry_fill,
                 exit_fill=exit_fill,
                 fees_pct=fees_pct,
+                commission_pct=commission_pct,
+                stamp_tax_pct=stamp_tax_pct,
                 slippage_bps=slippage_bps,
                 max_positions=int(max_positions),
                 max_exposure_pct=float(max_exposure_pct),
@@ -447,6 +457,10 @@ async def strategy_cancel(request: Request):
     p = parse_qs(qs)
     def _get(key: str, default: str = "") -> str:
         return p.get(key, [default])[0]
+    def _get_opt_float(key: str) -> float | None:
+        # 可选成本参数: 缺省或空串 → None (与 stream 侧 float | None 口径一致, 保证 job_key 对齐)。
+        v = _get(key)
+        return float(v) if v else None
     job_key = _make_job_key(
         _get("strategy_id"),
         _get("symbols") or None,
@@ -465,6 +479,8 @@ async def strategy_cancel(request: Request):
         _get("overrides") or None,
         _get("mode", "position"),
         int(_get("holding_days", "5")),
+        commission_pct=_get_opt_float("commission_pct"),
+        stamp_tax_pct=_get_opt_float("stamp_tax_pct"),
     )
     job = _running_jobs.get(job_key)
     if job and not job.done:

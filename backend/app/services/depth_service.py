@@ -29,8 +29,6 @@ from pathlib import Path
 
 import polars as pl
 
-from app.timezone import now_shanghai as _now_shanghai
-
 logger = logging.getLogger(__name__)
 
 
@@ -581,7 +579,7 @@ class DepthService:
 
     @staticmethod
     def _is_trading_hours() -> bool:
-        now = _now_shanghai()
+        now = datetime.now()
         t = now.time()
         morning = dt_time(9, 25) <= t <= dt_time(11, 35)
         afternoon = dt_time(12, 55) <= t <= dt_time(15, 5)

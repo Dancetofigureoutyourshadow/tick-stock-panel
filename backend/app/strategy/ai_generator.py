@@ -1,6 +1,6 @@
 """AI 策略生成器 — 读取策略开发文档 + 调用 LLM 生成策略代码。
 
-职责: 接收用户自然语言描述 → 读取 docs/strategy-guide.md → 调用 LLM → 返回策略代码。
+职责: 接收用户自然语言描述 → 读取 prompts/strategy-guide.md → 调用 LLM → 返回策略代码。
 不知道: 引擎内部、API、前端、配置持久化、回测。
 """
 from __future__ import annotations
@@ -13,8 +13,8 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# 策略开发文档路径
-GUIDE_PATH = Path(__file__).resolve().parent.parent.parent.parent / "docs" / "strategy-guide.md"
+# 策略开发文档路径（随 backend/app 打包进 Docker，避免 .dockerignore 排除 docs/ 导致运行时缺失）
+GUIDE_PATH = Path(__file__).resolve().parent / "prompts" / "strategy-guide.md"
 
 _SYSTEM_PREFIX = """你是A股量化策略设计专家。根据用户描述的需求，参考下方的《策略开发指南》生成一个完整的策略Python文件。
 

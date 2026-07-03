@@ -7,7 +7,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-_DOCS_DIR = Path(__file__).resolve().parent.parent.parent.parent / "docs"
+# 运行时依赖的提示词文档（随 backend/app 打包进 Docker，避免 .dockerignore 排除 docs/ 导致运行时缺失）
+_DOCS_DIR = Path(__file__).resolve().parent / "prompts"
 _cache: dict[str, str] = {}
 
 

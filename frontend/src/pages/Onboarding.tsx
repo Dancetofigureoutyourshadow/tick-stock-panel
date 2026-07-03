@@ -32,10 +32,10 @@ import { QK } from '@/lib/queryKeys'
 import { CAP_LABELS } from '@/lib/capability-labels'
 import { Logo } from '@/components/Logo'
 
-// ===== 引导页:4 步向导 =====
-// 0. 欢迎  1. 输入 Key(可跳过)  2. 能力探测结果  3. 完成 → 写标记 → 进面板
+// ===== 引导页:5 步向导 =====
+// 0. 声明  1. 欢迎  2. 输入 Key(可跳过)  3. 能力探测结果  4. 完成 → 写标记 → 进面板
 
-const STEPS = ['欢迎', '配置 Key', '能力探测', '完成'] as const
+const STEPS = ['声明', '欢迎', '配置 Key', '能力探测', '完成'] as const
 
 const BRAND = '#8B5CF6'
 
@@ -148,12 +148,13 @@ export function Onboarding() {
               exit={{ opacity: 0, x: -24 }}
               transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
             >
-              {step === 0 && <WelcomeStep onNext={() => setStep(1)} onSkip={finish} />}
-              {step === 1 && (
-                <KeyStep onNext={() => setStep(2)} onSkip={() => setStep(2)} onBack={() => setStep(0)} />
+              {step === 0 && <DisclaimerStep onNext={() => setStep(1)} />}
+              {step === 1 && <WelcomeStep onNext={() => setStep(2)} onSkip={finish} />}
+              {step === 2 && (
+                <KeyStep onNext={() => setStep(3)} onSkip={() => setStep(3)} onBack={() => setStep(1)} />
               )}
-              {step === 2 && <ResultStep onNext={() => setStep(3)} onBack={() => setStep(1)} />}
-              {step === 3 && <FinishStep onNext={finish} onBack={() => setStep(2)} pending={complete.isPending} />}
+              {step === 3 && <ResultStep onNext={() => setStep(4)} onBack={() => setStep(2)} />}
+              {step === 4 && <FinishStep onNext={finish} onBack={() => setStep(3)} pending={complete.isPending} />}
             </motion.div>
           </AnimatePresence>
         </div>
@@ -162,7 +163,64 @@ export function Onboarding() {
   )
 }
 
-// ===== Step 0: 欢迎 =====
+// ===== Step 0: 声明 =====
+
+function DisclaimerStep({ onNext }: { onNext: () => void }) {
+  return (
+    <div className="text-center">
+      <motion.div
+        initial={{ scale: 0.85, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
+        className="mx-auto w-fit rounded-2xl p-4 border border-warning/40"
+        style={{ background: 'linear-gradient(135deg, hsl(var(--warning) / 0.15), transparent)' }}
+      >
+        <AlertCircle className="h-8 w-8 text-warning" />
+      </motion.div>
+
+      <h1 className="mt-6 text-2xl font-bold text-foreground tracking-tight">使用前请知悉</h1>
+
+      <div className="mt-5 rounded-card border border-border bg-surface/80 backdrop-blur-sm p-5 text-left">
+        <div className="flex items-start gap-2.5">
+          <ShieldCheck className="h-4 w-4 text-accent shrink-0 mt-0.5" />
+          <div className="space-y-2.5 text-sm text-secondary leading-relaxed">
+            <p>
+              本项目为<strong className="text-warning">个人开源项目</strong>,<span className="text-warning">非</span>
+              <a
+                href="https://tickflow.org/auth/register?ref=V3KDKGXPEA"
+                target="_blank"
+                rel="noreferrer"
+                className="text-accent hover:underline font-medium inline-flex items-baseline gap-0.5"
+              >
+                TickFlow
+                <ExternalLink className="h-3 w-3 self-center" />
+              </a>
+              <span className="text-warning">官方项目</span>,与 TickFlow 官方无任何隶属或合作关系。
+            </p>
+            <p>
+              仅供学习研究使用,不构成任何投资建议。股市有风险,使用本项目产生的任何盈亏由使用者自行承担。
+            </p>
+            <p>
+              本项目面向个人学习与研究,不建议用于<strong className="text-warning">商业用途</strong>。如确有商用需求,请自行评估相关风险与合规要求。
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-6 flex items-center justify-center">
+        <button
+          onClick={onNext}
+          className="inline-flex items-center gap-2 px-6 h-11 rounded-xl bg-accent text-white text-sm font-semibold shadow-lg shadow-accent/20 hover:bg-accent/90 hover:shadow-accent/30 transition-all"
+        >
+          我已了解,继续
+          <ArrowRight className="h-4 w-4" />
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// ===== Step 1: 欢迎 =====
 
 function WelcomeStep({ onNext, onSkip }: { onNext: () => void; onSkip: () => void }) {
   return (
@@ -227,7 +285,7 @@ function WelcomeStep({ onNext, onSkip }: { onNext: () => void; onSkip: () => voi
   )
 }
 
-// ===== Step 1: 输入 TickFlow Key =====
+// ===== Step 2: 输入 TickFlow Key =====
 
 function KeyStep({ onNext, onSkip, onBack }: { onNext: () => void; onSkip: () => void; onBack: () => void }) {
   const qc = useQueryClient()
@@ -426,7 +484,7 @@ function KeyStep({ onNext, onSkip, onBack }: { onNext: () => void; onSkip: () =>
   )
 }
 
-// ===== Step 2: 能力探测结果 =====
+// ===== Step 3: 能力探测结果 =====
 
 function ResultStep({ onNext, onBack }: { onNext: () => void; onBack: () => void }) {
   const settings = useSettings()
@@ -520,7 +578,7 @@ function ResultStep({ onNext, onBack }: { onNext: () => void; onBack: () => void
   )
 }
 
-// ===== Step 3: 完成 =====
+// ===== Step 4: 完成 =====
 
 function FinishStep({ onNext, onBack, pending }: { onNext: () => void; onBack: () => void; pending: boolean }) {
   const settings = useSettings()

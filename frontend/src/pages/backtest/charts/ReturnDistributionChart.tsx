@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 import { useECharts } from './useECharts'
 import type { EChartsOption } from 'echarts'
+import { useChartTheme } from '@/lib/theme'
 
 interface DistBin {
   range: string
@@ -13,6 +14,7 @@ interface DistBin {
  * 柱子颜色按收益正负区分(正红负绿),零轴居中。
  */
 export function ReturnDistributionChart({ distribution }: { distribution: DistBin[] }) {
+  const ct = useChartTheme()
   const option = useMemo<EChartsOption>(() => {
     const cats = distribution.map(d => d.range)
     const vals = distribution.map(d => d.count)
@@ -20,7 +22,7 @@ export function ReturnDistributionChart({ distribution }: { distribution: DistBi
     const colors = distribution.map(d => {
       const lo = parseFloat(d.range)
       // 中心档(跨 0) 用中性色
-      if (lo < 0 && parseFloat(d.range.split('~')[1]) > 0) return '#a1a1aa'
+      if (lo < 0 && parseFloat(d.range.split('~')[1]) > 0) return ct.text
       return lo >= 0 ? '#ef4444' : '#22c55e'
     })
 
@@ -39,13 +41,13 @@ export function ReturnDistributionChart({ distribution }: { distribution: DistBi
       xAxis: {
         type: 'category',
         data: cats,
-        axisLabel: { color: '#a1a1aa', fontSize: 10, rotate: 45, interval: 1 },
-        axisLine: { lineStyle: { color: '#3f3f46' } },
+        axisLabel: { color: ct.text, fontSize: 10, rotate: 45, interval: 1 },
+        axisLine: { lineStyle: { color: ct.border } },
       },
       yAxis: {
         type: 'value',
-        axisLabel: { color: '#a1a1aa', fontSize: 10 },
-        splitLine: { lineStyle: { color: '#27272a' } },
+        axisLabel: { color: ct.text, fontSize: 10 },
+        splitLine: { lineStyle: { color: ct.grid } },
       },
       series: [
         {
@@ -55,9 +57,9 @@ export function ReturnDistributionChart({ distribution }: { distribution: DistBi
         },
       ],
     }
-  }, [distribution])
+  }, [distribution, ct])
 
-  const chartRef = useECharts(option, [distribution])
+  const chartRef = useECharts(option, [distribution, ct])
 
   return <div ref={chartRef} className="h-48 w-full" />
 }

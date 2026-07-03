@@ -1,4 +1,5 @@
 import { useEffect, useRef, useCallback, useMemo } from 'react'
+import { chartTheme, getTheme, useTheme } from '@/lib/theme'
 import * as echarts from 'echarts'
 import type { ECharts, EChartsOption } from 'echarts'
 
@@ -293,6 +294,7 @@ interface Props {
   activeIndicators?: string[]
 }
 
+// 序列颜色 (双主题通用); 画布轴/网格/文字等主题相关色走 CT() 动态取
 const THEME = {
   bull: '#C74040',
   bear: '#2D9B65',
@@ -302,11 +304,11 @@ const THEME = {
   ma10: '#3B82F6',
   ma20: '#F97316',
   ma60: '#8B5CF6',
-  text: '#A1A1AA',
-  grid: 'rgba(255,255,255,0.04)',
-  border: '#27272A',
   bg: 'transparent',
 }
+
+/** 当前主题的图表调色板 (buildOption/信息栏在渲染时调用; 主题切换由组件 effect 触发重建)。 */
+const CT = () => chartTheme(getTheme())
 
 /** 可见蜡烛超过此数量时，涨停/炸板标签切换为小圆点。 */
 const COMPACT_THRESHOLD = 60
@@ -429,7 +431,7 @@ function buildOption(
       const isSell = m.kind === 'sell'
 
       if (m.above) {
-        const dotColor = m.color ?? (isBuy ? '#FACC15' : THEME.text)
+        const dotColor = m.color ?? (isBuy ? '#FACC15' : CT().text)
         if (compact) {
           markPointData.push({
             name: m.date, coord: [m.date, d.high],
@@ -457,11 +459,11 @@ function buildOption(
           symbol: 'arrow', symbolSize: 12,
           symbolRotate: isBuy ? 0 : 180,
           symbolOffset: isBuy ? [0, '60%'] : [0, '-60%'],
-          itemStyle: { color: isBuy ? THEME.bull : isSell ? THEME.bear : THEME.text },
+          itemStyle: { color: isBuy ? THEME.bull : isSell ? THEME.bear : CT().text },
           label: {
             show: !!m.label, formatter: m.label ?? '',
             position: isBuy ? 'bottom' : 'top', distance: 8,
-            color: THEME.text, fontSize: 10,
+            color: CT().text, fontSize: 10,
             fontFamily: 'JetBrains Mono, monospace',
           },
         })
@@ -497,8 +499,8 @@ function buildOption(
   grids.push({ left, right, top: topPad, height: candleAvail })
   xAxes.push({
     type: 'category', data: dates, boundaryGap: true,
-    axisLine: { lineStyle: { color: THEME.border } },
-    axisLabel: { color: THEME.text, fontSize: 10, fontFamily: 'JetBrains Mono, monospace' },
+    axisLine: { lineStyle: { color: CT().border } },
+    axisLabel: { color: CT().text, fontSize: 10, fontFamily: 'JetBrains Mono, monospace' },
     axisTick: { show: false },
     splitLine: { show: false },
   })
@@ -508,8 +510,8 @@ function buildOption(
     boundaryGap: [0.03, 0.03],
     splitArea: { show: false },
     axisLine: { show: false }, axisTick: { show: false },
-    splitLine: { lineStyle: { color: THEME.grid } },
-    axisLabel: { color: THEME.text, fontSize: 10, fontFamily: 'JetBrains Mono, monospace' },
+    splitLine: { lineStyle: { color: CT().grid } },
+    axisLabel: { color: CT().text, fontSize: 10, fontFamily: 'JetBrains Mono, monospace' },
   })
   xAxisIndices.push(0)
 
@@ -524,8 +526,8 @@ function buildOption(
           show: !!r.label,
           position: 'insideTop',
           distance: 8,
-          color: '#DBEAFE',
-          backgroundColor: 'rgba(15,23,42,0.72)',
+          color: CT().tooltipText,
+          backgroundColor: CT().tooltipBg,
           borderColor: 'rgba(59,130,246,0.35)',
           borderWidth: 1,
           borderRadius: 4,
@@ -541,7 +543,7 @@ function buildOption(
     .filter(line => Number.isFinite(line.value))
     .map(line => {
       const lineStyle = {
-        color: line.color ?? THEME.text,
+        color: line.color ?? CT().text,
         type: 'dashed' as const,
         width: 1,
         opacity: 0.92,
@@ -550,8 +552,8 @@ function buildOption(
         show: !!line.label,
         formatter: line.label ?? '',
         position: 'insideEndTop' as const,
-        color: line.color ?? THEME.text,
-        backgroundColor: 'rgba(15,23,42,0.72)',
+        color: line.color ?? CT().text,
+        backgroundColor: CT().tooltipBg,
         borderRadius: 4,
         padding: [2, 6],
         fontSize: 10,
@@ -577,7 +579,7 @@ function buildOption(
         color: '#3B82F6',
         fontSize: 10,
         fontFamily: 'JetBrains Mono, monospace',
-        backgroundColor: 'rgba(24,24,27,0.85)',
+        backgroundColor: CT().tooltipBg,
         borderColor: '#3B82F6',
         borderWidth: 1,
         padding: [1, 4],
@@ -642,7 +644,7 @@ function buildOption(
       top: chartTop,
       height: def.height,
       show: true,
-      borderColor: 'rgba(255,255,255,0.06)',
+      borderColor: CT().grid,
       borderWidth: 1,
     })
 
@@ -660,9 +662,9 @@ function buildOption(
       gridIndex: gridIdx,
       splitNumber: 2,
       axisLine: { show: false }, axisTick: { show: false },
-      splitLine: { lineStyle: { color: THEME.grid } },
+      splitLine: { lineStyle: { color: CT().grid } },
       axisLabel: {
-        show: true, color: THEME.text, fontSize: 9,
+        show: true, color: CT().text, fontSize: 9,
         fontFamily: 'JetBrains Mono, monospace',
       },
     })
@@ -686,7 +688,7 @@ function buildOption(
     backgroundColor: THEME.bg,
     tooltip: {
       trigger: 'axis',
-      axisPointer: { type: 'cross', crossStyle: { color: '#555' } },
+      axisPointer: { type: 'cross', crossStyle: { color: CT().crosshair } },
       backgroundColor: 'transparent',
       borderWidth: 0,
       textStyle: { fontSize: 0 },
@@ -695,7 +697,7 @@ function buildOption(
     axisPointer: {
       link: [{ xAxisIndex: 'all' }],
       label: {
-        backgroundColor: '#333',
+        backgroundColor: CT().crosshairLabelBg,
         fontFamily: 'JetBrains Mono, monospace',
         fontSize: 10,
       },
@@ -742,6 +744,8 @@ export function EChartsCandlestick({
   dataRef.current = data
   const onDateClickRef = useRef(onDateClick)
   onDateClickRef.current = onDateClick
+  // 主题: buildOption/信息栏内部通过 CT() 动态取调色板, 这里只负责切换时触发重建
+  const theme = useTheme()
 
   // --- 全部用 ref，避免高频交互触发 React 重渲染 ---
   const infoIdxRef = useRef<number>(data.length - 1)
@@ -819,14 +823,14 @@ export function EChartsCandlestick({
     const turnoverRate = floatShares && d.volume ? (d.volume * 100 / floatShares * 100) : null
 
     let html = `<div style="display:flex;align-items:center;gap:6px;padding:0 8px;font:11px 'JetBrains Mono',monospace;select:none;height:20px;flex-wrap:wrap">`
-    html += `<span style="color:${THEME.text}">${d.date}</span>`
-    html += `<span style="color:${THEME.text}">开</span>`
+    html += `<span style="color:${CT().text}">${d.date}</span>`
+    html += `<span style="color:${CT().text}">开</span>`
     html += `<span style="color:${d.open >= d.close ? THEME.bear : THEME.bull}">${d.open.toFixed(2)}</span>`
-    html += `<span style="color:${THEME.text}">高</span>`
+    html += `<span style="color:${CT().text}">高</span>`
     html += `<span style="color:${THEME.bull}">${d.high.toFixed(2)}</span>`
-    html += `<span style="color:${THEME.text}">低</span>`
+    html += `<span style="color:${CT().text}">低</span>`
     html += `<span style="color:${THEME.bear}">${d.low.toFixed(2)}</span>`
-    html += `<span style="color:${THEME.text}">收</span>`
+    html += `<span style="color:${CT().text}">收</span>`
     html += `<span style="color:${clr};font-weight:600">${d.close.toFixed(2)}</span>`
     // 涨跌幅 (收盘后, 换手前; 和收间隔一些距离)
     if (prev) {
@@ -834,8 +838,8 @@ export function EChartsCandlestick({
       html += `<span style="color:${clr};margin-left:8px">${isUp ? '+' : ''}${chgPct.toFixed(2)}%</span>`
     }
     if (turnoverRate != null) {
-      html += `<span style="color:${THEME.text}">换手</span>`
-      html += `<span style="color:${THEME.text}">${turnoverRate.toFixed(2)}%</span>`
+      html += `<span style="color:${CT().text}">换手</span>`
+      html += `<span style="color:${CT().text}">${turnoverRate.toFixed(2)}%</span>`
     }
     html += `</div>`
 
@@ -961,7 +965,7 @@ export function EChartsCandlestick({
       const isBuy = m.kind === 'buy'
       const isSell = m.kind === 'sell'
       if (m.above) {
-        const dotColor = m.color ?? (isBuy ? '#FACC15' : THEME.text)
+        const dotColor = m.color ?? (isBuy ? '#FACC15' : CT().text)
         if (compact) {
           markPointData.push({
             name: m.date, coord: [m.date, d.high],
@@ -989,11 +993,11 @@ export function EChartsCandlestick({
           symbol: 'arrow', symbolSize: 12,
           symbolRotate: isBuy ? 0 : 180,
           symbolOffset: isBuy ? [0, '60%'] : [0, '-60%'],
-          itemStyle: { color: isBuy ? THEME.bull : isSell ? THEME.bear : THEME.text },
+          itemStyle: { color: isBuy ? THEME.bull : isSell ? THEME.bear : CT().text },
           label: {
             show: !!m.label, formatter: m.label ?? '',
             position: isBuy ? 'bottom' : 'top', distance: 8,
-            color: THEME.text, fontSize: 10,
+            color: CT().text, fontSize: 10,
             fontFamily: 'JetBrains Mono, monospace',
           },
         })
@@ -1038,7 +1042,7 @@ export function EChartsCandlestick({
     if (infoEl) {
       infoEl.innerHTML = getInfoBarHTML()
     }
-  }, [data, markers, ranges, priceLines, linkedPrice, showMA, showMarkersProp, activeIndicators, chartHeight, dates, dateIndexMap, initialZoom, getInfoBarHTML])
+  }, [data, markers, ranges, priceLines, linkedPrice, showMA, showMarkersProp, activeIndicators, chartHeight, dates, dateIndexMap, initialZoom, getInfoBarHTML, theme])
 
   // 渲染信息栏容器 (内容由 JS 直接写入)
   const initialHTML = useMemo(() => {
@@ -1048,14 +1052,14 @@ export function EChartsCandlestick({
     const floatShares = stockInfo?.float_shares
     const turnoverRate = floatShares && d.volume ? (d.volume * 100 / floatShares * 100) : null
     let html = `<div style="display:flex;align-items:center;gap:6px;padding:0 8px;font:11px 'JetBrains Mono',monospace;height:20px;flex-wrap:wrap">`
-    html += `<span style="color:${THEME.text}">${d.date}</span>`
-    html += `<span style="color:${THEME.text}">开</span>`
+    html += `<span style="color:${CT().text}">${d.date}</span>`
+    html += `<span style="color:${CT().text}">开</span>`
     html += `<span style="color:${d.open >= d.close ? THEME.bear : THEME.bull}">${d.open.toFixed(2)}</span>`
-    html += `<span style="color:${THEME.text}">高</span>`
+    html += `<span style="color:${CT().text}">高</span>`
     html += `<span style="color:${THEME.bull}">${d.high.toFixed(2)}</span>`
-    html += `<span style="color:${THEME.text}">低</span>`
+    html += `<span style="color:${CT().text}">低</span>`
     html += `<span style="color:${THEME.bear}">${d.low.toFixed(2)}</span>`
-    html += `<span style="color:${THEME.text}">收</span>`
+    html += `<span style="color:${CT().text}">收</span>`
     const prevClose0 = data[idx-1]?.close ?? d.close
     const clr0 = d.close >= prevClose0 ? THEME.bull : THEME.bear
     html += `<span style="color:${clr0};font-weight:600">${d.close.toFixed(2)}</span>`
@@ -1065,8 +1069,8 @@ export function EChartsCandlestick({
       html += `<span style="color:${clr0};margin-left:8px">${chgPct0 >= 0 ? '+' : ''}${chgPct0.toFixed(2)}%</span>`
     }
     if (turnoverRate != null) {
-      html += `<span style="color:${THEME.text}">换手</span>`
-      html += `<span style="color:${THEME.text}">${turnoverRate.toFixed(2)}%</span>`
+      html += `<span style="color:${CT().text}">换手</span>`
+      html += `<span style="color:${CT().text}">${turnoverRate.toFixed(2)}%</span>`
     }
     html += `</div>`
     if (showMA) {
@@ -1088,7 +1092,7 @@ export function EChartsCandlestick({
     <div className="w-full">
       {/* 主图信息栏 — 内容由 JS 直接操作 innerHTML */}
       {showInfoBar && (
-        <div ref={infoBarRef} style={{ backgroundColor: 'rgba(39,39,42,0.6)' }}
+        <div ref={infoBarRef} style={{ backgroundColor: CT().infoBarBg }}
           dangerouslySetInnerHTML={{ __html: initialHTML }} />
       )}
 

@@ -1,12 +1,14 @@
 import { useMemo } from 'react'
 import { useECharts } from './useECharts'
 import type { FactorBacktestResult } from '@/lib/api'
+import { useChartTheme } from '@/lib/theme'
 
 interface Props {
   result: FactorBacktestResult
 }
 
 export function FactorICChart({ result }: Props) {
+  const ct = useChartTheme()
   const option = useMemo(() => {
     if (!result.ic_series.length) return null
 
@@ -26,12 +28,12 @@ export function FactorICChart({ result }: Props) {
       grid: { left: 50, right: 16, top: 16, bottom: 28 },
       tooltip: {
         trigger: 'axis',
-        backgroundColor: 'rgba(15,23,42,0.95)',
-        borderColor: 'rgba(148,163,184,0.2)',
-        textStyle: { color: '#e2e8f0', fontSize: 12 },
+        backgroundColor: ct.tooltipBg,
+        borderColor: ct.tooltipBorder,
+        textStyle: { color: ct.tooltipText, fontSize: 12 },
         formatter: (params: any) => {
           const date = params[0]?.axisValue ?? ''
-          let html = `<div style="font-size:11px;color:#94a3b8;margin-bottom:4px">${date}</div>`
+          let html = `<div style="font-size:11px;color:${ct.text};margin-bottom:4px">${date}</div>`
           for (const p of params) {
             if (p.value == null) continue
             html += `<div style="display:flex;justify-content:space-between;gap:16px">
@@ -45,14 +47,14 @@ export function FactorICChart({ result }: Props) {
       xAxis: {
         type: 'category',
         data: dates,
-        axisLabel: { color: '#64748b', fontSize: 10, interval: Math.floor(dates.length / 6) },
-        axisLine: { lineStyle: { color: '#334155' } },
+        axisLabel: { color: ct.text, fontSize: 10, interval: Math.floor(dates.length / 6) },
+        axisLine: { lineStyle: { color: ct.border } },
         axisTick: { show: false },
       },
       yAxis: {
         type: 'value',
-        axisLabel: { color: '#64748b', fontSize: 10, formatter: (v: number) => `${(v * 100).toFixed(0)}%` },
-        splitLine: { lineStyle: { color: '#1e293b' } },
+        axisLabel: { color: ct.text, fontSize: 10, formatter: (v: number) => `${(v * 100).toFixed(0)}%` },
+        splitLine: { lineStyle: { color: ct.grid } },
         axisLine: { show: false },
       },
       series: [
@@ -80,9 +82,9 @@ export function FactorICChart({ result }: Props) {
         },
       ],
     } as any
-  }, [result.ic_series])
+  }, [result.ic_series, ct])
 
-  const chartRef = useECharts(option, [result.run_id])
+  const chartRef = useECharts(option, [result.run_id, ct])
 
   return <div ref={chartRef} className="h-[200px]" />
 }

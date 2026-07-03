@@ -7,6 +7,7 @@ import {
   type CandlestickData,
   type HistogramData,
 } from 'lightweight-charts'
+import { useChartTheme } from '@/lib/theme'
 
 export interface OHLC {
   date: string
@@ -24,11 +25,9 @@ export function fmtBigNum(v: number): string {
   return v.toFixed(0)
 }
 
+// 序列颜色 (双主题通用); 画布文字/网格/边框主题相关色走 ChartTheme
 const THEME = {
   background: 'transparent',
-  textColor: '#A1A1AA',
-  gridColor: 'rgba(255,255,255,0.04)',
-  borderColor: '#27272A',
   bull: '#F04438',
   bear: '#12B76A',
   volBull: 'rgba(240,68,56,0.4)',
@@ -45,6 +44,19 @@ export function CandlestickChart({ data, height = 480 }: Props) {
   const chartRef = useRef<IChartApi | null>(null)
   const candleRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
   const volRef = useRef<ISeriesApi<'Histogram'> | null>(null)
+  const ct = useChartTheme()
+  const ctRef = useRef(ct)
+  ctRef.current = ct
+
+  // 主题切换: 无需重建 chart, applyOptions 即时生效
+  useEffect(() => {
+    chartRef.current?.applyOptions({
+      layout: { textColor: ct.text },
+      grid: { vertLines: { color: ct.grid }, horzLines: { color: ct.grid } },
+      rightPriceScale: { borderColor: ct.border },
+      timeScale: { borderColor: ct.border },
+    })
+  }, [ct])
 
   useEffect(() => {
     if (!containerRef.current) return
@@ -55,22 +67,22 @@ export function CandlestickChart({ data, height = 480 }: Props) {
       height,
       layout: {
         background: { color: THEME.background },
-        textColor: THEME.textColor,
+        textColor: ctRef.current.text,
         fontFamily: 'JetBrains Mono, monospace',
         fontSize: 11,
       },
       grid: {
-        vertLines: { color: THEME.gridColor },
-        horzLines: { color: THEME.gridColor },
+        vertLines: { color: ctRef.current.grid },
+        horzLines: { color: ctRef.current.grid },
       },
       crosshair: {
         mode: CrosshairMode.Normal,
         vertLine: { labelVisible: false },
         horzLine: { labelVisible: false },
       },
-      rightPriceScale: { borderColor: THEME.borderColor },
+      rightPriceScale: { borderColor: ctRef.current.border },
       timeScale: {
-        borderColor: THEME.borderColor,
+        borderColor: ctRef.current.border,
         timeVisible: false,
         secondsVisible: false,
       },

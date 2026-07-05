@@ -30,14 +30,24 @@ export function Pill({ label, value }: { label: string; value: number | string }
   )
 }
 
-function CapBadge({ hasCap, isLocal, tierLabel, tierReq, capInfo, localSuffix }: {
+function CapBadge({ hasCap, isLocal, tierLabel, tierReq, capInfo, localSuffix, customProvider }: {
   hasCap: boolean
   isLocal: boolean
   tierLabel?: string
   tierReq?: string
   capInfo?: { rpm: number | null; batch: number | null; subscribe: number | null } | undefined
   localSuffix?: string
+  customProvider?: string | null
 }) {
+  // 走自定义数据源时, 显示数据源名而非 TickFlow 档位
+  if (customProvider) {
+    return (
+      <span className="text-[10px] text-accent/80 bg-accent/8 rounded px-1.5 py-px font-medium">
+        {customProvider}
+      </span>
+    )
+  }
+
   if (isLocal) {
     return (
       <span className="text-[10px] text-secondary bg-elevated rounded px-1.5 py-px font-medium">
@@ -82,7 +92,7 @@ export type FieldTab = { label: string; table: string }
 export function StatCard({
   title, hint, stats, isInstrument = false, loading = false,
   active = false, done = false, skipped = false, stagePct = 0,
-  tierKey, capLimits, tierLabel,
+  tierKey, capLimits, tierLabel, customProvider,
   auto, onSettings, onShowFields, settingsOpen, subLabel, localBadgeSuffix, fieldTabs,
 }: {
   title: string
@@ -97,6 +107,7 @@ export function StatCard({
   tierKey?: string
   capLimits?: Record<string, { rpm: number | null; batch: number | null; subscribe: number | null }>
   tierLabel?: string
+  customProvider?: string | null
   onSettings?: () => void
   onShowFields?: (table?: string) => void
   settingsOpen?: boolean
@@ -239,6 +250,7 @@ export function StatCard({
             tierReq={meta?.tierReq}
             capInfo={capInfo}
             localSuffix={localBadgeSuffix}
+            customProvider={customProvider}
           />
         )}
       </div>

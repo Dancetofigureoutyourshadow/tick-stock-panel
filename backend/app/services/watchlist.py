@@ -13,6 +13,7 @@ import polars as pl
 from app.config import settings
 from app.tickflow.capabilities import Cap, CapabilitySet
 from app.tickflow.client import get_client
+from app.tickflow.rate_limits import chunked, resolve_limit
 
 logger = logging.getLogger(__name__)
 
@@ -104,19 +105,16 @@ def fetch_quotes(symbols: list[str], capset: CapabilitySet, timeout_s: float = 8
     quotes: list[dict] = []
 
     # 走 batch
-    batch_size = 5
     if capset.has(Cap.QUOTE_BATCH):
-        lim = capset.limits(Cap.QUOTE_BATCH)
-        batch_size = lim.batch if lim and lim.batch else 50
+        batch_size = resolve_limit(capset, Cap.QUOTE_BATCH, default_batch=50).batch
     elif capset.has(Cap.QUOTE_BY_SYMBOL):
-        lim = capset.limits(Cap.QUOTE_BY_SYMBOL)
-        batch_size = lim.batch if lim and lim.batch else 5
+        batch_size = resolve_limit(capset, Cap.QUOTE_BY_SYMBOL, default_batch=5).batch
     else:
         # 无任何实时行情能力(none/free 档走 free-api 服务器,不提供实时行情)
         # 提前返回空,避免发起注定失败的请求
         return []
 
-    chunks = [symbols[i:i + batch_size] for i in range(0, len(symbols), batch_size)]
+    chunks = chunked(symbols, batch_size)
 
     # 用线程池为每个批次加超时保护
     pool = ThreadPoolExecutor(max_workers=1)

@@ -119,7 +119,7 @@ def run_now(
     if not pull_a_share:
         emit("sync_daily", 45, "已跳过 A 股日K同步(拉取内容未勾选)")
         logger.info("sync_daily: skipped (pipeline_pull_a_share=False)")
-    elif today_exists and capset.has(Cap.QUOTE_POOL):
+    elif today_exists and capset.has(Cap.QUOTE_POOL) and _prefs.get_daily_data_provider() == "tickflow":
         # 付费档:今天有数据(QuoteService 已落盘)→ 实时行情覆写,确保最新。
         # free/none 档无 quote.pool 能力,即便今天已有数据(如从 expert 降级),
         # 也降级到下方 batch 路径刷新,避免调用无权限的实时行情接口。
@@ -179,7 +179,11 @@ def run_now(
     #     (这两类分支不拉历史日K, 除权不能用日K范围, 只能兜底最近几日)
     written_adj = 0
     affected_symbols: list[str] = []
-    if capset.has(Cap.ADJ_FACTOR):
+    adj_provider = _prefs.get_adj_factor_provider()
+    if adj_provider == "same_as_daily":
+        adj_provider = _prefs.get_daily_data_provider()
+    can_sync_adj = capset.has(Cap.ADJ_FACTOR) or adj_provider != "tickflow"
+    if can_sync_adj:
         from datetime import datetime, timedelta
         adj_end = datetime.now()
         if daily_range_start is not None:

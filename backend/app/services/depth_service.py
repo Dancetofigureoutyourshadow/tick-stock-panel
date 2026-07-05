@@ -31,6 +31,9 @@ from pathlib import Path
 
 import polars as pl
 
+from app.tickflow.capabilities import Cap
+from app.tickflow.rate_limits import chunked, resolve_limit, sleep_between_batches
+
 logger = logging.getLogger(__name__)
 
 
@@ -269,17 +272,12 @@ class DepthService:
         tf = get_client()
 
         capset = self._get_capset()
-        lim = capset.limits(__import__("app.tickflow.capabilities", fromlist=["Cap"]).Cap.DEPTH5_BATCH)
-        batch_size = (lim.batch if lim and lim.batch else 100)
-        rpm = (lim.rpm if lim and lim.rpm else 30)
-        # 批间隔 = 60/rpm(匀速)
-        inter_batch = 60.0 / rpm if rpm > 0 else 2.0
+        limit = resolve_limit(capset, Cap.DEPTH5_BATCH, default_batch=100, default_rpm=30)
 
         result: dict = {}
-        chunks = [symbols[i:i + batch_size] for i in range(0, len(symbols), batch_size)]
+        chunks = chunked(symbols, limit.batch)
         for i, chunk in enumerate(chunks):
-            if i > 0:
-                time.sleep(inter_batch)
+            sleep_between_batches(i, limit.rpm, default_interval=2.0)
             try:
                 # SDK 的 batch 内部已按 batch_size 切, 这里再切一层防单请求过大
                 data = tf.depth.batch(chunk)
@@ -529,7 +527,7 @@ class DepthService:
     # ================================================================
 
     def _notify_takeover(self, n_stocks: int, user_interval: float, actual_interval: float) -> None:
-        """系统接管通知: 复用 quote_service 的 _pending_alerts 通道。"""
+        """系统接管通知: 通过 quote_service 广播到所有 SSE 订阅者。"""
         if not self._app_state:
             return
         qs = getattr(self._app_state, "quote_service", None)
@@ -543,9 +541,7 @@ class DepthService:
             "message": msg,
         }
         try:
-            with qs._lock:
-                qs._pending_alerts.append(alert)
-            qs._alert_event.set()
+            qs.push_alerts([alert])
         except Exception as e:  # noqa: BLE001
             logger.debug("depth 接管通知推送失败: %s", e)
 

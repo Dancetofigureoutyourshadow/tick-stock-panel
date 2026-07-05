@@ -479,9 +479,7 @@ def trigger_ladder(request: Request):
             "conditions": ev["conditions"], "logic": ev["logic"],
         } for ev in rule_events]
         try:
-            with quote_svc._lock:
-                quote_svc._pending_alerts.extend(sse_alerts)
-            quote_svc._alert_event.set()
+            quote_svc.push_alerts(sse_alerts)
         except Exception:  # noqa: BLE001
             pass
 

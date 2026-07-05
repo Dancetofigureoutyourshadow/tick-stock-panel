@@ -319,6 +319,52 @@ class MinuteSyncPrefs(BaseModel):
     minute_sync_days: int = 5
 
 
+class DataProvidersIn(BaseModel):
+    daily_data_provider: str | None = None
+    adj_factor_provider: str | None = None
+    minute_data_provider: str | None = None
+    realtime_data_provider: str | None = None
+    financial_data_provider: str | None = None
+
+
+class CustomSourceTestIn(BaseModel):
+    provider: str
+    dataset: str
+    symbols: list[str] | None = None
+
+
+class DatasetFieldMapItem(BaseModel):
+    source: str
+    target: str
+
+
+class DatasetConfigIn(BaseModel):
+    url: str
+    method: str = "GET"
+    batch: int | None = None
+    rpm: int | None = None
+    response_path: str = ""
+    field_map: dict[str, str] = {}
+    transforms: dict[str, str] = {}
+    symbols_param: str = "symbols"
+    start_param: str = "start_time"
+    end_param: str = "end_time"
+
+
+class AuthConfigIn(BaseModel):
+    type: str = "none"
+    token_env: str | None = None
+    header: str = "Authorization"
+    param: str = "token"
+
+
+class CustomSourceIn(BaseModel):
+    name: str
+    display_name: str = ""
+    auth: AuthConfigIn = AuthConfigIn()
+    datasets: dict[str, DatasetConfigIn] = {}
+
+
 @router.get("/preferences")
 def get_preferences() -> dict:
     """返回用户偏好设置。"""
@@ -333,6 +379,7 @@ def get_preferences() -> dict:
         "adj_factor_provider": preferences.get_adj_factor_provider(),
         "minute_data_provider": preferences.get_minute_data_provider(),
         "realtime_data_provider": preferences.get_realtime_data_provider(),
+        "financial_data_provider": preferences.get_financial_provider(),
         "realtime_watchlist_symbols": preferences.get_realtime_watchlist_symbols(),
         **preferences.get_realtime_quote_scope(),
         "pipeline_pull_a_share": preferences.get_pipeline_pull_a_share(),
@@ -361,6 +408,106 @@ def get_preferences() -> dict:
         "depth_finalize_time": preferences.get_depth_finalize_time(),
         "review_schedule": preferences.get_review_schedule(),
         "review_push_channels": preferences.get_review_push_channels(),
+    }
+
+
+@router.get("/data-sources")
+def list_data_sources() -> dict:
+    """列出已加载的自定义数据源。"""
+    from app.data_providers import custom as custom_sources
+    return {
+        "builtin": [{"name": "tickflow", "display_name": "TickFlow", "datasets": ["daily", "adj_factor", "realtime"]}],
+        "custom": custom_sources.list_sources(),
+        "errors": custom_sources.errors(),
+        "config_dir": str(custom_sources.data_sources_dir()),
+    }
+
+
+@router.post("/data-sources/reload")
+def reload_data_sources() -> dict:
+    """重新加载 data_sources/*.yaml。"""
+    from app.data_providers import custom as custom_sources
+    custom_sources.load_all()
+    return list_data_sources()
+
+
+@router.get("/data-sources/{name}")
+def get_data_source(name: str) -> dict:
+    """读取一个自定义数据源的完整配置(用于前端编辑回填)。"""
+    from app.data_providers import custom as custom_sources
+    cfg = custom_sources.get_config_dict(name)
+    if cfg is None:
+        raise HTTPException(status_code=404, detail=f"数据源 '{name}' 不存在")
+    return cfg
+
+
+@router.post("/data-sources")
+def save_data_source(req: CustomSourceIn) -> dict:
+    """创建或更新一个自定义数据源 yaml, 保存后自动 reload。"""
+    from app.data_providers import custom as custom_sources
+    config = req.model_dump()
+    config["name"] = (config.get("name") or "").lower()
+    try:
+        custom_sources.save_config(config["name"], config)
+        custom_sources.load_all()
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return list_data_sources()
+
+
+@router.delete("/data-sources/{name}")
+def delete_data_source(name: str) -> dict:
+    """删除一个自定义数据源 yaml, 保存后自动 reload。
+
+    若当前总开关选中的就是被删的源, 回退到 tickflow。
+    """
+    from app.data_providers import custom as custom_sources
+    from app.services import preferences
+    try:
+        custom_sources.delete_config(name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    custom_sources.load_all()
+    # 回退被删源的偏好
+    updates: dict = {}
+    if preferences.get_daily_data_provider() == name:
+        updates["daily_data_provider"] = "tickflow"
+    if preferences.get_realtime_data_provider() == name:
+        updates["realtime_data_provider"] = "tickflow"
+    if preferences.get_financial_provider() == name:
+        updates["financial_data_provider"] = "tickflow"
+    adj = preferences.get_adj_factor_provider()
+    if adj == name:
+        updates["adj_factor_provider"] = "same_as_daily"
+    if updates:
+        preferences.save(updates)
+    return list_data_sources()
+
+
+@router.post("/data-sources/test")
+def test_data_source(req: CustomSourceTestIn) -> dict:
+    """试拉自定义数据源，不写盘。"""
+    from app.data_providers import custom as custom_sources
+    provider = custom_sources.get_provider(req.provider)
+    try:
+        return provider.test_dataset(req.dataset, req.symbols)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"自定义数据源测试失败: {e}") from e
+
+
+@router.put("/preferences/data-providers")
+def update_data_providers(req: DataProvidersIn) -> dict:
+    """保存数据源选择。"""
+    from app.services import preferences
+    updates = req.model_dump(exclude_none=True)
+    if updates:
+        preferences.save(updates)
+    return {
+        "daily_data_provider": preferences.get_daily_data_provider(),
+        "adj_factor_provider": preferences.get_adj_factor_provider(),
+        "minute_data_provider": preferences.get_minute_data_provider(),
+        "realtime_data_provider": preferences.get_realtime_data_provider(),
+        "financial_data_provider": preferences.get_financial_provider(),
     }
 
 

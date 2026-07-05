@@ -99,26 +99,39 @@ def get_minute_sync_days() -> int:
 _ALLOWED_DATA_PROVIDERS = {"tickflow"}
 
 
+def _allowed_data_providers() -> set[str]:
+    try:
+        from app.data_providers import custom as custom_sources
+        return _ALLOWED_DATA_PROVIDERS | custom_sources.names()
+    except Exception:  # noqa: BLE001
+        return set(_ALLOWED_DATA_PROVIDERS)
+
+
 def get_daily_data_provider() -> str:
     provider = str(load().get("daily_data_provider", "tickflow") or "tickflow").lower()
-    return provider if provider in _ALLOWED_DATA_PROVIDERS else "tickflow"
+    return provider if provider in _allowed_data_providers() else "tickflow"
 
 
 def get_adj_factor_provider() -> str:
     provider = str(load().get("adj_factor_provider", "same_as_daily") or "same_as_daily").lower()
     if provider == "same_as_daily":
         return provider
-    return provider if provider in _ALLOWED_DATA_PROVIDERS else "same_as_daily"
+    return provider if provider in _allowed_data_providers() else "same_as_daily"
 
 
 def get_minute_data_provider() -> str:
     provider = str(load().get("minute_data_provider", "tickflow") or "tickflow").lower()
-    return provider if provider in _ALLOWED_DATA_PROVIDERS else "tickflow"
+    return provider if provider in _allowed_data_providers() else "tickflow"
 
 
 def get_realtime_data_provider() -> str:
-    # 盘中实时现阶段仅支持 TickFlow。
-    return "tickflow"
+    provider = str(load().get("realtime_data_provider", "tickflow") or "tickflow").lower()
+    return provider if provider in _allowed_data_providers() else "tickflow"
+
+
+def get_financial_provider() -> str:
+    provider = str(load().get("financial_data_provider", "tickflow") or "tickflow").lower()
+    return provider if provider in _allowed_data_providers() else "tickflow"
 
 
 # ===== 盘后管道拉取内容开关 (A股 / ETF / 指数 独立控制) =====

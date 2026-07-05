@@ -16,7 +16,18 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, { ...init, headers })
   if (!res.ok) {
     let detail = ''
-    try { const j = JSON.parse(await res.text()); detail = j.detail ?? j.message ?? '' } catch { /* ignore */ }
+    try {
+      const j = JSON.parse(await res.text())
+      const raw = j.detail ?? j.message ?? ''
+      if (Array.isArray(raw)) {
+        // FastAPI 422 校验错误: [{type, loc, msg, input}, ...] → 取 msg 拼接
+        detail = raw.map((e: any) => e?.msg || String(e)).join('; ')
+      } else if (typeof raw === 'string') {
+        detail = raw
+      } else if (raw && typeof raw === 'object') {
+        detail = JSON.stringify(raw)
+      }
+    } catch { /* ignore */ }
     const msg = detail || `${res.status} ${res.statusText}`
     // 401 (未登录/会话过期) 不弹 toast — 由全局认证拦截器统一跳登录页, 避免刷屏
     if (res.status !== 401) toast(msg, 'error')
@@ -675,6 +686,61 @@ export interface SaveTickflowKeyResult {
   capabilities_count?: number
 }
 
+export interface DataSourceItem {
+  name: string
+  display_name: string
+  datasets: string[]
+  path?: string | null
+}
+
+export interface DataSourceLoadError {
+  name?: string
+  path: string
+  errors: string[]
+}
+
+export interface DataSourcesResponse {
+  builtin: DataSourceItem[]
+  custom: DataSourceItem[]
+  errors: DataSourceLoadError[]
+  config_dir: string
+}
+
+export interface DataSourceTestResult {
+  provider: string
+  dataset: string
+  rows: number
+  columns: string[]
+  preview: Record<string, unknown>[]
+}
+
+export interface DatasetConfig {
+  url: string
+  method: string
+  batch?: number | null
+  rpm?: number | null
+  response_path: string
+  field_map: Record<string, string>
+  transforms?: Record<string, string>
+  symbols_param?: string
+  start_param?: string
+  end_param?: string
+}
+
+export interface AuthConfig {
+  type: string
+  token_env?: string | null
+  header?: string
+  param?: string
+}
+
+export interface CustomSourceConfig {
+  name: string
+  display_name: string
+  auth: AuthConfig
+  datasets: Record<string, DatasetConfig>
+}
+
 export interface Preferences {
   realtime_quotes_enabled: boolean
   indices_nav_pinned: boolean
@@ -684,6 +750,7 @@ export interface Preferences {
   adj_factor_provider?: string
   minute_data_provider?: string
   realtime_data_provider?: string
+  financial_data_provider?: string
   realtime_watchlist_symbols?: string[]
   realtime_pull_stock?: boolean
   realtime_pull_etf?: boolean
@@ -781,6 +848,26 @@ export const api = {
     request<{ ok: boolean }>('/api/settings/ai', { method: 'DELETE' }),
 
   preferences: () => request<Preferences>('/api/settings/preferences'),
+  dataSources: () => request<DataSourcesResponse>('/api/settings/data-sources'),
+  dataSource: (name: string) => request<CustomSourceConfig>(`/api/settings/data-sources/${encodeURIComponent(name)}`),
+  saveDataSource: (config: CustomSourceConfig) =>
+    request<DataSourcesResponse>('/api/settings/data-sources', {
+      method: 'POST',
+      body: JSON.stringify(config),
+    }),
+  deleteDataSource: (name: string) =>
+    request<DataSourcesResponse>(`/api/settings/data-sources/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+  reloadDataSources: () => request<DataSourcesResponse>('/api/settings/data-sources/reload', { method: 'POST' }),
+  testDataSource: (provider: string, dataset: string, symbols?: string[]) =>
+    request<DataSourceTestResult>('/api/settings/data-sources/test', {
+      method: 'POST',
+      body: JSON.stringify({ provider, dataset, symbols }),
+    }),
+  updateDataProviders: (cfg: Partial<Pick<Preferences, 'daily_data_provider' | 'adj_factor_provider' | 'minute_data_provider' | 'realtime_data_provider' | 'financial_data_provider'>>) =>
+    request<Pick<Preferences, 'daily_data_provider' | 'adj_factor_provider' | 'minute_data_provider' | 'realtime_data_provider'>>(
+      '/api/settings/preferences/data-providers',
+      { method: 'PUT', body: JSON.stringify(cfg) },
+    ),
   updateMinuteSync: (enabled: boolean, days: number) =>
     request<Preferences>('/api/settings/preferences/minute-sync', {
       method: 'PUT',

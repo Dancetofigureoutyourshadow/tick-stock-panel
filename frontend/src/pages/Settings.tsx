@@ -5,7 +5,7 @@
  */
 import { useSearchParams } from 'react-router-dom'
 import { motion } from 'framer-motion'
-import { BarChart3, Key, Radio, SlidersHorizontal, Sparkles, Settings2, Zap } from 'lucide-react'
+import { BarChart3, Database, Key, Radio, SlidersHorizontal, Sparkles, Settings2, Zap } from 'lucide-react'
 import { SettingsKeysPanel } from './settings/Keys'
 import { SettingsAIPanel } from './settings/AI'
 import { SettingsMonitoringPanel } from './settings/Monitoring'
@@ -13,20 +13,32 @@ import { SettingsExtPagesPanel } from './settings/ExtPages'
 import { SettingsMenuSettingsPanel } from './settings/MenuSettings'
 import { SettingsSystemPanel } from './settings/System'
 import { SettingsCustomSignalsPanel } from './settings/CustomSignals'
+import { SettingsDataSourcesPanel } from './settings/DataSources'
 import { PageHeader } from '@/components/PageHeader'
 import { cn } from '@/lib/cn'
 
+import type { ComponentType } from 'react'
+
 // ===== Tab 定义 =====
 
-const TABS = [
+type TabDef = {
+  key: string
+  label: string
+  icon: ComponentType<{ className?: string }>
+  panel: ComponentType<{ highlight?: string }>
+  badge?: string
+}
+
+const TABS: readonly TabDef[] = [
   { key: 'account',    label: 'TickFlow',   icon: Key,       panel: SettingsKeysPanel },
   { key: 'ai',         label: 'AI 设置',    icon: Sparkles,  panel: SettingsAIPanel },
   { key: 'monitoring', label: '实时监控',   icon: Radio,     panel: SettingsMonitoringPanel },
+  { key: 'data-sources', label: '数据源',     icon: Database,  panel: SettingsDataSourcesPanel, badge: 'beta' },
   { key: 'ext-pages',  label: '扩展页面',   icon: BarChart3, panel: SettingsExtPagesPanel },
   { key: 'signals',    label: '信号库',     icon: Zap,       panel: SettingsCustomSignalsPanel },
   { key: 'menus',      label: '菜单设置',   icon: SlidersHorizontal, panel: SettingsMenuSettingsPanel },
   { key: 'system',     label: '系统设置',   icon: Settings2, panel: SettingsSystemPanel },
-] as const
+]
 
 type TabKey = (typeof TABS)[number]['key']
 
@@ -48,7 +60,7 @@ export function Settings() {
           {/* ===== 竖向 Tab 侧栏（内容垂直居中） ===== */}
           <nav className="w-36 shrink-0">
             <div className="flex flex-col gap-0.5 justify-center min-h-[60vh] sticky top-6">
-              {TABS.map(({ key, label, icon: Icon }) => (
+              {TABS.map(({ key, label, icon: Icon, badge }) => (
                 <button
                   key={key}
                   onClick={() => setSearchParams({ tab: key }, { replace: true })}
@@ -61,6 +73,11 @@ export function Settings() {
                 >
                   <Icon className="h-3.5 w-3.5 shrink-0" />
                   <span>{label}</span>
+                  {badge && (
+                    <span className="ml-auto inline-flex items-center rounded-full border border-amber-400/30 bg-amber-400/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-amber-400 shrink-0">
+                      {badge}
+                    </span>
+                  )}
                 </button>
               ))}
             </div>

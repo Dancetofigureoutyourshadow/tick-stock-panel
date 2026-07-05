@@ -90,6 +90,12 @@ class QuoteSubscriber:
                 self._reviews = self._reviews[-self._max_reviews:]
             self._event.set()
 
+    def clear_alerts(self) -> None:
+        with self._lock:
+            self._alerts = []
+            if not self._quote_updated and not self._depth_updated and not self._reviews:
+                self._event.clear()
+
     def notify_quote(self) -> None:
         with self._lock:
             self._quote_updated = True
@@ -266,6 +272,13 @@ class QuoteService:
         for sub in self._snapshot_subscribers():
             sub.push_alerts(alerts)
 
+    def push_alerts(self, alerts: list[dict]) -> None:
+        self._broadcast_alerts(alerts)
+
+    def clear_pending_alerts(self) -> None:
+        for sub in self._snapshot_subscribers():
+            sub.clear_alerts()
+
     def push_review_event(self, event_json: str) -> None:
         """广播一条复盘进度事件(JSON 字符串), 唤醒所有 SSE generator。
 
@@ -288,6 +301,9 @@ class QuoteService:
     @classmethod
     def realtime_mode(cls) -> str:
         """当前实时行情模式: none / watchlist / full_market。"""
+        from app.services import preferences
+        if preferences.get_realtime_data_provider() != "tickflow":
+            return "full_market"
         tier = cls._current_tier()
         if tier == "none":
             return "none"
@@ -407,6 +423,23 @@ class QuoteService:
 
     def _fetch_full_market_quotes(self) -> None:
         """拉取全市场行情 → 写 daily + 计算 enriched + 更新缓存。"""
+        from app.services import preferences
+
+        provider_name = preferences.get_realtime_data_provider()
+        if provider_name != "tickflow":
+            from app.data_providers import custom as custom_sources
+            if custom_sources.provider_has_dataset(provider_name, "realtime"):
+                try:
+                    t0 = time.perf_counter()
+                    now_ts = time.perf_counter()
+                    records = custom_sources.get_provider(provider_name).get_realtime()
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("自定义实时行情拉取失败: %s", e)
+                    return
+                self._process_full_market_records(records, t0=t0, now_ts=now_ts)
+                return
+            # 自定义源未配置 realtime → 回退 TickFlow
+
         from app.tickflow.client import get_paid_realtime_client
 
         tf = get_paid_realtime_client()
@@ -479,6 +512,24 @@ class QuoteService:
                 "timestamp": q.get("timestamp"),
                 "session": q.get("session"),
             })
+
+        self._process_full_market_records(records, t0=t0, now_ts=now_ts)
+
+    def _process_full_market_records(self, records: list[dict], *, t0: float, now_ts: float) -> None:
+        """把全市场 records 写盘并增量计算 enriched。"""
+        from app.services import preferences
+        all_index_symbols = set(self._repo.get_index_symbol_set()) if self._repo else set()
+        core_index_symbols = set(preferences.get_realtime_index_symbols() or self.CORE_INDEX_SYMBOLS)
+        all_index_symbols.update(core_index_symbols)
+        all_etf_symbols = set()
+        if self._repo:
+            etf_inst = self._repo.get_etf_instruments()
+            if not etf_inst.is_empty() and "symbol" in etf_inst.columns:
+                all_etf_symbols = set(etf_inst["symbol"].cast(pl.Utf8).to_list())
+
+        if not records:
+            logger.warning("行情数据为空")
+            return
 
         index_records = [r for r in records if r.get("symbol") in all_index_symbols]
         etf_records = [r for r in records if r.get("symbol") in all_etf_symbols]

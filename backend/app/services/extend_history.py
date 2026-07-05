@@ -165,7 +165,12 @@ def run_extend_history(
     adj_start_str = new_start.strftime("%Y-%m-%d")
     adj_end_str = today.strftime("%Y-%m-%d")
 
-    if capset.has(Cap.ADJ_FACTOR):
+    from app.services import preferences as _prefs
+    adj_provider = _prefs.get_adj_factor_provider()
+    if adj_provider == "same_as_daily":
+        adj_provider = _prefs.get_daily_data_provider()
+    can_sync_adj = capset.has(Cap.ADJ_FACTOR) or adj_provider != "tickflow"
+    if can_sync_adj:
         emit("extend_history", 48, f"获取除权因子 [{adj_start_str} ~ {adj_end_str}]…")
         logger.info("extend_history: adj_factor [%s ~ %s]", adj_start_str, adj_end_str)
 

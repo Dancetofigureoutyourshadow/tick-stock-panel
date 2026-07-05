@@ -781,9 +781,8 @@ export interface Preferences {
   nav_order: string[]
   nav_hidden: string[]
   screener_auto_run: boolean
+  minute_intraday_refresh: boolean
 }
-
-// ===== Strategy Alert =====
 export interface StrategyAlertEvent {
   source: 'strategy' | 'depth'
   type: string
@@ -937,6 +936,7 @@ export const api = {
     strategy_monitor_ids?: string[]
     sidebar_index_symbols?: string[]
     screener_auto_run?: boolean
+    minute_intraday_refresh?: boolean
   }) =>
     request<{
       sse_refresh_pages: Record<string, boolean>
@@ -944,6 +944,7 @@ export const api = {
       strategy_monitor_ids: string[]
       sidebar_index_symbols: string[]
       screener_auto_run: boolean
+      minute_intraday_refresh: boolean
     }>('/api/settings/preferences/realtime-monitor', {
       method: 'PUT',
       body: JSON.stringify(cfg),
@@ -1063,6 +1064,11 @@ export const api = {
     request<{ data: Record<string, KlineRow[]> }>('/api/kline/daily-batch', {
       method: 'POST',
       body: JSON.stringify({ symbols, days }),
+    }),
+  klineMinuteBatch: (symbols: string[], date?: string) =>
+    request<{ data: Record<string, MinuteKlineRow[]> }>('/api/kline/minute-batch', {
+      method: 'POST',
+      body: JSON.stringify({ symbols, date }),
     }),
   instrumentSearch: (q: string, limit = 20) =>
     request<{ results: { symbol: string; name: string; code: string }[] }>(

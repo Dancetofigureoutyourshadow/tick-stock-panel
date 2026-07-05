@@ -341,6 +341,95 @@ def get_daily_batch(request: Request, body: dict):
     return {"data": result}
 
 
+@router.post("/minute-batch")
+def get_minute_batch(request: Request, body: dict):
+    """批量获取多只股票某天的分钟K (分时图用)。
+
+    - 本地优先: 先从 kline_minute parquet 读, 完整的直接用
+    - 缺失补拉: 本地不完整的 symbol 用 sync_minute_batch 批量实时拉 (不落库)
+    - 需 Pro+ 权限 (kline.minute.batch)
+    """
+    from datetime import datetime
+    import polars as pl
+    from app.tickflow.capabilities import Cap
+
+    symbols: list[str] = body.get("symbols", [])
+    trade_date_str: str | None = body.get("date")
+    if not symbols:
+        return {"data": {}}
+
+    repo = request.app.state.repo
+    capset = request.app.state.capabilities
+
+    # 权限守卫: 分钟K批量是 Pro+ 能力
+    if not capset.has(Cap.KLINE_MINUTE_BATCH):
+        raise HTTPException(status_code=403, detail="需要 Pro+ 权限 (kline.minute.batch)")
+
+    trade_date = date.fromisoformat(trade_date_str) if trade_date_str else date.today()
+
+    # 非交易日(周末/节假日)回退到最近有数据的交易日, 否则前端显示空白。
+    # 优先用本地分钟K最近日期; 本地从未同步过分钟K时, 回退到日K最近交易日
+    # (enriched 最新日一定有, 作为兜底), 确保 TickFlow 能拉到有效数据。
+    if trade_date == date.today():
+        recent_date = repo.latest_minute_date_global()
+        if recent_date is None:
+            recent_date = repo.latest_daily_date()
+        if recent_date is not None:
+            trade_date = recent_date
+
+    # Step 1: 本地优先 — 一次 scan 读全部 symbol 当日分钟K
+    df_local = repo.get_minute_batch(symbols, trade_date)
+
+    # 期望条数 (盘中按当前时刻估算, 盘后 240)
+    now = datetime.now()
+    h, m = now.hour, now.minute
+    if trade_date != date.today():
+        expected = 240
+    elif h < 9 or (h == 9 and m < 30):
+        expected = 0
+    elif h < 12 or (h == 12 and m == 0):
+        expected = (h - 9) * 60 + m - 30
+    elif h < 13:
+        expected = 120
+    elif h < 15:
+        expected = 120 + (h - 13) * 60 + m
+    else:
+        expected = 240
+
+    # 按 symbol 分组, 判定哪些不完整需要补拉
+    result: dict[str, list[dict]] = {}
+    incomplete: list[str] = []
+    for sym in symbols:
+        if df_local.is_empty():
+            sub = pl.DataFrame()
+        else:
+            sub = df_local.filter(pl.col("symbol") == sym).sort("datetime")
+        if expected > 0 and (sub.is_empty() or len(sub) < expected * 0.9):
+            incomplete.append(sym)
+        elif not sub.is_empty():
+            result[sym] = sub.to_dicts()
+
+    # Step 2: 缺失的 symbol 批量实时拉取 (不落库)
+    if incomplete:
+        start_time = datetime(trade_date.year, trade_date.month, trade_date.day, 9, 25, 0)
+        end_time = datetime(trade_date.year, trade_date.month, trade_date.day, 15, 5, 0)
+        lim = capset.limits(Cap.KLINE_MINUTE_BATCH)
+        live_df = kline_sync.sync_minute_batch(
+            incomplete,
+            start_time=start_time,
+            end_time=end_time,
+            batch_size=lim.batch if lim else None,
+            rpm=lim.rpm if lim else None,
+        )
+        if not live_df.is_empty():
+            for sym in incomplete:
+                sub = live_df.filter(pl.col("symbol") == sym).sort("datetime")
+                if not sub.is_empty():
+                    result[sym] = sub.to_dicts()
+
+    return {"data": result}
+
+
 @router.get("/minute")
 def get_minute(
     request: Request,

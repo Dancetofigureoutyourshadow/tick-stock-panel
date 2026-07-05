@@ -2,7 +2,7 @@ import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Trash2, RefreshCw, Star, X, Search, LayoutGrid, List, Settings2, Plus, Check, Filter, Eye, EyeOff, Minus, ChevronsUp } from 'lucide-react'
-import { api, type KlineRow } from '@/lib/api'
+import { api, type KlineRow, type MinuteKlineRow } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
 import { storage } from '@/lib/storage'
 import { fmtPrice, fmtPct, fmtBigNum, priceColorClass } from '@/lib/format'
@@ -13,10 +13,11 @@ import { ColumnCustomizer } from '@/components/ColumnCustomizer'
 import { StockDataTable } from '@/components/stock-table/StockDataTable'
 import { useTableSort } from '@/components/stock-table/useTableSort'
 import { MiniCandlestick } from '@/components/stock-table/MiniCandlestick'
+import { MiniIntraday } from '@/components/stock-table/MiniIntraday'
 import { boardTag, renderBuiltinDataCell } from '@/components/stock-table/primitives'
 import { getSignals, signalCls, getSortValue, UNSORTABLE_KEYS } from '@/lib/stock-table'
-import { resolveCandleConfig } from '@/lib/list-columns'
-import { useQuoteStatus } from '@/lib/useSharedQueries'
+import { resolveCandleConfig, resolveIntradayConfig } from '@/lib/list-columns'
+import { useQuoteStatus, useCapabilities, usePreferences } from '@/lib/useSharedQueries'
 import {
   type ColumnConfig,
   BUILTIN_COLUMNS,
@@ -496,6 +497,9 @@ export function Watchlist() {
   const [dailyKChartVisible, setDailyKChartVisible] = useState(() => {
     return storage.watchlistCandle.get(true)
   })
+  const [intradayChartVisible, setIntradayChartVisible] = useState(() => {
+    return storage.watchlistIntraday.get(true)
+  })
 
   // 列配置 — 从后端/localStorage 异步加载
   const [columns, setColumns] = useState<ColumnConfig[]>([...BUILTIN_COLUMNS])
@@ -527,6 +531,18 @@ export function Watchlist() {
 
   const dailyKVisible = candleColumnEnabled && dailyKChartVisible
 
+  // 分时列检测: 用户开启且列可见时才拉数据
+  const intradayColumn = useMemo(() =>
+    columns.find(c => c.source.type === 'builtin' && c.source.key === 'intraday' && c.visible),
+    [columns],
+  )
+  // 分时列渲染配置（宽高, 来自列定制, 已钳制边界）
+  const intradayResolved = useMemo(() => resolveIntradayConfig(intradayColumn?.intradayConfig), [intradayColumn])
+  // 分时图需 Pro+ (kline.minute.batch), 低档用户开了列也不拉数据
+  const caps = useCapabilities()
+  const hasMinuteBatch = !!caps.data?.capabilities?.['kline.minute.batch']
+  const intradayVisible = !!intradayColumn && hasMinuteBatch && intradayChartVisible
+
   // 计算可见列（列是否出现只由自定义列配置决定）
   const visibleColumns = useMemo(() => {
     return columns.filter(c => c.visible)
@@ -546,6 +562,13 @@ export function Watchlist() {
     setDailyKChartVisible(v => {
       const next = !v
       storage.watchlistCandle.set(next)
+      return next
+    })
+  }, [])
+  const toggleIntradayChart = useCallback(() => {
+    setIntradayChartVisible(v => {
+      const next = !v
+      storage.watchlistIntraday.set(next)
       return next
     })
   }, [])
@@ -590,6 +613,20 @@ export function Watchlist() {
   })
 
   const klineData = dailyKVisible ? (klineBatch.data?.data ?? {}) : {}
+
+  // 批量分时数据 (Pro+ 用户, 列可见时才拉)
+  // 刷新策略: 默认关闭(不轮询); 用户在实时监控设置里开启 minute_intraday_refresh 后,
+  // 盘中按 15s 轮询刷新 (不接 SSE 高频, 避免每秒拉 TickFlow 触限流)
+  const { data: prefsData } = usePreferences()
+  const intradayRefreshEnabled = prefsData?.minute_intraday_refresh ?? false
+  const minuteBatch = useQuery({
+    queryKey: QK.minuteBatch(symbolsKey),
+    queryFn: () => api.klineMinuteBatch(symbols),
+    enabled: intradayVisible && symbols.length > 0,
+    staleTime: 10_000,
+    refetchInterval: intradayRefreshEnabled ? 15_000 : false,
+  })
+  const minuteData = intradayVisible ? (minuteBatch.data?.data ?? {}) : {}
 
   const addMutation = useMutation({
     mutationFn: (sym: string) => api.watchlistAdd(sym),
@@ -973,6 +1010,26 @@ export function Watchlist() {
                     </span>
                   )
                 }
+                if (col.source.type === 'builtin' && col.source.key === 'intraday') {
+                  return (
+                    <span className="inline-flex items-center justify-center gap-1.5">
+                      <span>{col.label}</span>
+                      <button
+                        type="button"
+                        onClick={(event) => { event.stopPropagation(); toggleIntradayChart() }}
+                        className={`inline-flex items-center justify-center w-5 h-5 rounded transition-colors ${
+                          intradayChartVisible
+                            ? 'text-accent bg-accent/10 hover:bg-accent/20'
+                            : 'text-muted hover:text-foreground hover:bg-elevated'
+                        }`}
+                        title={intradayChartVisible ? '隐藏分时图' : '显示分时图'}
+                        aria-label={intradayChartVisible ? '隐藏分时图' : '显示分时图'}
+                      >
+                        {intradayChartVisible ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
+                      </button>
+                    </span>
+                  )
+                }
                 return undefined
               }}
               renderCell={(r: any, col: ColumnConfig) => {
@@ -1091,10 +1148,26 @@ export function Watchlist() {
                 if (key === 'candle') {
                   return (
                     <td
-                      className="px-2 py-1.5"
-                      style={{ width: candleSize.width, minWidth: candleSize.width, maxWidth: candleSize.width, height: candleSize.height }}
+                      className="pl-2 pr-3 py-1.5"
+                      style={{ width: candleSize.width + 4, minWidth: candleSize.width + 4, maxWidth: candleSize.width + 4, height: candleSize.height }}
                     >
                       <MiniCandlestick rows={klineData[r.symbol] ?? []} width={candleSize.width} height={candleSize.height} />
+                    </td>
+                  )
+                }
+                // 分时列
+                if (key === 'intraday') {
+                  const rows: MinuteKlineRow[] = minuteData[r.symbol] ?? []
+                  // 眼睛关闭(收起)时用小尺寸 (和日k收起态一致 40x40); 开启时用配置值
+                  const iw = intradayChartVisible ? intradayResolved.width : 40
+                  const ih = intradayChartVisible ? intradayResolved.height : 40
+                  return (
+                    <td className="pl-3 pr-2 py-1.5 border-l border-border/30" style={{ width: iw + 4, minWidth: iw + 4, maxWidth: iw + 4, height: ih }}>
+                      <div className="flex items-center justify-center">
+                        {intradayChartVisible
+                          ? <MiniIntraday rows={rows} prevClose={r.prev_close} changePct={r.change_pct} width={iw - 4} height={ih} />
+                          : <span className="text-[10px] text-muted">分时</span>}
+                      </div>
                     </td>
                   )
                 }

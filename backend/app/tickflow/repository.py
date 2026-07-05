@@ -1177,6 +1177,27 @@ class KlineRepository:
             logger.warning("分钟K查询失败: %s", e)
             return pl.DataFrame()
 
+    def get_minute_batch(
+        self,
+        symbols: list[str],
+        trade_date: date,
+    ) -> pl.DataFrame:
+        """批量分钟K查询 — 多 symbol 一次 scan_parquet。
+
+        用于自选列表分时图: 一次 predicate pushdown 读多只股票当日分钟K,
+        避免逐只查询的 N 次 I/O。
+        """
+        if not symbols:
+            return pl.DataFrame()
+        try:
+            return pl.scan_parquet(self._minute_glob).filter(
+                pl.col("symbol").is_in(symbols)
+                & (pl.col("datetime").dt.date() == trade_date)
+            ).sort(["symbol", "datetime"]).collect()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("批量分钟K查询失败: %s", e)
+            return pl.DataFrame()
+
     # ================================================================
     # Polars 查询内部方法
     # ================================================================
@@ -1344,6 +1365,18 @@ class KlineRepository:
         except duckdb.CatalogException:
             pass
         return None
+
+    def latest_minute_date_global(self) -> date | None:
+        """全市场最近分钟K日期 (不分 symbol)。用于非交易日回退到上一交易日。"""
+        try:
+            with self._lock:
+                row = self.db.execute(
+                    "SELECT max(CAST(datetime AS DATE)) FROM kline_minute",
+                ).fetchone()
+            if row and row[0]:
+                return row[0] if isinstance(row[0], date) else date.fromisoformat(str(row[0]))
+        except Exception:  # noqa: BLE001
+            return None
 
     def earliest_daily_date(self) -> date | None:
         """本地日K数据的最早日期。"""

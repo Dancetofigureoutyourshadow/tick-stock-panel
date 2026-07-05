@@ -203,3 +203,96 @@ cp docs/examples/custom-data-source/mock_source.yaml data/data_sources/mock_sour
 | 试拉 rows 为 0 | 检查 `response_path` 是否指向数组 |
 | 日期列全为空 | 检查 `parse_date` 的格式是否和返回值一致 |
 | 实时行情没刷新 | 确认实时数据源已保存为 custom,且返回全市场快照 |
+
+## 用 AI 生成映射配置
+
+如果你的数据源 API 文档比较复杂,可以把 API 文档和返回示例丢给 AI,让它帮你生成 `field_map` 和 YAML 配置。
+
+### 操作步骤
+
+1. 从你的数据源获取 API 文档(接口地址、请求方式、返回字段说明)
+2. 试拉一次,拿到返回的 JSON 示例
+3. 把下面的 prompt 模板 + API 文档 + JSON 示例一起发给 AI
+4. 把 AI 生成的 YAML 贴到 `data/data_sources/xxx.yaml`
+5. 在设置页点「重新加载」,再「试拉测试」验证
+
+### Prompt 模板
+
+复制以下内容发给 AI(替换方括号部分):
+
+```text
+我在配置一个自定义数据源接入股票面板。请根据我的 API 文档和返回示例,生成 YAML 配置。
+
+要求:
+1. 输出标准 YAML 配置,包含 name / display_name / auth / datasets
+2. 每个数据集的 field_map 把我的接口字段名映射到内部字段名
+3. 日期类字段如果格式不是 YYYY-MM-DD, 加上 transforms 里的 parse_date
+4. 只配置我能提供的接口, 不存在的数据集不要写
+
+内部字段对照表:
+
+日K (daily):
+  symbol = 股票代码, 格式 000001.SZ / 600000.SH
+  date = 交易日期
+  open / high / low / close = OHLC
+  volume = 成交量
+  amount = 成交额
+
+除权因子 (adj_factor):
+  symbol = 股票代码
+  trade_date = 除权日期
+  ex_factor = 复权因子
+
+实时行情 (realtime):
+  symbol = 股票代码
+  last_price = 最新价
+  prev_close = 昨收价
+  open / high / low = 当日 OHLC
+  volume = 成交量
+  amount = 成交额
+  change_pct = 涨跌幅 (小数, 0.0366 = 3.66%)
+  change_amount = 涨跌额
+  amplitude = 振幅
+  turnover_rate = 换手率
+
+分钟K (minute):
+  symbol = 股票代码
+  datetime = 时间戳 (YYYY-MM-DD HH:MM:SS)
+  open / high / low / close = OHLC
+  volume = 成交量
+  amount = 成交额
+
+=== 我的 API 文档 ===
+[把你的接口文档贴这里: URL / 请求方式 / 参数 / 返回字段说明]
+
+=== 返回 JSON 示例 ===
+[把试拉的 JSON 返回贴这里]
+```
+
+AI 会输出类似这样的结果:
+
+```yaml
+name: my_source
+display_name: "我的数据源"
+auth:
+  type: bearer
+  token_env: MY_API_TOKEN
+
+datasets:
+  daily:
+    url: https://api.example.com/kline
+    method: POST
+    batch: 100
+    rpm: 200
+    response_path: data.list
+    field_map:
+      ts_code: symbol
+      trade_date: date
+      open: open
+      vol: volume
+    transforms:
+      date: "parse_date(value, '%Y%m%d')"
+```
+
+把这段 YAML 保存为 `data/data_sources/my_source.yaml`,然后在设置页重新加载即可。
+

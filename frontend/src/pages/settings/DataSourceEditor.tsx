@@ -398,7 +398,17 @@ function DatasetDetail({
             <div>
               <div className="flex items-center justify-between mb-2">
                 <div className="text-[10px] uppercase tracking-widest text-muted">字段映射</div>
-                <div className="text-[10px] text-muted/50">外部字段 → 内部字段</div>
+                <a
+                  href="https://github.com/shy3130/tickflow-stock-panel/blob/main/docs/custom-data-source.md#用-ai-生成映射配置"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-[10px] text-accent/70 hover:text-accent hover:underline"
+                >
+                  AI 帮你整理映射 →
+                </a>
+              </div>
+              <div className="text-[10px] text-muted/50 mb-1.5">
+                外部字段 → 内部字段 · 不知道怎么填? 点上方链接用 AI 整理
               </div>
               <FieldMapEditor
                 key={datasetKey}

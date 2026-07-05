@@ -15,6 +15,19 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/kline", tags=["kline"])
 
 
+def _minute_allowed(capset) -> bool:
+    """是否有分钟K权限 (TickFlow Pro+ 或 custom minute 源)。"""
+    from app.tickflow.capabilities import Cap
+    if capset.has(Cap.KLINE_MINUTE_BATCH):
+        return True
+    from app.services import preferences
+    provider = preferences.get_minute_data_provider()
+    if provider == "tickflow":
+        return False
+    from app.data_providers import custom as custom_sources
+    return custom_sources.provider_has_dataset(provider, "minute")
+
+
 @router.get("/instruments/search")
 def search_instruments(
     request: Request,
@@ -439,7 +452,7 @@ async def sync_minute(request: Request):
     repo = request.app.state.repo
     capset = request.app.state.capabilities
 
-    if not capset.has(Cap.KLINE_MINUTE_BATCH):
+    if not _minute_allowed(capset):
         raise HTTPException(status_code=403, detail="需要 Pro+ 权限")
 
     job_id = job_store.create()
@@ -663,7 +676,7 @@ async def extend_minute_history(request: Request):
         capset = request.app.state.capabilities
 
         from app.tickflow.capabilities import Cap
-        if not capset.has(Cap.KLINE_MINUTE_BATCH):
+        if not _minute_allowed(capset):
             raise HTTPException(status_code=403, detail="需要 Pro+ 权限 (batch minute K-line)")
 
         # month 单位(按月扩展更长的分钟K历史)仅 Expert+ 开放;Pro 仅可用 day
@@ -727,10 +740,15 @@ async def extend_minute_history(request: Request):
                 progress("extend_minute", 8, f"标的池: {len(universe)} 只")
 
                 from app.tickflow.capabilities import Cap
+                from app.tickflow.rate_limits import resolve_limit
 
-                lim = capset.limits(Cap.KLINE_MINUTE_BATCH)
-                batch_size = lim.batch if lim and lim.batch else 100
-                rpm = lim.rpm if lim else 30
+                limit = resolve_limit(
+                    capset,
+                    Cap.KLINE_MINUTE_BATCH,
+                    default_batch=100,
+                    default_rpm=30,
+                    default_rpm_when_unset=False,
+                )
 
                 def _run():
                     """全部在 executor 线程里完成,避免阻塞事件循环。"""
@@ -745,7 +763,7 @@ async def extend_minute_history(request: Request):
                         universe,
                         start_time=_dt.combine(new_start, _dt.min.time()),
                         end_time=_dt.combine(latest, _dt.min.time()),
-                        batch_size=batch_size, rpm=rpm,
+                        batch_size=limit.batch, rpm=limit.rpm,
                         on_chunk_done=_chunk,
                     )
 

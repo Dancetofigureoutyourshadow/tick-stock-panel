@@ -17,6 +17,7 @@ from app.indicators.pipeline import compute_enriched
 from app.services import kline_sync, preferences
 from app.tickflow.capabilities import Cap, CapabilitySet
 from app.tickflow.client import get_client
+from app.tickflow.rate_limits import chunked, min_batch, resolve_limit, sleep_between_batches
 from app.tickflow.repository import KlineRepository
 
 logger = logging.getLogger(__name__)
@@ -220,22 +221,16 @@ def sync_and_persist_index_daily(
         if instruments.is_empty() or "symbol" not in instruments.columns:
             return 0
         symbols = sorted(set(instruments["symbol"].to_list()))
-    lim = capset.limits(Cap.KLINE_DAILY_BATCH)
-    batch_size = preferences.get_index_daily_batch_size()
-    if lim and lim.batch:
-        batch_size = min(batch_size, lim.batch)
-    rpm = lim.rpm if lim else None
+    limit = resolve_limit(capset, Cap.KLINE_DAILY_BATCH)
+    batch_size = min_batch(preferences.get_index_daily_batch_size(), limit)
 
     end_time = end_date or datetime.now()
     start_time = start_date or (end_time - timedelta(days=365))
 
     total_rows = 0
-    interval = (60.0 / rpm) if rpm else 0
-    chunks = [symbols[i:i + batch_size] for i in range(0, len(symbols), batch_size)]
+    chunks = chunked(symbols, batch_size)
     for i, chunk in enumerate(chunks):
-        if i > 0 and interval > 0:
-            import time
-            time.sleep(interval)
+        sleep_between_batches(i, limit.rpm)
         raw = kline_sync.sync_daily_batch(
             chunk,
             count=count,
@@ -318,23 +313,17 @@ def sync_and_persist_etf_daily(
     if not symbols:
         return 0
 
-    lim = capset.limits(Cap.KLINE_DAILY_BATCH)
-    batch_size = preferences.get_index_daily_batch_size()
-    if lim and lim.batch:
-        batch_size = min(batch_size, lim.batch)
-    rpm = lim.rpm if lim else None
+    limit = resolve_limit(capset, Cap.KLINE_DAILY_BATCH)
+    batch_size = min_batch(preferences.get_index_daily_batch_size(), limit)
 
     end_time = end_date or datetime.now()
     start_time = start_date or (end_time - timedelta(days=365))
 
     total_rows = 0
-    interval = (60.0 / rpm) if rpm else 0
-    chunks = [symbols[i:i + batch_size] for i in range(0, len(symbols), batch_size)]
+    chunks = chunked(symbols, batch_size)
     factors = _load_etf_factors(repo)
     for i, chunk in enumerate(chunks):
-        if i > 0 and interval > 0:
-            import time
-            time.sleep(interval)
+        sleep_between_batches(i, limit.rpm)
         raw = kline_sync.sync_daily_batch(
             chunk,
             count=count,

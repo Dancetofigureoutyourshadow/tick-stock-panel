@@ -60,6 +60,14 @@ async def lifespan(app: FastAPI):
     app.state.capabilities = capset
     logger.info("ready; %d capabilities active", len(capset.all()))
 
+    # 自定义数据源配置(可选): 失败只记录错误, 不影响 TickFlow 基准路径。
+    try:
+        from app.data_providers import custom as custom_sources
+        custom_sources.load_all()
+        logger.info("custom data sources loaded: %d", len(custom_sources.list_sources()))
+    except Exception as e:  # noqa: BLE001
+        logger.warning("custom data sources init failed: %s", e)
+
     # 全局行情服务
     qs = QuoteService()
     app.state.quote_service = qs

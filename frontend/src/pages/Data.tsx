@@ -136,6 +136,7 @@ export function Data() {
     queryKey: QK.extData,
     queryFn: api.extDataList,
   })
+
   const deleteExt = useMutation({
     mutationFn: (id: string) => api.extDataDelete(id),
     onSuccess: () => qc.invalidateQueries({ queryKey: QK.extData }),
@@ -152,6 +153,38 @@ export function Data() {
   })
 
   const prefs = usePreferences()
+
+  // 数据源列表 + 当前数据源 (顶部"切换数据源"按钮展示)
+  const dataSources = useQuery({
+    queryKey: QK.dataSources,
+    queryFn: api.dataSources,
+    staleTime: 60_000,
+  })
+  const activeProvider = prefs.data?.daily_data_provider || 'tickflow'
+  const activeDataSourceName = activeProvider === 'tickflow'
+    ? 'TickFlow'
+    : (dataSources.data?.custom?.find(s => s.name === activeProvider)?.display_name || activeProvider)
+
+  // tierKey → 自定义数据集名映射 (用于数据画像 CapBadge 显示数据源名而非 TickFlow 档位)
+  const TIERKEY_TO_DATASET: Record<string, string> = {
+    daily: 'daily',
+    adj_factor: 'adj_factor',
+    etf: 'daily',        // ETF 复用日K能力
+    minute: 'minute',
+    financials: 'financial',
+  }
+  // 当前 custom 源支持的数据集集合
+  const activeCustomDatasets = activeProvider !== 'tickflow'
+    ? new Set(dataSources.data?.custom?.find(s => s.name === activeProvider)?.datasets || [])
+    : new Set<string>()
+  // 给定 tierKey, 返回 custom provider 显示名 (走 custom 时) 或 null (走 TickFlow)
+  const getCustomProviderName = (tierKey: string): string | null => {
+    if (activeProvider === 'tickflow') return null
+    const ds = TIERKEY_TO_DATASET[tierKey]
+    if (ds && activeCustomDatasets.has(ds)) return activeDataSourceName
+    return null
+  }
+
   const minuteAuto = prefs.data?.minute_sync_enabled ?? false
   const pipelineSched = prefs.data?.pipeline_schedule ?? { hour: 15, minute: 30 }
   const instrumentsSched = prefs.data?.instruments_schedule ?? { hour: 9, minute: 10 }
@@ -358,6 +391,7 @@ export function Data() {
             tierKey="daily"
             capLimits={caps.data?.capabilities}
             tierLabel={caps.data?.label}
+            customProvider={getCustomProviderName('daily')}
             auto
             onShowFields={() => setSchemaTable('daily')}
             onSettings={hasData ? () => setOpenSettings(v => v === 'daily' ? null : 'daily') : undefined}
@@ -378,6 +412,7 @@ export function Data() {
             tierKey="adj_factor"
             capLimits={caps.data?.capabilities}
             tierLabel={caps.data?.label}
+            customProvider={getCustomProviderName('adj_factor')}
             auto
             onShowFields={() => setSchemaTable('adj_factor')}
           />
@@ -440,6 +475,7 @@ export function Data() {
             tierKey="etf"
             capLimits={caps.data?.capabilities}
             tierLabel={caps.data?.label}
+            customProvider={getCustomProviderName('etf')}
             auto={etfAuto}
             subLabel="维表 · 日K · 指标"
             fieldTabs={[
@@ -464,6 +500,7 @@ export function Data() {
             tierKey="minute"
             capLimits={caps.data?.capabilities}
             tierLabel={caps.data?.label}
+            customProvider={getCustomProviderName('minute')}
             auto={minuteAuto}
             onShowFields={() => setSchemaTable('minute')}
             onSettings={hasData ? () => setOpenSettings(v => v === 'minute' ? null : 'minute') : undefined}
@@ -480,6 +517,7 @@ export function Data() {
             tierKey="financials"
             capLimits={caps.data?.capabilities}
             tierLabel={caps.data?.label}
+            customProvider={getCustomProviderName('financials')}
           />
         )
       default:
@@ -540,6 +578,15 @@ export function Data() {
                 <SlidersHorizontal className="h-3.5 w-3.5" />
                 页面设置
               </button>
+              <div className="w-px h-4 bg-border" />
+              <Link
+                to="/settings?tab=data-sources"
+                className="inline-flex items-center gap-1 px-2 py-1 rounded-btn text-secondary hover:text-accent hover:bg-accent/8 text-xs transition-colors duration-150"
+                title="切换数据源"
+              >
+                <Database className="h-3.5 w-3.5" />
+                <span className="text-foreground/80 max-w-[120px] truncate">{activeDataSourceName}</span>
+              </Link>
               <button
                 onClick={() => setShowClearConfirm(true)}
                 disabled={isRunning}

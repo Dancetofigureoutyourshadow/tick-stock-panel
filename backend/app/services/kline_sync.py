@@ -8,15 +8,16 @@
 from __future__ import annotations
 
 import logging
-import time
 from collections.abc import Callable
 from datetime import datetime, timedelta
 
 import polars as pl
 
 from app.indicators.pipeline import filter_halt_days
+from app.services import preferences
 from app.tickflow.capabilities import Cap, CapabilitySet
 from app.tickflow.client import get_client
+from app.tickflow.rate_limits import chunked, resolve_limit, sleep_between_batches
 from app.tickflow.repository import KlineRepository
 
 logger = logging.getLogger(__name__)
@@ -84,16 +85,10 @@ def sync_daily_batch(symbols: list[str],
     """
     tf = get_client()
     out: list[pl.DataFrame] = []
-    interval = (60.0 / rpm) if rpm else 0
-
-    if batch_size is None:
-        chunks = [symbols]
-    else:
-        chunks = [symbols[i:i + batch_size] for i in range(0, len(symbols), batch_size)]
+    chunks = chunked(symbols, batch_size)
 
     for i, chunk in enumerate(chunks):
-        if i > 0 and interval > 0:
-            time.sleep(interval)
+        sleep_between_batches(i, rpm)
         try:
             if start_time and end_time:
                 raw = tf.klines.batch(
@@ -141,18 +136,47 @@ def sync_and_persist_daily_batch(
     start_date/end_date: 外部传入的时间范围(由 pipeline 根据已有数据计算)。
     未传入时默认拉最近 1 年。
     """
-    if not symbols or not capset.has(Cap.KLINE_DAILY_BATCH):
+    if not symbols:
         return 0
 
-    lim = capset.limits(Cap.KLINE_DAILY_BATCH)
-    batch_size = lim.batch if lim and lim.batch else 100
-    rpm = lim.rpm if lim else None
+    provider_name = preferences.get_daily_data_provider()
+    if provider_name != "tickflow":
+        from app.data_providers import custom as custom_sources
+        if custom_sources.provider_has_dataset(provider_name, "daily"):
+            provider = custom_sources.get_provider(provider_name)
+            end_time = end_date or datetime.now()
+            days = count or 365
+            start_time = start_date or (end_time - timedelta(days=days))
+            df = provider.get_daily(
+                symbols,
+                start_time=start_time,
+                end_time=end_time,
+                on_chunk_done=on_chunk_done,
+            )
+            if df.is_empty():
+                return 0
+            repo.append_daily(df)
+            try:
+                d = repo.store.data_dir.as_posix()
+                repo.db.execute(
+                    f"""CREATE OR REPLACE VIEW kline_daily AS
+                        SELECT * FROM read_parquet('{d}/kline_daily/**/*.parquet', union_by_name=true)"""
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning("refresh view failed: %s", e)
+            return df.height
+        # 自定义源未配置 daily → 回退 TickFlow
+
+    if not capset.has(Cap.KLINE_DAILY_BATCH):
+        return 0
+
+    limit = resolve_limit(capset, Cap.KLINE_DAILY_BATCH, default_batch=100)
 
     end_time = end_date or datetime.now()
     start_time = start_date or (end_time - timedelta(days=365))
 
     df = sync_daily_batch(
-        symbols, count=count, batch_size=batch_size, rpm=rpm,
+        symbols, count=count, batch_size=limit.batch, rpm=limit.rpm,
         start_time=start_time, end_time=end_time,
         on_chunk_done=on_chunk_done,
     )
@@ -275,28 +299,65 @@ def sync_adj_factor(symbols: list[str], repo: KlineRepository,
     支持增量: 传 start_time/end_time 只拉取该时间范围内的新除权事件。
     返回 (写入行数, 受影响的 symbol 列表) — 供 enriched 局部重算使用。
     """
-    if not capset.has(Cap.ADJ_FACTOR) or not symbols:
+    if not symbols:
+        return 0, []
+
+    provider_name = preferences.get_adj_factor_provider()
+    if provider_name == "same_as_daily":
+        provider_name = preferences.get_daily_data_provider()
+    if provider_name != "tickflow":
+        from app.data_providers import custom as custom_sources
+        if custom_sources.provider_has_dataset(provider_name, "adj_factor"):
+            provider = custom_sources.get_provider(provider_name)
+            new_data = provider.get_adj_factors(
+                symbols,
+                start_time=start_time,
+                end_time=end_time,
+                asset_type=asset_type,
+                on_chunk_done=on_chunk_done,
+            )
+            if new_data.is_empty():
+                return 0, []
+            affected = new_data["symbol"].unique().to_list()
+            factor_dir = "adj_factor_etf" if asset_type == "etf" else "adj_factor"
+            out = repo.store.data_dir / factor_dir / "all.parquet"
+            out.parent.mkdir(parents=True, exist_ok=True)
+            if out.exists():
+                existing = pl.read_parquet(out)
+                before = existing.height
+                merged = pl.concat([existing, new_data]).unique(
+                    subset=["symbol", "trade_date"], keep="last",
+                ).sort(["symbol", "trade_date"])
+                merged.write_parquet(out)
+                return merged.height - before, affected
+            new_data.sort(["symbol", "trade_date"]).write_parquet(out)
+            return new_data.height, affected
+        # 自定义源未配置 adj_factor → 回退 TickFlow
+
+    if not capset.has(Cap.ADJ_FACTOR):
         return 0, []
 
     tf = get_client()
-    lim = capset.limits(Cap.ADJ_FACTOR)
-    batch_size = lim.batch if lim and lim.batch else 50
-    rpm = lim.rpm if lim else 30
-    interval = 60.0 / rpm if rpm else 0
+    limit = resolve_limit(
+        capset,
+        Cap.ADJ_FACTOR,
+        default_batch=50,
+        default_rpm=30,
+        default_rpm_when_unset=False,
+    )
 
     # 构建 SDK 参数
-    sdk_kwargs: dict = {"as_dataframe": True, "batch_size": batch_size, "show_progress": False}
+    sdk_kwargs: dict = {"as_dataframe": True, "batch_size": limit.batch, "show_progress": False}
     if start_time:
         sdk_kwargs["start_time"] = _datetime_to_ms(start_time)
     if end_time:
         sdk_kwargs["end_time"] = _datetime_to_ms(end_time)
 
-    chunks = [symbols[i:i + batch_size] for i in range(0, len(symbols), batch_size)]
+    chunks = chunked(symbols, limit.batch)
     all_dfs: list[pl.DataFrame] = []
 
     for i, chunk in enumerate(chunks):
-        if i > 0 and interval > 0:
-            time.sleep(interval)
+        sleep_between_batches(i, limit.rpm)
         try:
             raw = tf.klines.ex_factors(chunk, **sdk_kwargs)
             normalized = _normalize_adj_factor(raw)
@@ -417,18 +478,23 @@ def sync_minute_batch(
     count 仅作为 fallback 保留。
     on_chunk_done(current, total) 每个 chunk 完成后回调。
     """
+    # 自定义数据源分流: minute provider
+    provider_name = preferences.get_minute_data_provider()
+    if provider_name != "tickflow":
+        from app.data_providers import custom as custom_sources
+        if custom_sources.provider_has_dataset(provider_name, "minute"):
+            provider = custom_sources.get_provider(provider_name)
+            return provider.get_minute(
+                symbols, start_time=start_time, end_time=end_time, on_chunk_done=on_chunk_done,
+            )
+        # 未配置 minute → 回退 TickFlow
+
     tf = get_client()
     out: list[pl.DataFrame] = []
-    interval = (60.0 / rpm) if rpm else 0
-
-    if batch_size is None:
-        chunks = [symbols]
-    else:
-        chunks = [symbols[i:i + batch_size] for i in range(0, len(symbols), batch_size)]
+    chunks = chunked(symbols, batch_size)
 
     for i, chunk in enumerate(chunks):
-        if i > 0 and interval > 0:
-            time.sleep(interval)
+        sleep_between_batches(i, rpm)
         try:
             if start_time and end_time:
                 raw = tf.klines.batch(
@@ -608,7 +674,14 @@ def sync_and_persist_minute(
     使用 start_time / end_time 区间拉取, 确保所有标的覆盖同一时间段。
     on_chunk_done(current, total) 每个 chunk 完成后回调。
     """
-    if not symbols or not capset.has(Cap.KLINE_MINUTE_BATCH):
+    minute_provider = preferences.get_minute_data_provider()
+    minute_is_custom = False
+    if minute_provider != "tickflow":
+        from app.data_providers import custom as custom_sources
+        minute_is_custom = custom_sources.provider_has_dataset(minute_provider, "minute")
+    if not symbols:
+        return 0
+    if not minute_is_custom and not capset.has(Cap.KLINE_MINUTE_BATCH):
         return 0
 
     # 迁移:旧版 _normalize_minute 未转换 timestamp→datetime,导致全部 datetime 为 null
@@ -628,12 +701,16 @@ def sync_and_persist_minute(
         start_time = now - timedelta(days=days)
     end_time = now
 
-    lim = capset.limits(Cap.KLINE_MINUTE_BATCH)
-    batch_size = lim.batch if lim and lim.batch else 100
-    rpm = lim.rpm if lim else 30
+    limit = resolve_limit(
+        capset,
+        Cap.KLINE_MINUTE_BATCH,
+        default_batch=100,
+        default_rpm=30,
+        default_rpm_when_unset=False,
+    )
 
     df = sync_minute_batch(symbols, start_time=start_time, end_time=end_time,
-                           batch_size=batch_size, rpm=rpm,
+                           batch_size=limit.batch, rpm=limit.rpm,
                            on_chunk_done=on_chunk_done)
     if df.is_empty():
         return 0

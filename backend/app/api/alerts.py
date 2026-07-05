@@ -136,9 +136,7 @@ def seed_demo_alerts(request: Request, count: int = 12, recent: bool = True):
             "signals": ev["signals"],
             "severity": ev.get("severity", "info"),
         } for ev in events]
-        with qs._lock:
-            qs._pending_alerts.extend(sse_alerts)
-        qs._alert_event.set()
+        qs.push_alerts(sse_alerts)
 
     return {"ok": True, "generated": len(events)}
 

@@ -281,6 +281,12 @@ export function Layout() {
   const { data: settingsState } = useSettings()
   const { data: versionData } = useVersion()
   const { data: prefs } = usePreferences()
+  // 数据源列表 (用于实时行情状态显示当前数据源名称)
+  const { data: dataSources } = useQuery({
+    queryKey: QK.dataSources,
+    queryFn: api.dataSources,
+    staleTime: 60_000,
+  })
   // poll=true: 全局唯一开启条件轮询 (非交易时段 60s 兜底, 交易时段靠 SSE)
   const { data: quoteStatus } = useQuoteStatus({ poll: true })
   const { data: analysisMenus } = useQuery({
@@ -340,6 +346,21 @@ export function Layout() {
   const isNoneTier = tier < 0
   const isWatchlistMode = tier === 0
   const realtimeModeLabel = isWatchlistMode ? '自选股' : '全市场'
+  // 当前实时行情数据源名称 (custom 时显示源名, tickflow 时不显示)
+  const realtimeProvider = prefs?.realtime_data_provider
+  const realtimeProviderName = realtimeProvider && realtimeProvider !== 'tickflow'
+    ? (dataSources?.custom?.find(s => s.name === realtimeProvider)?.display_name || realtimeProvider)
+    : null
+
+  // 当前主数据源 (用于菜单底部状态条)
+  const activeProvider = prefs?.daily_data_provider || 'tickflow'
+  const activeProviderName = activeProvider === 'tickflow'
+    ? 'TickFlow'
+    : (dataSources?.custom?.find(s => s.name === activeProvider)?.display_name || activeProvider)
+  const activeProviderDatasets = activeProvider === 'tickflow'
+    ? ['daily', 'adj_factor', 'realtime', 'minute']
+    : (dataSources?.custom?.find(s => s.name === activeProvider)?.datasets || [])
+  const isCustomActive = activeProvider !== 'tickflow'
 
   // 轮询触发记录总数 → 更新监控中心徽标 (每 15 秒)
   const alertsTotalQuery = useQuery({
@@ -476,9 +497,51 @@ export function Layout() {
           ))}
         </nav>
 
+        {/* 数据源状态条 */}
+        <button
+          onClick={() => navigate('/settings?tab=data-sources')}
+          className="mx-2 mb-1 flex items-center gap-2 rounded-btn px-2.5 py-2 text-left transition-colors hover:bg-elevated/60 shrink-0 group"
+          title="数据源设置"
+        >
+          <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-md ${
+            isCustomActive ? 'bg-accent/15' : 'bg-elevated'
+          }`}>
+            <Database className={`h-3 w-3 ${isCustomActive ? 'text-accent' : 'text-muted'}`} />
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-1.5">
+              <span className="text-[11px] font-medium text-secondary truncate group-hover:text-foreground transition-colors">
+                {activeProviderName}
+              </span>
+              {isCustomActive && (
+                <span className="shrink-0 rounded bg-accent/15 px-1 py-px text-[8px] font-semibold uppercase tracking-wider text-accent">
+                  自定义
+                </span>
+              )}
+            </div>
+            <div className="mt-0.5 flex gap-0.5">
+              {(['daily', 'adj_factor', 'realtime', 'minute'] as const).map(ds => {
+                const supported = ds === 'daily' || ds === 'adj_factor' || ds === 'realtime' || ds === 'minute'
+                const active = supported && (
+                  isCustomActive ? activeProviderDatasets.includes(ds) : true
+                )
+                return (
+                  <span
+                    key={ds}
+                    title={ds}
+                    className={`h-1 flex-1 rounded-full transition-colors ${
+                      active ? 'bg-accent/60' : 'bg-muted/20'
+                    }`}
+                  />
+                )
+              })}
+            </div>
+          </div>
+        </button>
+
         {/* 全局行情开关 */}
         <div className="border-t border-border px-3 py-2.5 shrink-0">
-          {isNoneTier ? (
+          {isNoneTier && !realtimeProviderName ? (
             <div>
               <div className="flex items-center justify-between">
                 <span className="text-xs text-secondary truncate">实时行情</span>
@@ -512,7 +575,7 @@ export function Layout() {
                       : 'bg-muted'
                 }`} />
                 <span className="text-xs text-secondary truncate">
-                  实时行情 · {realtimeModeLabel}
+                  实时行情 · {realtimeProviderName || realtimeModeLabel}
                 </span>
                 <button
                   onClick={() => navigate('/settings?tab=monitoring')}
@@ -539,9 +602,9 @@ export function Layout() {
           )}
 
           {/* 状态提示 */}
-          {realtimeEnabled && !isNoneTier && (
+          {realtimeEnabled && (!isNoneTier || realtimeProviderName) && (
             <div className="mt-1.5 text-[10px] leading-snug space-y-0.5">
-              {isWatchlistMode && !dismissFreeHint && (
+              {isWatchlistMode && !dismissFreeHint && !realtimeProviderName && (
                 <div className="flex items-start gap-1 text-amber-400/80">
                   <span className="flex-1">监控自选股前 5 只，全市场监控需 Starter+</span>
                   <button

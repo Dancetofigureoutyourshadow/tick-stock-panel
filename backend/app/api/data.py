@@ -663,8 +663,7 @@ def clear_data(request: Request):
     # - 待推送的实时通知队列 (进程内存)
     qs = getattr(request.app.state, "quote_service", None)
     if qs is not None:
-        with qs._lock:
-            qs._pending_alerts.clear()
+        qs.clear_pending_alerts()
 
     # 清除 Polars 缓存
     # 先 clear_cache 无条件清空内存 (refresh_cache 在磁盘无数据时会提前 return,

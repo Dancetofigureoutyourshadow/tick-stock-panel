@@ -42,6 +42,16 @@ def _get_symbols(data_dir: Path) -> list[str]:
         return []
 
 
+def _financial_is_custom() -> bool:
+    """当前财务数据源是否走 custom (用于绕过 TickFlow Expert 套餐门槛)。"""
+    from app.services import preferences
+    provider = preferences.get_financial_provider()
+    if provider == "tickflow":
+        return False
+    from app.data_providers import custom as custom_sources
+    return custom_sources.provider_has_dataset(provider, "financial")
+
+
 def _sync_table(
     table: str,
     symbols: list[str],
@@ -50,12 +60,27 @@ def _sync_table(
     latest_only: bool = True,
 ) -> int:
     """同步单张财务表。返回写入的行数。"""
-    if not capset.has(Cap.FINANCIAL):
+    is_custom = _financial_is_custom()
+    if not is_custom and not capset.has(Cap.FINANCIAL):
         logger.info("sync_%s skipped: no FINANCIAL capability", table)
         return 0
     if not symbols:
         logger.warning("sync_%s skipped: no symbols", table)
         return 0
+
+    # 自定义数据源分流
+    if is_custom:
+        from app.services import preferences
+        from app.data_providers import custom as custom_sources
+        provider = custom_sources.get_provider(preferences.get_financial_provider())
+        df = provider.get_financials(table, symbols, latest_only=latest_only)
+        if df.is_empty() or "symbol" not in df.columns:
+            return 0
+        out_dir = data_dir / "financials" / table
+        out_dir.mkdir(parents=True, exist_ok=True)
+        df.write_parquet(out_dir / "part.parquet")
+        logger.info("sync_%s done via custom: %d records written", table, len(df))
+        return len(df)
 
     from app.tickflow.client import get_client
     tf = get_client()
@@ -347,7 +372,7 @@ class FinancialScheduler:
         用 _is_syncing 标志防并发:若已有同步在进行,本次直接跳过,
         避免重复请求拖慢服务端 / 触发上游限流。
         """
-        if not self._capset or not self._capset.has(Cap.FINANCIAL):
+        if not self._capset or (not self._capset.has(Cap.FINANCIAL) and not _financial_is_custom()):
             return {}
         with self._lock:
             if self._is_syncing:
@@ -372,7 +397,7 @@ class FinancialScheduler:
         /status 已能看到 syncing=True,无竞态窗口;同时防止快速重复点击
         启动多个后台线程。后台线程复用 _run_body 执行真正的同步逻辑。
         """
-        if not self._capset or not self._capset.has(Cap.FINANCIAL):
+        if not self._capset or (not self._capset.has(Cap.FINANCIAL) and not _financial_is_custom()):
             return {"started": False, "reason": "no FINANCIAL capability"}
         with self._lock:
             if self._is_syncing:

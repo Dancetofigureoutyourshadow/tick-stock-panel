@@ -62,7 +62,8 @@ def _fetch_instruments_via_provider() -> list[dict] | None:
     if not hasattr(provider, "get_instruments"):
         return None
     try:
-        items = provider.get_instruments("stock") or []
+        items = provider.get_instruments("stock")
+        items = items.to_dicts() if isinstance(items, pl.DataFrame) else items or []
     except Exception as e:  # noqa: BLE001
         logger.warning("provider %s get_instruments 失败: %s", provider_name, e)
         return None

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures as _cf
+import json
 import logging
 
 from fastapi import APIRouter, HTTPException, Request
@@ -93,6 +94,68 @@ def get_job(job_id: str) -> dict:
     if not j:
         raise HTTPException(status_code=404, detail="job not found")
     return j
+
+
+@router.get("/jobs/{job_id}/events")
+async def stream_job_events(job_id: str, request: Request):
+    """通过 SSE 推送管道任务进度; 终态事件发送后关闭连接。"""
+    from collections.abc import AsyncIterator
+
+    from sse_starlette.sse import EventSourceResponse
+
+    if not job_store.get(job_id):
+        raise HTTPException(status_code=404, detail="job not found")
+
+    async def generate() -> AsyncIterator[dict[str, str]]:
+        last_signature: tuple[object, ...] | None = None
+        last_emit = asyncio.get_running_loop().time()
+        while not await request.is_disconnected():
+            job_store.reap_stale()
+            job = job_store.get(job_id)
+            if not job:
+                return
+
+            log = job.get("log") or []
+            message = log[-1].get("msg", "") if log else ""
+            status = str(job.get("status", "pending"))
+            signature = (
+                status,
+                job.get("progress", 0),
+                job.get("stage", "init"),
+                job.get("stage_pct", 0),
+                message,
+                job.get("error"),
+                job.get("finished_at"),
+            )
+            if signature != last_signature:
+                last_signature = signature
+                payload = {
+                    "id": job.get("id"),
+                    "status": status,
+                    "stage": job.get("stage", "init"),
+                    "progress": job.get("progress", 0),
+                    "stage_pct": job.get("stage_pct", 0),
+                    "message": message,
+                    "error": job.get("error"),
+                    "result": job.get("result"),
+                }
+                if status in ("succeeded", "failed"):
+                    yield {
+                        "event": status,
+                        "data": json.dumps(payload, ensure_ascii=False, default=str),
+                    }
+                    return
+                yield {
+                    "event": "progress",
+                    "data": json.dumps(payload, ensure_ascii=False, default=str),
+                }
+                last_emit = asyncio.get_running_loop().time()
+            elif asyncio.get_running_loop().time() - last_emit >= 15:
+                yield {"event": "heartbeat", "data": "{}"}
+                last_emit = asyncio.get_running_loop().time()
+            await asyncio.sleep(0.5)
+
+    return EventSourceResponse(generate(), ping=15)
 
 
 @router.post("/jobs/{job_id}/cancel")

@@ -47,6 +47,7 @@ from app.extensions.loader import (
     start_backend_extensions,
 )
 from app.jobs import daily_pipeline
+from app.logging_config import build_backend_log_handler
 from app.services.matrix_prewarm_owner import MatrixCachePrewarmOwner
 from app.services.mining_process_lock import MiningProcessLock
 from app.services.quote_service import QuoteService
@@ -64,17 +65,12 @@ logger = logging.getLogger(__name__)
 # 运行时日志仅出现在 dev 终端, 关掉或滚屏后即丢失, 排查「同步后日志没落」时无处可查。
 # 落盘到 data/backend.log 与桌面版 (desktop.py:_setup_logging → desktop.log) 行为对齐,
 # 事后可查。桌面版 (frozen) 已由 desktop.py 写 desktop.log, 此处跳过避免重复落盘。
-# RotatingFileHandler 防止长期运行/频繁 reload 导致文件无限增长。
+# ConcurrentRotatingFileHandler 防止日志无限增长，并允许 reload 进程安全交接。
 if not getattr(sys, "frozen", False):
     try:
-        from logging.handlers import RotatingFileHandler
-
         _log_path = settings.data_dir / "backend.log"
         _log_path.parent.mkdir(parents=True, exist_ok=True)
-        _file_handler = RotatingFileHandler(
-            _log_path, maxBytes=10 * 1024 * 1024, backupCount=3,
-            mode="a", encoding="utf-8", errors="replace",
-        )
+        _file_handler = build_backend_log_handler(_log_path)
         _file_handler.setFormatter(
             logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
         )
@@ -156,6 +152,11 @@ async def _application_lifespan(app: FastAPI):
     depth_service.set_repo(repo)
     depth_service.set_app_state(app.state)
     app.state.depth_service = depth_service
+
+    # 详情页实时行情：按 realtime_quote_interval 共享轮询当前标的，并通过独立 SSE 推送。
+    from app.services.focus_market_stream import FocusMarketStreamService
+    focus_market_stream = FocusMarketStreamService(repo, depth_service)
+    app.state.focus_market_stream = focus_market_stream
 
     # 启动调度器(若 enriched 数据为空,首次启动可手动 POST /api/pipeline/run)
     try:
@@ -360,6 +361,9 @@ async def _application_lifespan(app: FastAPI):
         qs = getattr(app.state, "quote_service", None)
         if qs:
             qs.stop()
+        focus_stream = getattr(app.state, "focus_market_stream", None)
+        if focus_stream:
+            await focus_stream.close()
         dsvc = getattr(app.state, "depth_service", None)
         if dsvc:
             dsvc.stop_polling()

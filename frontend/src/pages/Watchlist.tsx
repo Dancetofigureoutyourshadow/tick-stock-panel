@@ -11,6 +11,7 @@ import { fmtPrice, fmtPct, fmtBigNum, priceColorClass, formatExtNumber } from '@
 import { computeGroupPcts, loadGroupStatsConfig, type GroupStatsConfigPatch } from '@/lib/watchlistGroupStats'
 import { PageHeader } from '@/components/PageHeader'
 import { EmptyState } from '@/components/EmptyState'
+import { Modal } from '@/components/Modal'
 import { StockPreviewDialog } from '@/components/StockPreviewDialog'
 import {
   DimensionMembersDialog,
@@ -27,6 +28,7 @@ import {
 import { WatchlistGroupCards } from '@/components/WatchlistGroupCards'
 import { WatchlistGroupStatsBar } from '@/components/WatchlistGroupStatsBar'
 import { ExtensionSlot } from '@/extensions/ExtensionSlot'
+import { toast } from '@/components/Toast'
 
 // 分时列开放排序 (StockDataTable 实例级白名单; 表头眼睛/刷新按钮已 stopPropagation)
 const INTRADAY_SORTABLE_KEYS = new Set(['intraday'])
@@ -49,6 +51,20 @@ import {
   saveColumnConfig,
   buildExtColumnsParam,
 } from '@/lib/watchlist-columns'
+
+function localIsoDate(value = new Date()): string {
+  const year = value.getFullYear()
+  const month = String(value.getMonth() + 1).padStart(2, '0')
+  const day = String(value.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+function localDateDaysAgo(days: number): string {
+  const value = new Date()
+  value.setHours(12, 0, 0, 0)
+  value.setDate(value.getDate() - days)
+  return localIsoDate(value)
+}
 
 // ===== 板块标识（筛选/卡片用） =====
 // 注: boardTag（创/科/北 标签）已移至共享 @/components/stock-table/primitives
@@ -862,9 +878,17 @@ export function Watchlist() {
       if (open == null || high == null || low == null || close == null) { patched[sym] = arr; continue }
       const last = arr[arr.length - 1]
       if (last.date === asOf) {
-        patched[sym] = [...arr.slice(0, -1), { ...last, open, high, low, close }]
+        patched[sym] = [...arr.slice(0, -1), {
+          ...last, open, high, low, close,
+          signal_limit_up: live.signal_limit_up ?? last.signal_limit_up,
+          signal_limit_down: live.signal_limit_down ?? last.signal_limit_down,
+        }]
       } else if (last.date < asOf) {
-        patched[sym] = [...arr, { date: asOf, open, high, low, close }]
+        patched[sym] = [...arr, {
+          date: asOf, open, high, low, close,
+          signal_limit_up: live.signal_limit_up,
+          signal_limit_down: live.signal_limit_down,
+        }]
       } else {
         patched[sym] = arr
       }
@@ -876,7 +900,8 @@ export function Watchlist() {
   // 刷新策略: 仅当实时行情运行 且 用户在实时监控设置里开启 minute_intraday_refresh 时
   // 按用户设定的间隔轮询 (不接 SSE 高频, 避免每秒拉 TickFlow 触限流); 与 Screener / 设置卡片描述一致。
   const { data: prefsData } = usePreferences()
-  const intradayRefreshEnabled = prefsData?.minute_intraday_refresh ?? false
+  // 兼容旧配置：后端未返回该字段时，实时行情运行即默认刷新分时。
+  const intradayRefreshEnabled = prefsData?.minute_intraday_refresh ?? realtimeRunning
   const intradayRefreshInterval = prefsData?.minute_intraday_refresh_interval ?? 6
   const minuteBatch = useQuery({
     queryKey: QK.minuteBatch(minuteSymbolsKey),
@@ -886,6 +911,136 @@ export function Watchlist() {
     refetchInterval: (intradayRefreshEnabled && realtimeRunning) ? intradayRefreshInterval * 1000 : false,
   })
   const minuteData = intradayVisible ? (minuteBatch.data?.data ?? {}) : {}
+
+  const [minuteSyncDialog, setMinuteSyncDialog] = useState<string | null>(null)
+  const [minuteSyncStart, setMinuteSyncStart] = useState('')
+  const [minuteSyncEnd, setMinuteSyncEnd] = useState('')
+  const [minuteSyncForce, setMinuteSyncForce] = useState(true)
+  const [minuteSyncingSymbol, setMinuteSyncingSymbol] = useState<string | null>(null)
+  const [minuteSyncJobId, setMinuteSyncJobId] = useState<string | null>(null)
+  const [minuteSyncProgress, setMinuteSyncProgress] = useState<{
+    status: 'pending' | 'running' | 'succeeded' | 'failed'
+    progress: number
+    message: string
+    error: string | null
+  } | null>(null)
+  const [minuteSyncRequest, setMinuteSyncRequest] = useState<{
+    symbol: string
+    startDate: string
+    endDate: string
+    force: boolean
+  } | null>(null)
+  const minuteYearSync = useMutation({
+    mutationFn: ({ symbol, startDate, endDate, force }: {
+      symbol: string
+      startDate: string
+      endDate: string
+      force: boolean
+    }) => api.syncMinuteSingle(symbol, undefined, {
+      startDate,
+      endDate,
+      force,
+      trackProgress: true,
+    }),
+    onMutate: ({ symbol }) => setMinuteSyncingSymbol(symbol),
+    onSuccess: (data, variables) => {
+      setMinuteSyncRequest(variables)
+      setMinuteSyncProgress({ status: 'pending', progress: 0, message: '任务已提交，等待开始...', error: null })
+      setMinuteSyncJobId(data.job_id ?? null)
+    },
+    onError: (error: Error) => {
+      toast(`分钟K同步失败: ${error.message || '未知错误'}`, 'error')
+    },
+    onSettled: () => setMinuteSyncingSymbol(null),
+  })
+
+  const minuteSyncBusy = minuteYearSync.isPending || !!minuteSyncJobId
+
+  useEffect(() => {
+    if (!minuteSyncJobId) return
+    const source = new EventSource(`/api/pipeline/jobs/${encodeURIComponent(minuteSyncJobId)}/events`)
+    const parseProgress = (event: MessageEvent) => {
+      try {
+        const payload = JSON.parse(event.data) as {
+          status?: 'pending' | 'running' | 'succeeded' | 'failed'
+          progress?: number
+          message?: string
+          error?: string | null
+        }
+        setMinuteSyncProgress((current) => ({
+          status: payload.status ?? current?.status ?? 'running',
+          progress: payload.progress ?? current?.progress ?? 0,
+          message: payload.message ?? current?.message ?? '',
+          error: payload.error ?? current?.error ?? null,
+        }))
+      } catch {
+        // 忽略无法解析的 SSE 消息，EventSource 会继续保持连接。
+      }
+    }
+    source.addEventListener('progress', parseProgress)
+    source.addEventListener('succeeded', parseProgress)
+    source.addEventListener('failed', parseProgress)
+    source.onerror = () => {
+      setMinuteSyncProgress((current) => current
+        ? { ...current, message: current.message || '进度连接重连中...' }
+        : current)
+    }
+    return () => source.close()
+  }, [minuteSyncJobId])
+
+  useEffect(() => {
+    const status = minuteSyncProgress?.status
+    if (!minuteSyncJobId || !minuteSyncRequest || !status) return
+    if (status === 'succeeded') {
+      const { symbol, startDate, endDate, force } = minuteSyncRequest
+      setMinuteSyncJobId(null)
+      setMinuteSyncRequest(null)
+      setMinuteSyncProgress(null)
+      setMinuteSyncDialog(null)
+      void Promise.all([
+        qc.invalidateQueries({ queryKey: ['minute-batch'] }),
+        qc.invalidateQueries({ queryKey: ['kline-minute', symbol] }),
+        qc.invalidateQueries({ queryKey: ['kline-minute-range', symbol] }),
+      ]).then(() => {
+        toast(`${symbol} ${startDate} 至 ${endDate} ${force ? '强制' : '非强制'}同步完成`, 'success')
+      })
+    } else if (status === 'failed') {
+      setMinuteSyncJobId(null)
+      setMinuteSyncRequest(null)
+      const error = minuteSyncProgress.error || '未知错误'
+      setMinuteSyncProgress(null)
+      toast(`分钟K同步失败: ${error}`, 'error')
+    }
+  }, [minuteSyncProgress, minuteSyncJobId, minuteSyncRequest, qc])
+
+  const openMinuteSyncDialog = (symbol: string) => {
+    const end = localIsoDate()
+    setMinuteSyncStart(localDateDaysAgo(364))
+    setMinuteSyncEnd(end)
+    setMinuteSyncForce(true)
+    setMinuteSyncDialog(symbol)
+  }
+
+  const submitMinuteSync = () => {
+    if (!minuteSyncDialog || !minuteSyncStart || !minuteSyncEnd) return
+    const start = new Date(`${minuteSyncStart}T12:00:00`)
+    const end = new Date(`${minuteSyncEnd}T12:00:00`)
+    const span = Math.round((end.getTime() - start.getTime()) / 86_400_000) + 1
+    if (!Number.isFinite(span) || span < 1) {
+      toast('开始日期不能晚于结束日期', 'error')
+      return
+    }
+    if (span > 365) {
+      toast('日期范围不能超过365天', 'error')
+      return
+    }
+    minuteYearSync.mutate({
+      symbol: minuteSyncDialog,
+      startDate: minuteSyncStart,
+      endDate: minuteSyncEnd,
+      force: minuteSyncForce,
+    })
+  }
 
   const addMutation = useMutation({
     mutationFn: ({ symbol, groupId }: { symbol: string; groupId: string | null }) =>
@@ -1636,6 +1791,35 @@ export function Watchlist() {
                 }
                 return undefined
               }}
+              extraHeader={<span className="whitespace-nowrap">分钟数据</span>}
+              renderExtraCol={(r: any) => {
+                const isIndex = r.asset_type === 'index'
+                const isSyncing = minuteSyncingSymbol === r.symbol
+                const disabled = isIndex || !hasMinuteBatch || minuteSyncBusy
+                const title = isIndex
+                  ? '指数分钟K不支持落库同步'
+                  : !hasMinuteBatch
+                    ? '需要分钟K数据权限'
+                    : '同步该标的分钟K数据'
+                return (
+                  <td key={`minute-sync:${r.symbol}`} className="px-2 py-1.5 text-center whitespace-nowrap">
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        openMinuteSyncDialog(r.symbol)
+                      }}
+                      disabled={disabled}
+                      className="inline-flex items-center gap-1 rounded-btn border border-border px-2 py-1 text-[11px] text-secondary hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-40"
+                      title={title}
+                      aria-label={`${r.symbol} ${title}`}
+                    >
+                      <RefreshCw className={`h-3 w-3 ${isSyncing ? 'animate-spin' : ''}`} />
+                      {isSyncing ? '同步中' : '同步'}
+                    </button>
+                  </td>
+                )
+              }}
               renderCell={(r: any, col: ColumnConfig) => {
                 // ext 列
                 if (col.source.type === 'ext') {
@@ -1882,6 +2066,127 @@ export function Watchlist() {
           </div>
         )}
       </AnimatePresence>
+
+      {minuteSyncDialog && (
+        <Modal
+          labelledBy="minute-sync-dialog-title"
+          onClose={() => !minuteSyncBusy && setMinuteSyncDialog(null)}
+          panelClassName="w-[92vw] max-w-md rounded-card border border-border bg-surface shadow-xl"
+        >
+          <div className="space-y-4 p-5">
+            <div>
+              <h3 id="minute-sync-dialog-title" className="text-sm font-medium text-foreground">
+                同步 {minuteSyncDialog} 分钟数据
+              </h3>
+              <p className="mt-1 text-[11px] leading-relaxed text-muted">
+                选择日期范围后同步 1 分钟 K 线，最多支持 365 个自然日。
+              </p>
+            </div>
+
+            {minuteSyncJobId && (
+              <div className="space-y-2 rounded-btn border border-border bg-base px-3 py-2.5">
+                <div className="flex items-center justify-between text-[11px]">
+                  <span className="text-secondary">同步进度</span>
+                  <span className="font-medium text-accent">{minuteSyncProgress?.progress ?? 0}%</span>
+                </div>
+                <div
+                  role="progressbar"
+                  aria-label="分钟数据同步进度"
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={minuteSyncProgress?.progress ?? 0}
+                  className="h-1.5 overflow-hidden rounded-full bg-elevated"
+                >
+                  <div
+                    className="h-full rounded-full bg-accent transition-[width] duration-300"
+                    style={{ width: `${minuteSyncProgress?.progress ?? 0}%` }}
+                  />
+                </div>
+                <p className="truncate text-[10px] text-muted">
+                  {minuteSyncProgress?.message
+                    ? minuteSyncProgress.message
+                    : '任务已提交，等待开始...'}
+                </p>
+              </div>
+            )}
+
+            <div className="grid grid-cols-2 gap-3">
+              <label className="space-y-1.5">
+                <span className="text-[11px] text-secondary">开始日期</span>
+                <input
+                  type="date"
+                  value={minuteSyncStart}
+                  onChange={(event) => setMinuteSyncStart(event.target.value)}
+                  disabled={minuteSyncBusy}
+                  className="w-full rounded-btn border border-border bg-base px-2.5 py-1.5 text-xs text-foreground outline-none focus:border-accent disabled:opacity-50"
+                />
+              </label>
+              <label className="space-y-1.5">
+                <span className="text-[11px] text-secondary">结束日期</span>
+                <input
+                  type="date"
+                  value={minuteSyncEnd}
+                  onChange={(event) => setMinuteSyncEnd(event.target.value)}
+                  disabled={minuteSyncBusy}
+                  className="w-full rounded-btn border border-border bg-base px-2.5 py-1.5 text-xs text-foreground outline-none focus:border-accent disabled:opacity-50"
+                />
+              </label>
+            </div>
+
+            <fieldset className="space-y-2">
+              <legend className="text-[11px] text-secondary">同步模式</legend>
+              <label className="flex cursor-pointer items-start gap-2 rounded-btn border border-border bg-base px-3 py-2">
+                <input
+                  type="radio"
+                  name="minute-sync-mode"
+                  checked={minuteSyncForce}
+                  onChange={() => setMinuteSyncForce(true)}
+                  disabled={minuteSyncBusy}
+                  className="mt-0.5 accent-accent"
+                />
+                <span>
+                  <span className="block text-xs text-foreground">强制同步</span>
+                  <span className="block text-[10px] leading-relaxed text-muted">范围内每天重新拉取，已有数据也覆盖写入。</span>
+                </span>
+              </label>
+              <label className="flex cursor-pointer items-start gap-2 rounded-btn border border-border bg-base px-3 py-2">
+                <input
+                  type="radio"
+                  name="minute-sync-mode"
+                  checked={!minuteSyncForce}
+                  onChange={() => setMinuteSyncForce(false)}
+                  disabled={minuteSyncBusy}
+                  className="mt-0.5 accent-accent"
+                />
+                <span>
+                  <span className="block text-xs text-foreground">非强制同步</span>
+                  <span className="block text-[10px] leading-relaxed text-muted">数据库已有该日期数据时跳过，不再请求当天。</span>
+                </span>
+              </label>
+            </fieldset>
+
+            <div className="flex justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setMinuteSyncDialog(null)}
+                disabled={minuteSyncBusy}
+                className="rounded-btn bg-elevated px-3 py-1.5 text-xs text-secondary transition-colors hover:bg-elevated/80 disabled:opacity-40"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={submitMinuteSync}
+                disabled={minuteSyncBusy || !minuteSyncStart || !minuteSyncEnd}
+                className="inline-flex items-center gap-1.5 rounded-btn bg-accent px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-accent/90 disabled:opacity-40"
+              >
+                {minuteSyncBusy && <RefreshCw className="h-3 w-3 animate-spin" />}
+                {minuteSyncBusy ? '同步中...' : '开始同步'}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
 
       {/* 列自定义侧栏 */}
       <ColumnCustomizer

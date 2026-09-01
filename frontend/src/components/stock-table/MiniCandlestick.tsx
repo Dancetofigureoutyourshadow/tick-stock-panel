@@ -1,5 +1,6 @@
 /** 迷你蜡烛图（自选/策略列表共享）。 */
 import type { KlineRow } from '@/lib/api'
+import { getKlineLimitColor } from '@/lib/kline-colors'
 
 export function MiniCandlestick({ rows, width = 100, height = 80 }: { rows: KlineRow[]; width?: number; height?: number }) {
   // 空数据：返回等尺寸占位（不画内容），保证 kline 加载前后单元格尺寸一致、不闪烁
@@ -36,7 +37,10 @@ export function MiniCandlestick({ rows, width = 100, height = 80 }: { rows: Klin
 
     // 涨跌判断: open !== close 用实体方向, 一字板用前日收盘计算涨跌
     let color: string
-    if (r.close > r.open) {
+    const limitColor = getKlineLimitColor(r)
+    if (limitColor) {
+      color = limitColor
+    } else if (r.close > r.open) {
       color = BULL
     } else if (r.close < r.open) {
       color = BEAR

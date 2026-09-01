@@ -23,6 +23,8 @@ class ProviderCapabilities:
     adj_factor: bool = False
     minute: bool = False
     realtime: bool = False
+    depth5: bool = False
+    transactions: bool = False
     financial: bool = False
 
 
@@ -73,3 +75,18 @@ class MarketDataProvider(Protocol):
         symbols: list[str] | None = None,
     ) -> pl.DataFrame:
         """Return normalized realtime quotes. Implementations may return empty."""
+
+    def get_depth5(self, symbols: list[str]) -> dict[str, dict]:
+        """Return five-level snapshots keyed by project symbol.
+
+        Each snapshot uses ``bid_prices``/``ask_prices`` and
+        ``bid_volumes``/``ask_volumes`` lists in level 1..5 order. Missing
+        levels must remain ``None`` so callers can fail closed.
+        """
+
+    def get_transactions(self, symbol: str, limit: int = 800) -> list[dict]:
+        """Return current-day time-and-sales rows for one symbol.
+
+        Rows use ``time``, ``price``, ``volume``, ``trade_count`` and
+        normalized ``direction`` fields. Implementations may return empty.
+        """

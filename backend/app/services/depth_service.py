@@ -25,13 +25,13 @@ import math
 import os
 import threading
 import time
-from datetime import date, time as dt_time
-
-from app.market_time import cn_now, cn_today
-from pathlib import Path
+from datetime import date
+from datetime import time as dt_time
 
 import polars as pl
 
+from app.data_providers import custom as custom_sources
+from app.market_time import cn_now, cn_today
 from app.tickflow.capabilities import Cap
 from app.tickflow.rate_limits import (
     apply_safety_rpm,
@@ -68,6 +68,7 @@ class DepthService:
         self._fetch_lock = threading.Lock()
         self._running = False
         self._thread: threading.Thread | None = None
+        self._boot_thread: threading.Thread | None = None
         self._repo = None              # 延迟注入(KlineRepository)
         self._app_state = None         # 延迟注入(FastAPI app.state)
 
@@ -108,11 +109,32 @@ class DepthService:
             # parquet 已存在: 恢复内存缓存(避免重启后每次查询都读 parquet)
             self._restore_from_parquet(today)
             return
-        logger.info("depth sealed: 启动补跑今天定版")
+        # Provider discovery and its first network request can take seconds or
+        # time out. boot_check runs inside FastAPI lifespan, so doing that work
+        # inline prevents every HTTP route from becoming ready.
+        with self._lock:
+            if self._boot_thread is not None and self._boot_thread.is_alive():
+                return
+            thread = threading.Thread(
+                target=self._boot_finalize,
+                name="depth-boot-finalize",
+                daemon=True,
+            )
+            self._boot_thread = thread
+        thread.start()
+        logger.info("depth sealed: 启动补跑今天定版(后台)")
+
+    def _boot_finalize(self) -> None:
+        """Run the network-backed startup backfill outside FastAPI lifespan."""
         try:
             self.finalize()
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             logger.warning("depth sealed 启动补跑失败: %s", e)
+        finally:
+            current = threading.current_thread()
+            with self._lock:
+                if self._boot_thread is current:
+                    self._boot_thread = None
 
     def _restore_from_parquet(self, d: date) -> None:
         """从 parquet 恢复内存缓存(服务重启后)。"""
@@ -199,6 +221,15 @@ class DepthService:
         except Exception as e:  # noqa: BLE001
             logger.warning("depth run_once 失败: %s", e)
             return {"ok": False, "count": 0, "msg": f"修正失败: {e}"}
+
+    def get_snapshot(self, symbol: str) -> dict | None:
+        """读取单个标的完整五档快照，不改变 sealed 缓存或落盘数据。"""
+        if not symbol or not self._has_capability():
+            return None
+        with self._fetch_lock:
+            data = self._call_depth_batch([symbol])
+        snapshot = data.get(symbol) if isinstance(data, dict) else None
+        return dict(snapshot) if isinstance(snapshot, dict) else None
 
     # ================================================================
     # 核心拉取
@@ -293,6 +324,15 @@ class DepthService:
 
     def _call_depth_batch(self, symbols: list[str]) -> dict:
         """调 tf.depth.batch, 按 capset 的 batch 切片 + 节流。返回 {symbol: MarketDepth}。"""
+        custom_provider = self._custom_depth5_provider()
+        if custom_provider is not None:
+            try:
+                data = custom_provider.get_depth5(symbols)
+                return data if isinstance(data, dict) else {}
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("custom depth5 provider failed: %s", exc)
+                return {}
+
         from app.tickflow.client import get_client
         tf = get_client()
 
@@ -590,9 +630,31 @@ class DepthService:
     # ================================================================
 
     def _has_capability(self) -> bool:
+        if self._custom_depth5_provider() is not None:
+            return True
         capset = self._get_capset()
         from app.tickflow.capabilities import Cap
         return capset.has(Cap.DEPTH5_BATCH)
+
+    @staticmethod
+    def _custom_depth5_provider():
+        """Return the selected provider when it implements the depth5 contract."""
+        from app.services import preferences
+
+        provider_name = preferences.get_depth5_data_provider()
+        if provider_name == "tickflow":
+            return None
+        try:
+            if not custom_sources.provider_has_dataset(provider_name, "depth5"):
+                return None
+            provider = custom_sources.get_provider(provider_name)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("custom depth5 provider '%s' unavailable: %s", provider_name, exc)
+            return None
+        if not callable(getattr(provider, "get_depth5", None)):
+            logger.warning("custom depth5 provider '%s' has no get_depth5 contract", provider_name)
+            return None
+        return provider
 
     def _get_capset(self):
         """获取当前 capset(优先 app.state, 回退 detect)。"""

@@ -1,9 +1,12 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import { X } from 'lucide-react'
-import { type KlineRow, type FinancialMetricRecord } from '@/lib/api'
+import { type DailyKlinePeriod, type KlineRow, type FinancialMetricRecord } from '@/lib/api'
 import { StockInfoBar } from '@/components/StockInfoBar'
 import { StockDailyKChart, getDefaultRange, type StockDailyKChartResult } from '@/components/StockDailyKChart'
 import { StockIntradayChart } from '@/components/StockIntradayChart'
+import { StockDepth5Panel } from '@/components/StockDepth5Panel'
+import { StockTransactionsPanel } from '@/components/StockTransactionsPanel'
+import { useFocusMarketStream } from '@/lib/useFocusMarketStream'
 import { useFinancialMetrics } from '@/lib/useFinancials'
 import { useCapabilities } from '@/lib/useSharedQueries'
 import type { ChartMarker, ChartPriceLine, ChartRange } from '@/components/EChartsCandlestick'
@@ -16,6 +19,7 @@ import {
 
 interface Props {
   symbol: string
+  period?: DailyKlinePeriod
   height?: number
   showIntraday?: boolean
   className?: string
@@ -38,6 +42,8 @@ interface Props {
   watchlistPending?: boolean
   /** 分时图自动刷新间隔(ms)。undefined = 不轮询。个股对话框盘中实时刷新时传入。 */
   refetchIntervalMs?: number
+  /** 当前日分时右侧显示实时五档盘口。 */
+  showDepth5?: boolean
   /** 只渲染信息条, 隐藏图表 (用于分时 tab 共享信息条) */
   infoBarOnly?: boolean
 }
@@ -46,6 +52,7 @@ export { getDefaultRange }
 
 export function StockPanel({
   symbol,
+  period = 'day',
   height = 520,
   showIntraday = true,
   className,
@@ -63,6 +70,7 @@ export function StockPanel({
   onRemoveFromWatchlist,
   watchlistPending,
   refetchIntervalMs,
+  showDepth5 = false,
   infoBarOnly = false,
 }: Props) {
   const [linkedPrice, setLinkedPrice] = useState<number | null>(null)
@@ -127,6 +135,11 @@ export function StockPanel({
     : rows.length >= 2
       ? rows[rows.length - 2].close
       : undefined
+  const focusStream = useFocusMarketStream({
+    symbol,
+    date: selectedDate,
+    enabled: showDepth5 && showIntraday && !intradayDismissed,
+  })
   if (!symbol) return null
 
   // 财务指标最新一期（metrics 按 period_end 排序，取首项）
@@ -150,9 +163,11 @@ export function StockPanel({
       />
 
       {infoBarOnly ? null : (
-      <div className="flex gap-3 items-start">
+      <div className={`flex items-start gap-3 ${showDepth5 && focusStream.isCurrentDate ? 'min-w-max' : ''}`}>
+        <div className={showDepth5 && focusStream.isCurrentDate ? 'flex min-w-[1040px] shrink-0 items-start gap-3' : 'contents'}>
         <StockDailyKChart
           symbol={symbol}
+          period={period}
           height={height}
           className="flex-1 min-w-0"
           dateRange={dateRange}
@@ -168,31 +183,62 @@ export function StockPanel({
           visibleBars={showIntraday ? 40 : 60}
           extColumns={extColumns}
           refetchIntervalMs={refetchIntervalMs}
-        />
+          />
 
         {showIntraday && selectedDate && !intradayDismissed && (
-          <div className="relative flex-1 min-w-0 border-l border-border pl-3">
-            <button
-              onClick={() => setIntradayDismissed(true)}
-              className="absolute -left-1.5 -top-1.5 z-10 flex h-5 w-5 items-center justify-center rounded-full border border-border bg-surface text-muted shadow-sm transition-colors hover:text-foreground hover:bg-elevated"
-              title="收起分时图"
-              aria-label="收起分时图"
-            >
-              <X className="h-3 w-3" />
-            </button>
-            <StockIntradayChart
-              symbol={symbol}
-              date={selectedDate}
-              height={height}
-              prevClose={prevClose}
-              onPriceHover={setLinkedPrice}
-              onPriceDoubleClick={onPriceDoubleClick}
-              currentPrice={rows[rows.length - 1]?.close}
-              priceLines={priceLines}
-              refetchIntervalMs={refetchIntervalMs}
-            />
+          <div className="flex min-w-0 flex-1 flex-col gap-3 border-l border-border pl-3">
+            <div className="relative min-w-0">
+              <button
+                onClick={() => setIntradayDismissed(true)}
+                className="absolute -left-1.5 -top-1.5 z-10 flex h-5 w-5 items-center justify-center rounded-full border border-border bg-surface text-muted shadow-sm transition-colors hover:text-foreground hover:bg-elevated"
+                title="收起分时图"
+                aria-label="收起分时图"
+              >
+                <X className="h-3 w-3" />
+              </button>
+              <StockIntradayChart
+                symbol={symbol}
+                date={selectedDate}
+                height={height}
+                prevClose={prevClose}
+                onPriceHover={setLinkedPrice}
+                onPriceDoubleClick={onPriceDoubleClick}
+                currentPrice={rows[rows.length - 1]?.close}
+                dailyOhlc={selectedIdx >= 0 ? rows[selectedIdx] : undefined}
+                priceLines={priceLines}
+                refetchIntervalMs={refetchIntervalMs}
+                live={focusStream.streamEnabled || refetchIntervalMs != null}
+                disablePolling={focusStream.streamEnabled}
+              />
+            </div>
+            {showDepth5 && focusStream.isCurrentDate && (
+              <div className="w-full shrink-0">
+                <StockDepth5Panel
+                  snapshot={focusStream.depth}
+                  status={focusStream.depthStatus}
+                  error={focusStream.depthError}
+                  provider={focusStream.depthProvider}
+                  updatedAt={focusStream.updatedAt}
+                  className="min-h-0"
+                />
+              </div>
+            )}
           </div>
         )}
+        </div>
+
+        {showDepth5 && focusStream.isCurrentDate && focusStream.marketPhase !== 'closed' && (
+          <StockTransactionsPanel
+            rows={focusStream.transactions}
+            status={focusStream.transactionsStatus}
+            error={focusStream.transactionsError}
+            updatedAt={focusStream.transactionsUpdatedAt}
+            prevClose={prevClose}
+            height={height}
+            className="w-[320px] shrink-0"
+          />
+        )}
+
       </div>
       )}
     </div>

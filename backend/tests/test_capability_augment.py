@@ -13,12 +13,13 @@ from app.tickflow.policy import _augment_custom_sources
 
 
 def _set_providers(monkeypatch, *, daily="tickflow", adj="tickflow",
-                   minute="tickflow", financial="tickflow") -> None:
+                   minute="tickflow", depth="tickflow", financial="tickflow") -> None:
     """mock preferences 各数据集 provider getter。"""
     from app.services import preferences
     monkeypatch.setattr(preferences, "get_daily_data_provider", lambda: daily)
     monkeypatch.setattr(preferences, "get_adj_factor_provider", lambda: adj)
     monkeypatch.setattr(preferences, "get_minute_data_provider", lambda: minute)
+    monkeypatch.setattr(preferences, "get_depth5_data_provider", lambda: depth)
     monkeypatch.setattr(preferences, "get_financial_provider", lambda: financial)
 
 
@@ -66,6 +67,20 @@ def test_financial_custom_source_grants_financial(monkeypatch):
     capset = CapabilitySet()
     _augment_custom_sources(capset)
     assert capset.has(Cap.FINANCIAL)
+
+
+def test_depth5_custom_source_grants_depth5_batch(monkeypatch):
+    _set_providers(monkeypatch, depth="mootdx")
+    _set_datasets(monkeypatch, {"depth5"})
+    monkeypatch.setattr(
+        "app.data_providers.custom.get_provider",
+        lambda _name: MagicMock(get_depth5=lambda _symbols: {}),
+    )
+
+    capset = CapabilitySet()
+    _augment_custom_sources(capset)
+
+    assert capset.has(Cap.DEPTH5_BATCH)
 
 
 def test_provider_active_but_dataset_not_declared_no_grant(monkeypatch):

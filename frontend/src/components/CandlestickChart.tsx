@@ -8,6 +8,7 @@ import {
   type HistogramData,
 } from 'lightweight-charts'
 import { useChartTheme } from '@/lib/theme'
+import { getKlineLimitColor } from '@/lib/kline-colors'
 
 export interface OHLC {
   date: string
@@ -16,6 +17,8 @@ export interface OHLC {
   low: number
   close: number
   volume?: number
+  signal_limit_up?: boolean | null
+  signal_limit_down?: boolean | null
 }
 
 export function fmtBigNum(v: number): string {
@@ -135,13 +138,19 @@ export function CandlestickChart({ data, height = 480 }: Props) {
     if (!chartRef.current || !candleRef.current || !volRef.current || data.length === 0) return
 
     candleRef.current.setData(
-      data.map(d => ({
-        time: d.date as any,
-        open: d.open,
-        high: d.high,
-        low: d.low,
-        close: d.close,
-      })) as CandlestickData[],
+      data.map(d => {
+        const limitColor = getKlineLimitColor(d)
+        return {
+          time: d.date as any,
+          open: d.open,
+          high: d.high,
+          low: d.low,
+          close: d.close,
+          color: limitColor,
+          borderColor: limitColor,
+          wickColor: limitColor,
+        }
+      }) as CandlestickData[],
     )
 
     volRef.current.setData(

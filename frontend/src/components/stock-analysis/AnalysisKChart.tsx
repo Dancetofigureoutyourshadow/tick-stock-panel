@@ -3,6 +3,7 @@ import { chartTheme, getTheme, useTheme } from '@/lib/theme'
 import * as echarts from 'echarts'
 import type { ECharts, EChartsOption } from 'echarts'
 import type { KlineRow, LevelSeries } from '@/lib/api'
+import { getKlineLimitColor } from '@/lib/kline-colors'
 
 /**
  * 个股分析专用日 K 图表。
@@ -138,7 +139,20 @@ export function AnalysisKChart({
   // 数据预处理 + 带状曲线序列对齐(后端 series 的日期范围可能与 rows 不同,需映射)
   const { dates, candle, vols, dateIndex, zoomStart, alignedSeries } = useMemo(() => {
     const dates = rows.map(r => (typeof r.date === 'string' ? r.date.slice(0, 10) : String(r.date)))
-    const candle = rows.map(r => [r.open, r.close, r.low, r.high])
+    const candle = rows.map(r => {
+      const limitColor = getKlineLimitColor(r)
+      return {
+        value: [r.open, r.close, r.low, r.high],
+        ...(limitColor ? {
+          itemStyle: {
+            color: limitColor,
+            color0: limitColor,
+            borderColor: limitColor,
+            borderColor0: limitColor,
+          },
+        } : {}),
+      }
+    })
     const vols = rows.map(r => ({
       value: r.volume ?? 0,
       itemStyle: { color: r.close >= r.open ? THEME.volUp : THEME.volDown },

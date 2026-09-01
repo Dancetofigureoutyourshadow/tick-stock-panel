@@ -2,10 +2,17 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import * as echarts from 'echarts'
 import type { ECharts, EChartsOption } from 'echarts'
 import type { MinuteKlineRow, PriceLimitInfo } from '@/lib/api'
-import { computeIntradayAverage, formatMinuteTime, FULL_DAY_TIMES } from '@/lib/intraday-chart'
+import { computeIntradayAverage, formatMinuteTime, FULL_DAY_TIMES, minuteBarDelta } from '@/lib/intraday-chart'
 import { useChartTheme, type ChartTheme } from '@/lib/theme'
 
 type YMode = 'adaptive' | 'limit'
+
+export interface DailyOhlc {
+  open: number
+  high: number
+  low: number
+  close: number
+}
 
 // 序列颜色 (双主题通用); 画布轴/网格/十字线等主题相关色走 ChartTheme
 const THEME = {
@@ -25,9 +32,12 @@ interface Props {
   onPriceHover?: (price: number | null) => void
   onPriceDoubleClick?: (price: number, currentPrice: number) => void
   currentPrice?: number
+  dailyOhlc?: DailyOhlc
   priceLines?: { value: number; label?: string; color?: string }[]
   showLimitLines?: boolean
   showAvgLine?: boolean
+  /** 分钟成交额计算出的均价需要同步应用的复权比例。 */
+  averagePriceScale?: number
 }
 
 function fmtAmt(v: number): string {
@@ -72,13 +82,11 @@ function buildOption(data: MinuteKlineRow[], prevClose: number | undefined, avgP
   const volumes = new Array(FULL_DAY_TIMES.length).fill(null) as (any | null)[]
 
   const volNeutral = 'rgba(161,161,170,0.5)'
-  // 量柱着色基准: 前一分钟 close; 第一根用昨收。
-  // 不用 row.open — stock-sdk 历史日无真实分钟 open(为 null), close-vs-open 会全偏。
-  let prevRef: number | null = prevClose ?? null
   for (let i = 0; i < data.length; i++) {
     const timeKey = formatMinuteTime(data[i].datetime)
     const idx = timeIndexMap.get(timeKey)
     if (idx !== undefined) {
+      const delta = minuteBarDelta(data[i], i > 0 ? data[i - 1].close : prevClose)
       closes[idx] = data[i].close
       highs[idx] = data[i].high
       lows[idx] = data[i].low
@@ -86,16 +94,13 @@ function buildOption(data: MinuteKlineRow[], prevClose: number | undefined, avgP
       volumes[idx] = {
         value: data[i].volume,
         itemStyle: {
-          color: prevRef == null
-            ? volNeutral
-            : data[i].close > prevRef
-              ? THEME.volUp
-              : data[i].close < prevRef
-                ? THEME.volDown
-                : volNeutral,
+          color: delta > 0
+            ? THEME.volUp
+            : delta < 0
+              ? THEME.volDown
+              : volNeutral,
         },
       }
-      prevRef = data[i].close
     }
   }
 
@@ -405,9 +410,11 @@ export function EChartsIntraday({
   onPriceHover,
   onPriceDoubleClick,
   currentPrice,
+  dailyOhlc,
   priceLines,
   showLimitLines = true,
   showAvgLine = true,
+  averagePriceScale = 1,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<ECharts | null>(null)
@@ -428,7 +435,7 @@ export function EChartsIntraday({
   const [infoIdx, setInfoIdx] = useState(data.length - 1)
   const [yMode, setYMode] = useState<YMode>('adaptive')
   const ct = useChartTheme()
-  const avgPrices = useMemo(() => computeIntradayAverage(data), [data])
+  const avgPrices = useMemo(() => computeIntradayAverage(data, averagePriceScale), [data, averagePriceScale])
 
   // 分时线颜色：基于最新价 vs 昨收
   const lastClose = data.length > 0 ? data[data.length - 1].close : null
@@ -543,6 +550,15 @@ export function EChartsIntraday({
   const isUp = chg != null ? chg > 0 : true
   const isFlat = chg != null ? chg === 0 : false
   const priceClr = isFlat ? '#A1A1AA' : isUp ? '#C74040' : '#2D9B65'
+  const headerOhlc = dailyOhlc ?? d
+  const headerChg = headerOhlc && prevClose != null ? headerOhlc.close - prevClose : null
+  const headerPriceClr = headerChg == null
+    ? priceClr
+    : headerChg === 0
+      ? '#A1A1AA'
+      : headerChg > 0
+        ? '#C74040'
+        : '#2D9B65'
 
   return (
     <div className="w-full">
@@ -580,13 +596,15 @@ export function EChartsIntraday({
             <>
               {date && <span className="text-muted">{date}</span>}
               <span className="text-muted">开</span>
-              <span style={{ color: priceClr }}>{d.open != null ? d.open.toFixed(2) : '—'}</span>
+              <span style={{ color: headerPriceClr }}>
+                {headerOhlc?.open != null ? headerOhlc.open.toFixed(2) : '—'}
+              </span>
               <span className="text-muted">高</span>
-              <span style={{ color: priceClr }}>{d.high.toFixed(2)}</span>
+              <span style={{ color: headerPriceClr }}>{headerOhlc?.high.toFixed(2)}</span>
               <span className="text-muted">低</span>
-              <span style={{ color: priceClr }}>{d.low.toFixed(2)}</span>
+              <span style={{ color: headerPriceClr }}>{headerOhlc?.low.toFixed(2)}</span>
               <span className="text-muted">收</span>
-              <span style={{ color: priceClr }} className="font-semibold">{d.close.toFixed(2)}</span>
+              <span style={{ color: headerPriceClr }} className="font-semibold">{headerOhlc?.close.toFixed(2)}</span>
             </>
           )}
         </div>

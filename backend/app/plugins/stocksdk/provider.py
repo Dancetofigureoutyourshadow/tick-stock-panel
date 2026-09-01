@@ -204,7 +204,13 @@ class StockSDKProvider:
                     on_chunk_done(step, total)
         # 末窗口(最新一日)的真实 open 与首窗口可能重叠同日(时区/边界), keep="last"
         # 由上层 _write_minute_partition 的 unique 处理; 这里仅拼接。
-        return pl.concat(frames, how="diagonal_relaxed") if frames else pl.DataFrame()
+        out = pl.concat(frames, how="diagonal_relaxed") if frames else pl.DataFrame()
+        logger.info(
+            "stock-sdk minute 拉取完成(%d rows, period=%s)",
+            out.height,
+            period,
+        )
+        return out
 
     @staticmethod
     def _null_degenerate_opens(df: pl.DataFrame) -> pl.DataFrame:

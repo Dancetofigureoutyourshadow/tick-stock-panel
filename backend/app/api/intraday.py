@@ -192,6 +192,51 @@ async def quote_stream(request: Request):
     return EventSourceResponse(event_generator())
 
 
+@router.get("/focus-stream")
+async def focus_market_stream(
+    request: Request,
+    symbol: str = Query(..., description="当前详情页标的代码"),
+):
+    """当前详情页标的的分钟 K + 五档盘口 + 分笔成交 SSE。"""
+    normalized_symbol = symbol.strip().upper()
+    service = getattr(request.app.state, "focus_market_stream", None)
+
+    async def unavailable_generator():
+        yield {
+            "event": "market_stream_status",
+            "data": json.dumps({
+                "symbol": normalized_symbol,
+                "status": "unavailable",
+                "message": "实时行情流不可用",
+            }, ensure_ascii=False),
+        }
+
+    if not normalized_symbol or service is None:
+        return EventSourceResponse(unavailable_generator())
+
+    queue = service.subscribe(normalized_symbol)
+
+    async def event_generator():
+        try:
+            yield {
+                "event": "focus_market_updated",
+                "data": json.dumps(service.initial_status(normalized_symbol), ensure_ascii=False),
+            }
+            while not await request.is_disconnected():
+                try:
+                    payload = await asyncio.wait_for(queue.get(), timeout=5.0)
+                except asyncio.TimeoutError:
+                    continue
+                yield {
+                    "event": "focus_market_updated",
+                    "data": json.dumps(payload, ensure_ascii=False),
+                }
+        finally:
+            service.unsubscribe(normalized_symbol, queue)
+
+    return EventSourceResponse(event_generator())
+
+
 @router.post("/refresh")
 def refresh_quotes(request: Request):
     """手动刷新一次行情数据。"""

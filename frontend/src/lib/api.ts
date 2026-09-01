@@ -201,6 +201,8 @@ export interface MinuteKlineRow {
   amount: number
 }
 
+export type MinuteKlineFrequency = '1m' | '5m' | '15m' | '30m' | '60m' | '120m'
+
 export interface MinuteKlineSession {
   date: string
   prev_close: number | null
@@ -223,6 +225,8 @@ export interface KlineRow {
   close: number
   volume?: number
   change_pct?: number
+  signal_limit_up?: boolean | null
+  signal_limit_down?: boolean | null
   ma5?: number | null
   ma20?: number | null
   ma60?: number | null
@@ -233,6 +237,200 @@ export interface KlineRow {
   vol_ratio_5d?: number | null
   [key: string]: any
 }
+
+export type DailyKlinePeriod = 'day' | 'week' | 'month'
+
+export interface ChanSignalEvidence {
+  rule: string
+  stroke_count: number
+  strokes: Array<{ start_date: string; end_date: string; direction: 'up' | 'down'; high: number; low: number }>
+  center?: { zg: number; zd: number; gg: number; dd: number }
+  indicators: Record<string, number>
+  checks: Array<{ label: string; left: string | number; operator: string; right: string | number; passed: boolean }>
+}
+
+export interface ChanStructure {
+  engine?: string
+  algorithm_source?: string
+  signal_profile?: Record<string, string>
+  signal_profile_id?: string
+  indicator_cache?: { cached_bars: number; macd?: Record<string, number | null>; sma?: Record<string, number | null>; rsi?: Record<string, number | null>; kdj?: Record<string, number | null> }
+  signal_catalog?: Array<{ class: string; name: string; version: string; parameters: Record<string, unknown>; minimum_bars: number; dependencies: string[]; description: string; key: string }>
+  event_profile?: Array<{ id: string; name: string; signals_all: string[]; signals_any: string[]; signals_not: string[] }>
+  events?: Array<{ date: string; event_id: string; name: string; matched_signals: string[]; teaching_only: boolean }>
+  segments_source?: string
+  level?: string
+  fractals: { date: string; type: 'top' | 'bottom'; price: number; source_index?: number; confirmed_at?: number }[]
+  strokes: { start_date: string; end_date: string; direction: 'up' | 'down'; start_price: number; end_price: number; start_index?: number; end_index?: number; confirmed_at?: number }[]
+  segments: {
+    start_date: string
+    end_date: string
+    direction: 'up' | 'down'
+    start_price: number
+    end_price: number
+    low?: number
+    high?: number
+    low_date?: string
+    high_date?: string
+    display_start_date?: string
+    display_start_price?: number
+    display_end_date?: string
+    display_end_price?: number
+    start_index?: number
+    end_index?: number
+    confirmed_at?: number
+    termination_reason?: string
+  }[]
+  centers: { start_date: string; end_date: string; formation_start_date?: string; formation_end_date?: string; high: number; low: number; start_index?: number; end_index?: number; formation_start_index?: number; formation_end_index?: number; confirmed_at?: number; extension_confirmed_at?: number; range_low?: number; range_high?: number; stroke_start?: number; stroke_end?: number; segment_start?: number; segment_end?: number; basis?: 'stroke' | string; kind?: 'initial' | 'extension' | 'expansion' | 'new' | string }[]
+  points: { date: string; type: 'buy' | 'sell'; class: 'first' | 'second' | 'third'; price: number; status: 'confirmed'; signal_name?: string; signal_key?: string; signal_version?: string; signal_parameters?: Record<string, unknown>; signal_dependencies?: string[]; signal_evidence?: ChanSignalEvidence | null; reason?: string; source_index?: number; confirmed_at?: number; structure_index?: number; level?: string }[]
+  summary: { fractals: number; strokes: number; segments: number; centers: number; confirmed_points?: number }
+  lower_level?: ChanStructure | null
+  minute_derived_daily?: ChanStructure | null
+  multi_level_source?: 'same_1m_stream' | string | null
+}
+
+export interface ChanTrainingAnalysis {
+  analysis_mode: 'daily_recursive' | string
+  daily_quality?: ChanKlineQuality | null
+  data_warnings: string[]
+}
+
+export interface ChanKlineQuality {
+  valid: boolean
+  row_count: number
+  error_count: number
+  warning_count: number
+  issues: Array<{ code: string; severity: 'error' | 'warning'; count: number; samples: string[] }>
+}
+
+export interface ChanTrainingDiagnostics {
+  training_id: string
+  structure: Partial<ChanStructure> & { replay?: Array<{ date: string; source_index: number; fractals: number; strokes: number; last_stroke_end?: number; added_signals: string[]; revealed?: number; summary?: Record<string, number> }> }
+  data_quality: { daily?: ChanKlineQuality | null }
+}
+
+export interface ChanTrainingAction {
+  side: 'buy' | 'sell'
+  trigger: 'user' | 'auto_liquidation'
+  percentage: number
+  revealed: number
+  date: string
+  reference_price: number
+  execution_price: number
+  shares: number
+  gross: number
+  commission: number
+  stamp_tax: number
+  slippage_amount: number
+  cash_before: number
+  cash_after: number
+  position_after: number
+  pnl_amount: number | null
+  chan_context?: {
+    signals: ChanStructure['points']
+    matched_events: NonNullable<ChanStructure['events']>
+    event_profile: NonNullable<ChanStructure['event_profile']>
+  }
+}
+
+export interface ChanTrainingReport {
+  id: string
+  training_id: string
+  symbol: string
+  name: string
+  content: string
+  created_at: string
+}
+
+export interface ChanTrainingStartRequest {
+  commission_pct?: number
+  stamp_tax_pct?: number
+  slippage_bps?: number
+}
+
+export interface ChanTrainingSession {
+  id: string
+  status: 'active' | 'finished'
+  symbol: string
+  name: string
+  progress: { revealed: number; total: number }
+  can_next: boolean
+  current_price: number
+  cash: number
+  position: { shares: number; available_shares: number; market_value: number }
+  equity: number
+  return_pct: number
+  max_drawdown_pct: number
+  cost_model: { commission_pct: number; stamp_tax_pct: number; slippage_bps: number }
+  analysis: ChanTrainingAnalysis
+  actions: ChanTrainingAction[]
+  rows: KlineRow[]
+  chan: ChanStructure
+  replayed_from?: string | null
+}
+
+export interface ChanTrainingPlan {
+  schema: 'chan-training-plan'
+  symbol: string
+  name: string
+  seed: number
+  context_start: number
+  start_index: number
+  decision_end: number
+  row_count: number
+  remaining_rows: KlineRow[]
+  row_digest: string
+  initial_capital: number
+  cost_model: ChanTrainingSession['cost_model']
+}
+
+export interface ChanTrainingDataVersion {
+  schema: 'chan-training-data'
+  training_rows_sha256: string
+  visible_rows_sha256: string
+  training_row_count: number
+  visible_row_count: number
+  first_bar_at: string | null
+  last_bar_at: string | null
+  visible_last_bar_at: string | null
+}
+
+export interface ChanTrainingRecord {
+  id?: string
+  training_id: string
+  chan_algorithm_source?: string | null
+  chan_engine?: string | null
+  chan_signal_profile?: Record<string, string>
+  chan_signal_profile_id?: string
+  chan_event_profile?: ChanStructure['event_profile']
+  chan_segments_source?: string | null
+  status: 'finished'
+  symbol: string
+  name: string
+  seed: number
+  start_date: string
+  end_date: string
+  bars: KlineRow[]
+  actions: ChanTrainingAction[]
+  structure_snapshots?: { revealed: number; date: string; structure: ChanStructure }[]
+  current_structure: ChanStructure
+  equity_curve: { date: string; value: number }[]
+  summary: { final_equity: number; total_return_pct: number; realized_pnl: number; max_drawdown_pct: number; trade_count: number; sell_count: number; win_rate_pct: number }
+  cost_model: { commission_pct: number; stamp_tax_pct: number; slippage_bps: number }
+  analysis?: ChanTrainingAnalysis
+  data_version?: ChanTrainingDataVersion
+  training_plan?: ChanTrainingPlan
+  replayed_from?: string | null
+  created_at: string
+  finished_at: string
+  ai_reports?: ChanTrainingReport[]
+}
+
+export type ChanTrainingRecordSummary = Pick<
+  ChanTrainingRecord,
+  'id' | 'training_id' | 'status' | 'symbol' | 'name' | 'seed'
+  | 'start_date' | 'end_date' | 'summary' | 'cost_model' | 'analysis' | 'created_at' | 'finished_at'
+>
 
 // ===== Watchlist =====
 export interface WatchlistEntry {
@@ -2046,7 +2244,7 @@ export const api = {
   redetectCapabilities: () =>
     request<CapabilitiesResponse>('/api/capabilities/redetect', { method: 'POST' }),
 
-  klineDaily: (symbol: string, days = 120, dateRange?: { start: string; end: string }, extColumns?: string) =>
+  klineDaily: (symbol: string, days = 120, dateRange?: { start: string; end: string }, extColumns?: string, period: DailyKlinePeriod = 'day') =>
     request<{
       symbol: string
       name?: string
@@ -2057,8 +2255,78 @@ export const api = {
       (dateRange
         ? `/api/kline/daily?symbol=${encodeURIComponent(symbol)}&start_date=${dateRange.start}&end_date=${dateRange.end}`
         : `/api/kline/daily?symbol=${encodeURIComponent(symbol)}&days=${days}`)
-      + (extColumns ? `&ext_columns=${encodeURIComponent(extColumns)}` : ''),
+      + (extColumns ? `&ext_columns=${encodeURIComponent(extColumns)}` : '')
+      + `&period=${encodeURIComponent(period)}`,
     ),
+  chanTrainingStart: (costs?: ChanTrainingStartRequest) =>
+    request<{ session: ChanTrainingSession }>('/api/chan-training/sessions', {
+      method: 'POST', body: JSON.stringify(costs ?? {}),
+    }),
+  chanTrainingSession: (sessionId: string) =>
+    request<{ session: ChanTrainingSession }>(`/api/chan-training/sessions/${encodeURIComponent(sessionId)}`),
+  chanTrainingDiscard: (sessionId: string) =>
+    request<{ removed: boolean }>(`/api/chan-training/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' }),
+  chanTrainingSessionDiagnostics: (sessionId: string) =>
+    request<ChanTrainingDiagnostics>(`/api/chan-training/sessions/${encodeURIComponent(sessionId)}/diagnostics`),
+  chanTrainingNext: (sessionId: string) =>
+    request<{ session: ChanTrainingSession }>(`/api/chan-training/sessions/${encodeURIComponent(sessionId)}/next`, { method: 'POST' }),
+  chanTrainingAction: (sessionId: string, side: 'buy' | 'sell', percentage: number) =>
+    request<{ action: ChanTrainingAction; session: ChanTrainingSession }>(
+      `/api/chan-training/sessions/${encodeURIComponent(sessionId)}/action`,
+      { method: 'POST', body: JSON.stringify({ side, percentage }) },
+    ),
+  chanTrainingFinish: (sessionId: string) =>
+    request<{ session: ChanTrainingSession; record: ChanTrainingRecord }>(
+      `/api/chan-training/sessions/${encodeURIComponent(sessionId)}/finish`, { method: 'POST' },
+    ),
+  chanTrainingRecords: () =>
+    request<{ records: ChanTrainingRecordSummary[] }>('/api/chan-training/records'),
+  chanTrainingRecord: (trainingId: string) =>
+    request<{ record: ChanTrainingRecord }>(`/api/chan-training/records/${encodeURIComponent(trainingId)}`),
+  chanTrainingReplay: (trainingId: string) =>
+    request<{ session: ChanTrainingSession }>(
+      `/api/chan-training/records/${encodeURIComponent(trainingId)}/replay`,
+      { method: 'POST' },
+    ),
+  chanTrainingRecordDiagnostics: (trainingId: string) =>
+    request<ChanTrainingDiagnostics>(`/api/chan-training/records/${encodeURIComponent(trainingId)}/diagnostics`),
+  chanTrainingDeleteRecord: (trainingId: string) =>
+    request<{ removed: boolean }>(`/api/chan-training/records/${encodeURIComponent(trainingId)}`, { method: 'DELETE' }),
+  async *chanTrainingAnalyze(trainingId: string): AsyncGenerator<{
+    type: 'meta' | 'delta' | 'done' | 'error'
+    content?: string
+    report?: ChanTrainingReport
+    message?: string
+  }> {
+    const res = await fetch(`/api/chan-training/records/${encodeURIComponent(trainingId)}/analyze`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+    })
+    if (!res.ok) {
+      let detail = ''
+      try { const j = JSON.parse(await res.text()); detail = j.detail ?? j.message ?? '' } catch { /* ignore */ }
+      const msg = detail || `${res.status} ${res.statusText}`
+      toast(msg, 'error')
+      throw new Error(msg)
+    }
+    if (!res.body) throw new Error('响应无 body')
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() ?? ''
+      for (const line of lines) {
+        if (!line.trim()) continue
+        try { yield JSON.parse(line) } catch { /* ignore malformed chunks */ }
+      }
+    }
+    if (buffer.trim()) {
+      try { yield JSON.parse(buffer) } catch { /* ignore malformed chunks */ }
+    }
+  },
   klineDailyBatch: (symbols: string[], days = 12) =>
     request<{ data: Record<string, KlineRow[]> }>('/api/kline/daily-batch', {
       method: 'POST',
@@ -2080,7 +2348,7 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(symbols),
     }),
-  klineMinute: (symbol: string, date?: string, live?: boolean) =>
+  klineMinute: (symbol: string, date?: string, live = false, signal?: AbortSignal) =>
     request<{
       symbol: string
       name?: string
@@ -2093,8 +2361,9 @@ export const api = {
       prev_close?: number | null
     }>(
       `/api/kline/minute?symbol=${encodeURIComponent(symbol)}${date ? `&date=${date}` : ''}${live ? '&live=1' : ''}`,
+      { signal },
     ),
-  klineMinuteRange: (symbol: string, days = 10) =>
+  klineMinuteRange: (symbol: string, days = 10, freq: MinuteKlineFrequency = '1m') =>
     request<{
       symbol: string
       name?: string
@@ -2102,8 +2371,9 @@ export const api = {
       requested_days: number
       sessions: MinuteKlineSession[]
       source: 'local' | 'none'
+      freq?: MinuteKlineFrequency
     }>(
-      `/api/kline/minute-range?symbol=${encodeURIComponent(symbol)}&days=${days}`,
+      `/api/kline/minute-range?symbol=${encodeURIComponent(symbol)}&days=${days}&freq=${encodeURIComponent(freq)}`,
     ),
   indexList: () => request<{ results: IndexInstrument[]; count: number }>('/api/index/list'),
   indexSearch: (q: string, limit = 20) =>
@@ -2150,10 +2420,29 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ ...(days ? { days } : {}), ...(extend ? { extend: true } : {}) }),
     }),
-  syncMinuteSingle: (symbol: string, days?: number) =>
-    request<{ status: string; symbol: string; rows: number }>('/api/kline/sync_minute_single', {
+  syncMinuteSingle: (
+    symbol: string,
+    days?: number,
+    options?: { startDate?: string; endDate?: string; force?: boolean; trackProgress?: boolean },
+  ) =>
+    request<{
+      status: string
+      symbol: string
+      rows: number
+      job_id?: string
+      start_date?: string | null
+      end_date?: string | null
+      force?: boolean
+    }>('/api/kline/sync_minute_single', {
       method: 'POST',
-      body: JSON.stringify({ symbol, ...(days != null ? { days } : {}) }),
+      body: JSON.stringify({
+        symbol,
+        ...(days != null ? { days } : {}),
+        ...(options?.startDate != null ? { start_date: options.startDate } : {}),
+        ...(options?.endDate != null ? { end_date: options.endDate } : {}),
+        ...(options?.force != null ? { force: options.force } : {}),
+        ...(options?.trackProgress != null ? { track_progress: options.trackProgress } : {}),
+      }),
     }),
   clearMinute: () =>
     request<{ status: string; removed: number }>('/api/kline/clear_minute', {

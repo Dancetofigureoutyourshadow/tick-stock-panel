@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { motion, AnimatePresence } from 'framer-motion'
 import { X, RefreshCw, Clock, LineChart, Star, RadioTower, Maximize2, Minimize2, Activity } from 'lucide-react'
-import { api } from '@/lib/api'
+import { api, type DailyKlinePeriod, type MinuteKlineFrequency } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
 import { cn } from '@/lib/cn'
 import { cnSignal } from '@/lib/signals'
@@ -10,6 +10,7 @@ import { fmtPct } from '@/lib/format'
 import { StockPanel, getDefaultRange } from '@/components/StockPanel'
 import { WatchlistAddMenu } from '@/components/WatchlistAddMenu'
 import { StockMultiDayIntradayChart } from '@/components/StockMultiDayIntradayChart'
+import { StockMinuteKChart } from '@/components/StockMinuteKChart'
 import { DatePicker } from '@/components/DatePicker'
 import { RuleEditor } from '@/components/monitor/RuleEditor'
 import { PriceAlertDialog } from '@/components/stock-analysis/PriceAlertDialog'
@@ -43,12 +44,25 @@ const PRESETS: { label: string; months: number }[] = [
 ]
 
 type PreviewView = 'daily' | 'intraday'
+type DailyChartPeriod = DailyKlinePeriod | MinuteKlineFrequency
 interface PriceAlertDraft {
   id: number
   targetPrice: number
   currentPrice: number
 }
 const INTRADAY_DAY_OPTIONS = [1, 5, 10, 20] as const
+const DAILY_CHART_PERIOD_OPTIONS: { value: DailyChartPeriod; label: string }[] = [
+  { value: 'day', label: '日 K' },
+  { value: '5m', label: '5 分钟' },
+  { value: '15m', label: '15 分钟' },
+  { value: '30m', label: '30 分钟' },
+  { value: '60m', label: '60 分钟' },
+  { value: '120m', label: '120 分钟' },
+]
+const CALENDAR_CHART_PERIOD_OPTIONS: { value: DailyKlinePeriod; label: string }[] = [
+  { value: 'week', label: '周 K' },
+  { value: 'month', label: '月 K' },
+]
 
 function loadIntradayDays(): number | null {
   const saved = storage.stockPreviewIntradayDays.get(10)
@@ -81,6 +95,7 @@ function fmtAbnormalCalcTime(asofSec: number): string {
 
 export function StockPreviewDialog({ symbol, name, onClose, triggerInfo }: Props) {
   const [view, setView] = useState<PreviewView>('daily')
+  const [dailyChartPeriod, setDailyChartPeriod] = useState<DailyChartPeriod>('day')
   const [intradayDays, setIntradayDays] = useState<number | null>(loadIntradayDays)
   const [dateRange, setDateRange] = useState(getDefaultRange)
   const [showMonitorEditor, setShowMonitorEditor] = useState(false)
@@ -148,7 +163,10 @@ export function StockPreviewDialog({ symbol, name, onClose, triggerInfo }: Props
   }, [symbol, onClose, priceAlertDraft])
 
   useEffect(() => {
-    if (symbol) setView('daily')
+    if (symbol) {
+      setView('daily')
+      setDailyChartPeriod('day')
+    }
     setPriceAlertDraft(null)
   }, [symbol])
 
@@ -184,8 +202,13 @@ export function StockPreviewDialog({ symbol, name, onClose, triggerInfo }: Props
 
   const handleRefresh = () => {
     if (!symbol) return
-    if (view === 'daily') {
+    const calendarPeriod = dailyChartPeriod === 'day'
+      || dailyChartPeriod === 'week'
+      || dailyChartPeriod === 'month'
+    if (view === 'daily' && calendarPeriod) {
       qc.invalidateQueries({ queryKey: ['kline', symbol] })
+    } else if (view === 'daily') {
+      qc.invalidateQueries({ queryKey: ['kline-minute-range', symbol] })
     } else {
       qc.invalidateQueries({ queryKey: ['kline-minute-range', symbol] })
       qc.invalidateQueries({ queryKey: ['kline-minute', symbol!] })
@@ -223,7 +246,7 @@ export function StockPreviewDialog({ symbol, name, onClose, triggerInfo }: Props
             transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
             className={cn(
               'relative rounded-card border border-border bg-base shadow-2xl overflow-hidden flex flex-col transition-all duration-200 ease-smooth',
-              maximized ? 'w-screen h-screen max-w-none max-h-none' : 'w-[92vw] max-w-[1100px] max-h-[95vh]',
+              maximized ? 'w-screen h-screen max-w-none max-h-none' : 'w-[96vw] max-w-[1440px] max-h-[95vh]',
             )}
           >
             {/* 顶栏 */}
@@ -243,7 +266,11 @@ export function StockPreviewDialog({ symbol, name, onClose, triggerInfo }: Props
 
               <div className="flex shrink-0 items-center gap-1">
                 {/* 区间选择 — 随视图切换 */}
-                {view === 'daily' ? (
+                {view === 'daily' && (
+                  dailyChartPeriod === 'day'
+                  || dailyChartPeriod === 'week'
+                  || dailyChartPeriod === 'month'
+                ) ? (
                   <div className="flex items-center gap-1">
                     {PRESETS.map(p => {
                       const now = new Date()
@@ -302,6 +329,23 @@ export function StockPreviewDialog({ symbol, name, onClose, triggerInfo }: Props
                       ))}
                     </div>
                   </div>
+                )}
+
+                {view === 'daily' && (
+                  <select
+                    aria-label="K 线周期"
+                    value={dailyChartPeriod}
+                    onChange={(event) => setDailyChartPeriod(event.target.value as DailyChartPeriod)}
+                    className="h-6 rounded border border-border bg-elevated px-1.5 text-[11px] text-secondary outline-none hover:text-foreground focus:border-accent"
+                  >
+                    {[
+                      ...DAILY_CHART_PERIOD_OPTIONS.slice(0, 1),
+                      ...CALENDAR_CHART_PERIOD_OPTIONS,
+                      ...DAILY_CHART_PERIOD_OPTIONS.slice(1),
+                    ].map(option => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </select>
                 )}
 
                 <span className="mx-0.5 h-4 w-px shrink-0 bg-border" />
@@ -483,15 +527,38 @@ export function StockPreviewDialog({ symbol, name, onClose, triggerInfo }: Props
             {/* 图表内容 */}
             <div className="flex-1 overflow-auto p-4">
               {view === 'daily' ? (
-                <StockPanel
-                  symbol={symbol}
-                  height={420}
-                  showIntraday
-                  dateRange={dateRange}
-                  priceLines={monitorPriceLines}
-                  onPriceDoubleClick={openPriceAlert}
-                  refetchIntervalMs={intradayRefetchMs}
-                />
+                dailyChartPeriod === 'day'
+                || dailyChartPeriod === 'week'
+                || dailyChartPeriod === 'month' ? (
+                  <StockPanel
+                    symbol={symbol}
+                    period={dailyChartPeriod}
+                    height={420}
+                    showIntraday={dailyChartPeriod === 'day'}
+                    dateRange={dateRange}
+                    showLimitMarkers={dailyChartPeriod === 'day'}
+                    showDepth5={dailyChartPeriod === 'day'}
+                    priceLines={monitorPriceLines}
+                    onPriceDoubleClick={openPriceAlert}
+                    refetchIntervalMs={intradayRefetchMs}
+                  />
+                ) : (
+                  <>
+                    <StockPanel
+                      symbol={symbol}
+                      dateRange={dateRange}
+                      infoBarOnly
+                    />
+                    <StockMinuteKChart
+                      symbol={symbol}
+                      days={effectiveIntradayDays}
+                      frequency={dailyChartPeriod}
+                      height={480}
+                      priceLines={monitorPriceLines}
+                      onPriceDoubleClick={openPriceAlert}
+                    />
+                  </>
+                )
               ) : (
                 <>
                 <StockPanel
@@ -504,6 +571,7 @@ export function StockPreviewDialog({ symbol, name, onClose, triggerInfo }: Props
                   days={effectiveIntradayDays}
                   height={480}
                   refetchIntervalMs={intradayRefetchMs}
+                  showDepth5
                   priceLines={monitorPriceLines}
                   onPriceDoubleClick={openPriceAlert}
                 />

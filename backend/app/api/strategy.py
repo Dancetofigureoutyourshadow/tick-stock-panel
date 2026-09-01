@@ -809,6 +809,7 @@ async def ai_test(request: Request):
             temperature=0,
             max_tokens=8,
             timeout=15,
+            codex_timeout=15,
         )
         return {"ok": True, "model": current_ai_model() or current_ai_provider(), "response": text[:80]}
     except Exception as e:

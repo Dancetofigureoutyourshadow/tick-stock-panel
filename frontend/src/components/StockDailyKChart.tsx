@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { api, type KlineRow } from '@/lib/api'
+import { api, type DailyKlinePeriod, type KlineRow } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
 import { storage } from '@/lib/storage'
 import {
@@ -36,6 +36,7 @@ export interface StockDailyKChartResult {
 
 interface Props {
   symbol: string
+  period?: DailyKlinePeriod
   height?: number
   className?: string
   dateRange?: { start: string; end: string }
@@ -72,6 +73,8 @@ export function toOHLC(rows: KlineRow[]): OHLC[] {
       low: Number(r.low),
       close: Number(r.close),
       volume: Number(r.volume ?? 0),
+      signal_limit_up: r.signal_limit_up === true,
+      signal_limit_down: r.signal_limit_down === true,
       ma5: r.ma5 != null ? Number(r.ma5) : null,
       ma10: r.ma10 != null ? Number(r.ma10) : null,
       ma20: r.ma20 != null ? Number(r.ma20) : null,
@@ -121,6 +124,7 @@ function rangeDays(range: { start: string; end: string }): number {
 
 export function StockDailyKChart({
   symbol,
+  period = 'day',
   height = 520,
   className,
   dateRange: externalDateRange,
@@ -150,8 +154,8 @@ export function StockDailyKChart({
 
   // extColumns 纳入 query key：勾选/取消扩展字段时需重新请求（带 ext_columns 参数）
   const kline = useQuery({
-    queryKey: QK.kline(symbol, dateRange.start, dateRange.end, extColumns),
-    queryFn: () => api.klineDaily(symbol, days, dateRange, extColumns),
+    queryKey: QK.kline(symbol, dateRange.start, dateRange.end, extColumns, period),
+    queryFn: () => api.klineDaily(symbol, days, dateRange, extColumns, period),
     enabled: !!symbol,
     refetchInterval: refetchIntervalMs,
     placeholderData: (prev) => prev,

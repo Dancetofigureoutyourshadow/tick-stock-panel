@@ -90,35 +90,79 @@ require_cmd() {
 require_cmd uv   "curl -LsSf https://astral.sh/uv/install.sh | sh"
 require_cmd pnpm "npm i -g pnpm   或   corepack enable && corepack prepare pnpm@9 --activate"
 
+# Git Bash / MSYS 通常没有 lsof,但可以直接调用 Windows 自带的
+# netstat.exe / taskkill.exe。不能把“缺少端口检查工具”误判成“端口空闲”，
+# 否则旧 uvicorn reload 子进程会继续接收请求，新进程却照常打印启动成功。
+WINDOWS_BASH=0
+if command -v netstat.exe >/dev/null 2>&1 && command -v taskkill.exe >/dev/null 2>&1; then
+  WINDOWS_BASH=1
+fi
+
+port_pids() {
+  local port="$1"
+  if [ "$WINDOWS_BASH" -eq 1 ]; then
+    netstat.exe -ano -p tcp 2>/dev/null \
+      | tr -d '\r' \
+      | awk -v suffix=":$port" '
+          $1 == "TCP" && $2 ~ (suffix "$") && $4 == "LISTENING" && !seen[$5]++ { print $5 }
+        '
+    return 0
+  fi
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -nP -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null || true
+    return 0
+  fi
+  err "无法检查端口 $port:需要 lsof,或 Windows 的 netstat.exe/taskkill.exe"
+  return 1
+}
+
+stop_port_pids() {
+  local pids="$1" force="${2:-false}"
+  local pid
+  if [ "$WINDOWS_BASH" -eq 1 ]; then
+    for pid in $pids; do
+      MSYS_NO_PATHCONV=1 taskkill.exe /F /T /PID "$pid" >/dev/null 2>&1 || true
+    done
+    return 0
+  fi
+  for pid in $pids; do
+    if [ "$force" = "true" ]; then
+      kill -9 "$pid" 2>/dev/null || true
+    else
+      kill "$pid" 2>/dev/null || true
+    fi
+  done
+}
+
 # ===== 2. 端口占用检查 —— 占用就直接 kill =====
 free_port() {
   local name="$1" port="$2"
   local pids
-  pids=$(lsof -nP -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null || true)
+  pids=$(port_pids "$port") || return 1
   if [ -z "$pids" ]; then
     return 0
   fi
   warn "端口 $port($name)被占用,kill 现有进程 PID: $(echo "$pids" | xargs)"
-  # 先 TERM
-  echo "$pids" | xargs kill 2>/dev/null || true
+  # Unix 先 TERM;Windows taskkill /T 必须强制终止控制台进程树。
+  stop_port_pids "$pids"
   sleep 1
   # 还活着就 KILL
-  pids=$(lsof -nP -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null || true)
+  pids=$(port_pids "$port") || return 1
   if [ -n "$pids" ]; then
     warn "TERM 没杀掉,改用 KILL -9"
-    echo "$pids" | xargs kill -9 2>/dev/null || true
+    stop_port_pids "$pids" true
     sleep 1
   fi
   # 再确认一次
-  pids=$(lsof -nP -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null || true)
+  pids=$(port_pids "$port") || return 1
   if [ -n "$pids" ]; then
-    err "端口 $port 仍被占用 — kill 失败。请手动处理:lsof -i :$port"
-    exit 1
+    err "端口 $port 仍被占用 — kill 失败。请手动结束 PID: $(echo "$pids" | xargs)"
+    return 1
   fi
   ok "端口 $port 已释放"
 }
-free_port backend  "$BACKEND_PORT"
-free_port frontend "$FRONTEND_PORT"
+free_port backend  "$BACKEND_PORT" || exit 1
+free_port frontend "$FRONTEND_PORT" || exit 1
 
 # ===== 3. 依赖安装 =====
 if [ ! -d "$BACKEND_DIR/.venv" ] || [ "${#BACKEND_EXTRA_ARGS[@]}" -gt 0 ]; then
@@ -143,6 +187,7 @@ fi
 PIDS=()
 
 cleanup() {
+  trap - INT TERM
   echo
   info "关闭服务..."
   for pid in "${PIDS[@]:-}"; do
@@ -152,6 +197,12 @@ cleanup() {
   done
   # 等子进程退出,避免孤儿
   wait 2>/dev/null || true
+  # Git Bash 下后台 pipeline 的 PID 不是 uvicorn/node 的 Windows PID。
+  # reload 子进程可能在外层 bash 退出后继续监听,按实际端口补清理。
+  if [ "$WINDOWS_BASH" -eq 1 ]; then
+    free_port backend "$BACKEND_PORT" || true
+    free_port frontend "$FRONTEND_PORT" || true
+  fi
   ok "已退出"
   exit 0
 }

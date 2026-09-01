@@ -109,3 +109,9 @@ TickFlowStockPanel.app/
 TickFlowStockPanel-macos*.dmg
 TickFlowStockPanel-macos*.zip
 reports/cursor_tickflow_pro_rate_limit_p0.bundle
+.tmp**/**
+.runtime**
+/pyteset**/**
+/.codegraph/
+/.corepack-cache/
+/.uv-cache-codex/

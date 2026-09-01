@@ -148,4 +148,7 @@ export const storage = {
   dataCardVisible: kv<Record<string, boolean>>('data-card-visible'),
   /** 数据页画像卡片顺序 (卡片key 数组, 长度=卡片总数) */
   dataCardOrder: kv<string[]>('data-card-order'),
+
+  /** 缠论训练未结束 session，用于切换页面后恢复进度 */
+  chanTrainingSessionId: kv<string>('chan-training-active-session'),
 } as const

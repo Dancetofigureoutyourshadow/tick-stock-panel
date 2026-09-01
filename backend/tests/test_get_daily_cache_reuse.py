@@ -104,3 +104,20 @@ def test_get_daily_falls_back_to_scan_when_cache_does_not_cover_start():
     result = repo.get_daily(SYM, dates[0] - timedelta(days=5), dates[-1])
     assert calls["scan"] == 1
     assert not result.is_empty()
+
+
+def test_get_daily_falls_back_to_scan_when_cache_generation_is_stale():
+    raw = _raw_frame()
+    dates = raw["date"].to_list()
+
+    repo, calls = _bare_repo(raw)
+    stale_hist = repo._compute_enriched_range(raw.filter(pl.col("date") < dates[-1]))
+    repo._enriched_history_cache = stale_hist
+    repo._enriched_history_start = stale_hist["date"].min()
+    repo._enriched_history_generation = "before-sync"
+    repo.get_matrix_data_generation = lambda _asset_type: "after-sync"  # type: ignore[method-assign]
+
+    result = repo.get_daily(SYM, dates[30], dates[-1])
+
+    assert calls["scan"] == 1, "落盘 generation 更新后不得继续返回同步前的历史缓存"
+    assert result["date"].max() == dates[-1]

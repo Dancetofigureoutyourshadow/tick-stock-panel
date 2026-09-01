@@ -3,7 +3,7 @@
 能力 (capability) = 一个标准化数据集 (CONTRIBUTING「数据源插件化要求」):
 daily / adj_factor / realtime / minute / depth5 / financial (注册表顺序即设置页卡片顺序)。注册表集中声明每个
 能力的展示元数据、路由偏好字段与 TickFlow 档位要求, 前端设置页不再各自硬编码。
-depth5 目前仅 TickFlow 供 (插件数据集白名单未开放, 见 loader), 仍进矩阵是为了
+depth5 通过代码插件的 get_depth5 契约接入, 当前 MooTDX 已提供该实现; 仍进矩阵是为了
 可用性门控诚实: 五档不可用时连板梯队封单/看板封单缺数据应有提示。
 
 build_capability_matrix 把注册表、插件/自定义源的能力声明 (datasets) 和当前
@@ -67,7 +67,7 @@ CAPABILITY_REGISTRY: list[dict] = [
         "field": "depth5_data_provider",
         "default": "tickflow",
         "tf_tier": "pro",
-        # 插件契约暂未开放 depth5 数据集 (loader 白名单), 当前仅 TickFlow 供
+        # 代码插件可通过 get_depth5 契约提供, 通用 HTTP YAML 源不支持
     },
     {
         "id": "financial",

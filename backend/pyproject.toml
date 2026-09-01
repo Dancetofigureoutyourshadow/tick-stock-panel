@@ -8,6 +8,7 @@ dependencies = [
     # Web
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
+    "concurrent-log-handler>=0.9.29",
     "pydantic>=2.7",
     "pydantic-settings>=2.4",
     "python-multipart>=0.0.6",

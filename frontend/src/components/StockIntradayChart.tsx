@@ -3,7 +3,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Loader2 } from 'lucide-react'
 import { api, type MinuteKlineRow } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
-import { EChartsIntraday } from '@/components/EChartsIntraday'
+import { EChartsIntraday, type DailyOhlc } from '@/components/EChartsIntraday'
+import { alignMinutePricesToDailyClose } from '@/lib/intraday-chart'
 
 interface Props {
   symbol: string
@@ -14,9 +15,18 @@ interface Props {
   onPriceHover?: (price: number | null) => void
   onPriceDoubleClick?: (price: number, currentPrice: number) => void
   currentPrice?: number
+  dailyOhlc?: DailyOhlc
   priceLines?: { value: number; label?: string; color?: string }[]
+  /** 是否在分时信息栏展示交易日期；盲训场景可关闭。 */
+  showDate?: boolean
+  /** 将分钟价格换算到 dailyOhlc 的复权基准；历史训练浮窗使用。 */
+  alignToDailyClose?: boolean
   /** 自动刷新间隔(ms)。undefined/0 = 不轮询(默认)。个股对话框盘中实时刷新时传入。 */
   refetchIntervalMs?: number
+  /** 是否使用当前日后端实时数据请求；默认随 refetchIntervalMs 推断。 */
+  live?: boolean
+  /** 由后端 focus SSE 更新时，保留首次 live 请求但关闭客户端定时轮询。 */
+  disablePolling?: boolean
 }
 
 export function StockIntradayChart({
@@ -28,8 +38,13 @@ export function StockIntradayChart({
   onPriceHover,
   onPriceDoubleClick,
   currentPrice,
+  dailyOhlc,
   priceLines,
+  showDate = true,
+  alignToDailyClose = false,
   refetchIntervalMs,
+  live,
+  disablePolling = false,
 }: Props) {
   const qc = useQueryClient()
   const [minuteDismissed, setMinuteDismissed] = useState(false)
@@ -38,9 +53,14 @@ export function StockIntradayChart({
     queryKey: QK.klineMinute(symbol, date ?? ''),
     // 轮询上下文 (个股详情) 传 live: 当日盘中后端直接实时拉取最新K,
     // 避免读到分钟增量落盘的上一轮本地分区; 历史日期后端自行忽略 live。
-    queryFn: () => api.klineMinute(symbol, date ?? undefined, refetchIntervalMs != null),
+    queryFn: ({ signal }) => api.klineMinute(
+      symbol,
+      date ?? undefined,
+      live ?? refetchIntervalMs != null,
+      signal,
+    ),
     enabled: !!symbol && !!date,
-    refetchInterval: refetchIntervalMs,
+    refetchInterval: disablePolling ? false : refetchIntervalMs,
   })
 
   const fetchMinute = useMutation({
@@ -52,7 +72,23 @@ export function StockIntradayChart({
     },
   })
 
-  const minuteRows: MinuteKlineRow[] = useMemo(() => minute.data?.rows ?? [], [minute.data?.rows])
+  const rawMinuteRows: MinuteKlineRow[] = useMemo(() => minute.data?.rows ?? [], [minute.data?.rows])
+  const minuteAlignment = useMemo(
+    () => alignToDailyClose
+      ? alignMinutePricesToDailyClose(rawMinuteRows, dailyOhlc?.close)
+      : { rows: rawMinuteRows, priceScale: 1 },
+    [alignToDailyClose, dailyOhlc?.close, rawMinuteRows],
+  )
+  const minuteRows = minuteAlignment.rows
+  const priceLimit = useMemo(() => {
+    const value = minute.data?.price_limit
+    if (!value || minuteAlignment.priceScale === 1) return value ?? undefined
+    return {
+      ...value,
+      limit_up: value.limit_up == null ? null : value.limit_up * minuteAlignment.priceScale,
+      limit_down: value.limit_down == null ? null : value.limit_down * minuteAlignment.priceScale,
+    }
+  }, [minute.data?.price_limit, minuteAlignment.priceScale])
   // source=none 表示本地无数据且 TickFlow 也拉不到 (停牌/复牌延迟/非交易日)
   // 此时不弹"是否获取"询问窗, 只做静态提示, 避免误导用户去拉明知拉不到的数据
   const sourceIsNone = minute.data?.source === 'none'
@@ -126,12 +162,14 @@ export function StockIntradayChart({
           data={minuteRows}
           height={height}
           prevClose={prevClose}
-          date={date}
-          priceLimit={minute.data?.price_limit ?? undefined}
+          date={showDate ? date : undefined}
+          priceLimit={priceLimit}
           onPriceHover={onPriceHover}
           onPriceDoubleClick={onPriceDoubleClick}
           currentPrice={currentPrice}
+          dailyOhlc={dailyOhlc}
           priceLines={priceLines}
+          averagePriceScale={minuteAlignment.priceScale}
         />
       )}
     </div>

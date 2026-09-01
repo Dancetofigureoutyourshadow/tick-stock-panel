@@ -12,6 +12,7 @@ mock 范式沿用 test_stocksdk_provider.py (monkeypatch 模块属性)。
 from __future__ import annotations
 
 from datetime import date, datetime
+from pathlib import Path
 from threading import Lock
 from unittest.mock import MagicMock
 
@@ -205,6 +206,32 @@ def test_custom_success_skips_tickflow(monkeypatch):
     get_client_spy.assert_not_called()
 
 
+def test_fetch_minute_single_uses_5m_display_fallback(monkeypatch):
+    received_freqs: list[str] = []
+
+    def get_minute(*args, **kwargs):
+        received_freqs.append(kwargs["freq"])
+        if kwargs["freq"] == "1m":
+            return pl.DataFrame()
+        return _mock_minute_df("600186.SH")
+
+    mock_provider = MagicMock()
+    mock_provider.get_minute.side_effect = get_minute
+    _setup_custom_provider(monkeypatch, mock_provider, has_dataset=True)
+
+    get_client_spy = MagicMock(name="get_client_spy")
+    monkeypatch.setattr(kline_sync, "get_client", get_client_spy)
+
+    df = kline_sync.fetch_minute_single(
+        "600186.SH", date(2026, 8, 13), asset_type="stock",
+    )
+
+    assert received_freqs == ["1m", "5m"]
+    assert df.height == 1
+    assert df["symbol"][0] == "600186.SH"
+    get_client_spy.assert_not_called()
+
+
 # ---------- 测试 7: sync_minute_batch 自定义源成功直接返回 ----------
 
 def test_sync_minute_batch_custom_success_returns_directly(monkeypatch):
@@ -366,6 +393,8 @@ def test_sync_minute_batch_custom_empty_df_skips_on_segment(monkeypatch):
     on_segment_spy.assert_not_called()
     assert isinstance(df, pl.DataFrame)
     assert df.is_empty()
+    mock_provider.get_minute.assert_called_once()
+    assert mock_provider.get_minute.call_args.kwargs["freq"] == "1m"
 
 
 # ---------- 测试 12: sync_and_persist_minute + custom provider 端到端落盘 (Issue 1) ----------
@@ -410,6 +439,177 @@ def test_sync_and_persist_minute_custom_persists(monkeypatch, tmp_path):
     assert written == expected_df.height
     assert written > 0
     get_client_spy.assert_not_called()
+
+
+def test_minute_date_ranges_skip_days_with_existing_data():
+    repo = MagicMock()
+    existing_days = {date(2026, 1, 2), date(2026, 1, 5)}
+    repo.get_minute_range.return_value = pl.DataFrame({
+        "datetime": [datetime.combine(trade_date, datetime.min.time()) for trade_date in sorted(existing_days)],
+    })
+
+    ranges = kline_sync._minute_date_ranges(
+        repo,
+        "600519.SH",
+        date(2026, 1, 1),
+        date(2026, 1, 5),
+        skip_existing_days=True,
+    )
+
+    assert ranges == [(date(2026, 1, 1), date(2026, 1, 1)), (date(2026, 1, 3), date(2026, 1, 4))]
+    repo.get_minute_range.assert_called_once_with(
+        ["600519.SH"], date(2026, 1, 1), date(2026, 1, 5), asset_type="stock",
+    )
+
+
+def test_chan_minute_range_uses_configured_provider_and_persists(monkeypatch, tmp_path):
+    expected_df = _mock_minute_df()
+    mock_provider = MagicMock()
+    mock_provider.get_minute.return_value = expected_df
+    _setup_custom_provider(monkeypatch, mock_provider, has_dataset=True)
+
+    mock_repo = MagicMock()
+    mock_repo.resolve_asset_type.return_value = "stock"
+    mock_repo.store.data_dir = tmp_path
+    mock_repo.db.execute = MagicMock()
+
+    result = kline_sync.sync_and_persist_minute_range_for_chan(
+        "600519.SH", mock_repo, MagicMock(), date(2026, 1, 15), date(2026, 1, 15),
+    )
+
+    assert result["error"] is None
+    assert result["written"] == expected_df.height
+    mock_provider.get_minute.assert_called_once()
+    assert mock_provider.get_minute.call_args.kwargs["freq"] == "1m"
+    assert (tmp_path / "kline_minute" / "date=2026-01-15" / "part.parquet").exists()
+
+
+def test_chan_minute_range_does_not_fallback_after_configured_provider_failure(monkeypatch, tmp_path):
+    mock_provider = MagicMock()
+    mock_provider.get_minute.side_effect = RuntimeError("configured source failed")
+    _setup_custom_provider(monkeypatch, mock_provider, has_dataset=True)
+    get_client_spy = MagicMock(name="get_client_spy")
+    monkeypatch.setattr(kline_sync, "get_client", get_client_spy)
+
+    mock_repo = MagicMock()
+    mock_repo.resolve_asset_type.return_value = "stock"
+    mock_repo.store.data_dir = tmp_path
+    mock_repo.db.execute = MagicMock()
+
+    result = kline_sync.sync_and_persist_minute_range_for_chan(
+        "600519.SH", mock_repo, MagicMock(), date(2026, 1, 15), date(2026, 1, 15),
+    )
+
+    assert result["written"] == 0
+    assert "configured source failed" in str(result["error"])
+    get_client_spy.assert_not_called()
+
+
+def test_chan_minute_range_reports_view_refresh_failure(monkeypatch):
+    expected_df = _mock_minute_df()
+    mock_provider = MagicMock()
+    mock_provider.get_minute.return_value = expected_df
+    _setup_custom_provider(monkeypatch, mock_provider, has_dataset=True)
+
+    mock_repo = MagicMock()
+    mock_repo.resolve_asset_type.return_value = "stock"
+    mock_repo.store.data_dir = Path(".")
+    mock_repo.db.execute.side_effect = RuntimeError("duckdb view is busy")
+    monkeypatch.setattr(kline_sync, "_write_minute_partition", lambda frame, _path: frame.height)
+
+    result = kline_sync.sync_and_persist_minute_range_for_chan(
+        "600519.SH", mock_repo, MagicMock(), date(2026, 1, 15), date(2026, 1, 15),
+    )
+
+    assert result["written"] == expected_df.height
+    assert "refresh kline_minute view failed" in str(result["error"])
+    assert "duckdb view is busy" in str(result["error"])
+
+
+def test_chan_minute_range_refreshes_view_after_partial_sync_failure(monkeypatch):
+    monkeypatch.setattr(kline_sync.preferences, "get_minute_data_provider", lambda: "tickflow")
+    monkeypatch.setattr(kline_sync, "resolve_limit", lambda *_args, **_kwargs: MagicMock(batch=1, rpm=30))
+    monkeypatch.setattr(kline_sync.preferences, "get_minute_sync_segment_days", lambda: 20)
+
+    def partial_sync(*_args, on_segment, **_kwargs):
+        on_segment(_mock_minute_df())
+        raise RuntimeError("second segment failed")
+
+    monkeypatch.setattr(kline_sync, "sync_minute_batch", partial_sync)
+    monkeypatch.setattr(kline_sync, "_write_minute_partition", lambda frame, _path: frame.height)
+
+    mock_repo = MagicMock()
+    mock_repo.resolve_asset_type.return_value = "stock"
+    mock_repo.store.data_dir = Path(".")
+    mock_repo.db.execute = MagicMock()
+
+    result = kline_sync.sync_and_persist_minute_range_for_chan(
+        "600519.SH", mock_repo, None, date(2026, 1, 15), date(2026, 1, 15),
+    )
+
+    assert result["written"] == _mock_minute_df().height
+    assert "second segment failed" in str(result["error"])
+    mock_repo.db.execute.assert_called_once()
+
+
+def test_chan_minute_range_refresh_holds_repository_write_lock(monkeypatch):
+    expected_df = _mock_minute_df()
+    mock_provider = MagicMock()
+    mock_provider.get_minute.return_value = expected_df
+    _setup_custom_provider(monkeypatch, mock_provider, has_dataset=True)
+    monkeypatch.setattr(kline_sync, "_write_minute_partition", lambda frame, _path: frame.height)
+
+    write_lock = Lock()
+
+    def execute(_statement):
+        assert not write_lock.acquire(blocking=False)
+
+    mock_repo = MagicMock()
+    mock_repo.resolve_asset_type.return_value = "stock"
+    mock_repo.store.data_dir = Path(".")
+    mock_repo._write_lock = write_lock
+    mock_repo.db.execute.side_effect = execute
+
+    result = kline_sync.sync_and_persist_minute_range_for_chan(
+        "600519.SH", mock_repo, None, date(2026, 1, 15), date(2026, 1, 15),
+    )
+
+    assert result["error"] is None
+    assert result["written"] == expected_df.height
+
+
+def test_chan_minute_range_filters_provider_rows_to_requested_symbol_and_dates(monkeypatch, tmp_path):
+    source = pl.DataFrame({
+        "symbol": ["600519.SH", "600519.SH", "000001.SZ"],
+        "datetime": [
+            datetime(2026, 1, 15, 9, 35),
+            datetime(2026, 1, 14, 9, 35),
+            datetime(2026, 1, 15, 9, 35),
+        ],
+        "open": [100.0, 99.0, 10.0],
+        "high": [101.0, 100.0, 10.2],
+        "low": [99.5, 98.5, 9.8],
+        "close": [100.5, 99.5, 10.1],
+        "volume": [1000.0, 900.0, 800.0],
+        "amount": [100500.0, 89550.0, 8080.0],
+    })
+    mock_provider = MagicMock()
+    mock_provider.get_minute.return_value = source
+    _setup_custom_provider(monkeypatch, mock_provider, has_dataset=True)
+
+    mock_repo = MagicMock()
+    mock_repo.resolve_asset_type.return_value = "stock"
+    mock_repo.store.data_dir = tmp_path
+    mock_repo._write_lock = Lock()
+
+    result = kline_sync.sync_and_persist_minute_range_for_chan(
+        "600519.SH", mock_repo, None, date(2026, 1, 15), date(2026, 1, 15),
+    )
+
+    assert result["error"] is None
+    assert not (tmp_path / "kline_minute" / "date=2026-01-14" / "part.parquet").exists()
+    stored = pl.read_parquet(tmp_path / "kline_minute" / "date=2026-01-15" / "part.parquet")
+    assert stored["symbol"].to_list() == ["600519.SH"]
 
 
 def test_sync_and_persist_minute_holds_repository_write_lock(monkeypatch, tmp_path):

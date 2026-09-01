@@ -305,11 +305,12 @@ def detect_capabilities(force: bool = False) -> CapabilitySet:
 
 # 数据集 → 能力映射: 第三方源声明某数据集且被选为当前 provider 时补授的能力。
 # 实时行情无对应能力键 (权限由 QuoteService.is_realtime_allowed 判定);
-# 五档盘口/WebSocket 暂无第三方数据集契约, 不增广。
+# 五档盘口仅对实现 get_depth5 契约的代码插件增广; WebSocket 仍不增广。
 _DATASET_CAP_MAP: tuple[tuple[str, Cap], ...] = (
     ("daily", Cap.KLINE_DAILY_BATCH),
     ("adj_factor", Cap.ADJ_FACTOR),
     ("minute", Cap.KLINE_MINUTE_BATCH),
+    ("depth5", Cap.DEPTH5_BATCH),
     ("financial", Cap.FINANCIAL),
 )
 
@@ -326,11 +327,24 @@ def _augment_custom_sources(capset: CapabilitySet) -> None:
             "daily": daily_provider,
             "adj_factor": adj_provider,
             "minute": preferences.get_minute_data_provider(),
+            "depth5": preferences.get_depth5_data_provider(),
             "financial": preferences.get_financial_provider(),
         }
         for dataset, cap in _DATASET_CAP_MAP:
             provider = active_providers[dataset]
             if provider != "tickflow" and custom_sources.provider_has_dataset(provider, dataset):
+                if dataset == "depth5":
+                    try:
+                        depth_provider = custom_sources.get_provider(provider)
+                        if not callable(getattr(depth_provider, "get_depth5", None)):
+                            logger.warning(
+                                "custom source '%s' declares depth5 but has no get_depth5 contract",
+                                provider,
+                            )
+                            continue
+                    except Exception as exc:
+                        logger.warning("custom depth5 provider '%s' unavailable: %s", provider, exc)
+                        continue
                 capset.grant(cap)
                 logger.info(
                     "custom source '%s' provides dataset '%s': granted %s",

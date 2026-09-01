@@ -19,7 +19,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import duckdb
@@ -321,10 +321,14 @@ class DataStore:
             "instruments_all": inst_parts,
         }
         for name, parts in unions.items():
-            if not parts:
-                continue
             try:
-                self.db.execute(f"CREATE OR REPLACE VIEW {name} AS " + " UNION ALL BY NAME ".join(parts))
+                if parts:
+                    self.db.execute(
+                        f"CREATE OR REPLACE VIEW {name} AS "
+                        + " UNION ALL BY NAME ".join(parts)
+                    )
+                else:
+                    self.db.execute(f"DROP VIEW IF EXISTS {name}")
             except Exception as e:  # noqa: BLE001
                 logger.debug("unified view %s skipped: %s", name, e)
 
@@ -1440,6 +1444,17 @@ class KlineRepository:
         # 由下方 get_enriched_latest 覆盖逻辑补齐; 覆盖不足时回退单股计算路径。
         df = pl.DataFrame()
         hist = self._enriched_history_cache
+        cached_generation = getattr(self, "_enriched_history_generation", None)
+        if hist is not None and cached_generation is not None:
+            try:
+                if cached_generation != self.get_matrix_data_generation("stock"):
+                    # 盘后同步/数据修正会原子发布新的 enriched generation。历史缓存若仍
+                    # 属于旧 generation，继续裁剪它会让磁盘已有的新交易日不可见。
+                    hist = None
+            except EnrichedGenerationUnavailableError:
+                # 发布进行中时继续服务上一个完整快照；发布完成后下一次请求会看到
+                # 新 generation 并转走 parquet，避免扫描尚未完成的分区集合。
+                pass
         if hist is not None and not hist.is_empty() and "date" in hist.columns:
             hist_min = self._enriched_history_start
             hist_max = hist["date"].max()
@@ -1483,13 +1498,59 @@ class KlineRepository:
         columns: list[str] | None = None,
     ) -> pl.DataFrame:
         """批量日K查询。"""
+        needs_limit_signals = bool(
+            columns and {"signal_limit_up", "signal_limit_down"}.intersection(columns)
+        )
         cached, cache_date = self.get_enriched_latest()
         if cached is not None and not cached.is_empty() and cache_date:
             if start >= cache_date:
                 return self._filter_cached_batch(cached, symbols, columns)
 
         # 回退 scan_parquet
-        return self._scan_daily_batch(symbols, start, end, columns)
+        scan_columns = columns
+        if needs_limit_signals:
+            # 涨跌停信号不在 parquet 窄表中，先取原始价；统一在仓库层
+            # 向量化计算，避免列表页在前端按复权价自行推断。
+            scan_columns = list(dict.fromkeys([
+                *(columns or []),
+                "raw_close", "raw_high", "raw_low",
+            ]))
+        df = self._scan_daily_batch(symbols, start, end, scan_columns)
+        if needs_limit_signals and not df.is_empty():
+            from app.indicators.pipeline import compute_limit_signals
+
+            instruments = self.get_instruments()
+            if not instruments.is_empty():
+                df = compute_limit_signals(
+                    df, instruments, needed={"signal_limit_up", "signal_limit_down"}
+                )
+            else:
+                # 没有涨跌停规则所需的维表时 fail-closed，不伪造信号。
+                df = df.with_columns([
+                    pl.lit(None).cast(pl.Boolean).alias("signal_limit_up"),
+                    pl.lit(None).cast(pl.Boolean).alias("signal_limit_down"),
+                ])
+
+        # Live quotes reach the in-memory enriched cache before parquet persistence.
+        # Keep batch daily K consistent with get_daily by replacing the cached date.
+        if cached is not None and not cached.is_empty() and cache_date:
+            if start <= cache_date <= end:
+                cached_part = self._filter_cached_batch(cached, symbols, scan_columns)
+                if not cached_part.is_empty():
+                    if df.is_empty():
+                        df = cached_part
+                    else:
+                        common_cols = [c for c in df.columns if c in cached_part.columns]
+                        if common_cols:
+                            df = df.filter(pl.col("date") != cache_date)
+                            df = pl.concat([
+                                df.select(common_cols),
+                                cached_part.select(common_cols),
+                            ], how="diagonal_relaxed")
+        if columns and not df.is_empty():
+            existing = [c for c in columns if c in df.columns]
+            df = df.select(existing)
+        return df
 
     def get_index_daily(
         self,
@@ -1557,6 +1618,15 @@ class KlineRepository:
         end: date,
         columns: list[str] | None = None,
     ) -> pl.DataFrame:
+        # The intraday chart only needs date/close to calculate previous close.
+        # Reading bounded partitions avoids a full enriched-cache warmup here.
+        if columns and set(columns).issubset({"date", "close"}):
+            closes = self.get_daily_closes(asset_type, symbol, start, end)
+            if closes.is_empty():
+                return pl.DataFrame(schema={"date": pl.Date, "close": pl.Float64}).select(
+                    [column for column in columns if column in {"date", "close"}]
+                )
+            return closes.select([column for column in columns if column in closes.columns])
         if asset_type == "stock":
             return self.get_daily(symbol, start, end, columns)
         if asset_type == "index":
@@ -1565,9 +1635,58 @@ class KlineRepository:
             return self.get_etf_daily(symbol, start, end, columns)
         return pl.DataFrame()
 
+    def get_daily_closes(
+        self,
+        asset_type: str,
+        symbol: str,
+        start: date,
+        end: date,
+    ) -> pl.DataFrame:
+        """Read a symbol's close prices from bounded date partitions only."""
+        if end < start:
+            return pl.DataFrame()
+
+        if asset_type == "index":
+            subdirs = ["kline_index_enriched"]
+        elif asset_type == "etf":
+            # Older releases stored ETFs in the index-enriched dataset.
+            subdirs = ["kline_etf_enriched", "kline_index_enriched"]
+        else:
+            subdirs = ["kline_daily_enriched"]
+
+        paths: list[Path] = []
+        current = start
+        while current <= end:
+            partition = f"date={current.isoformat()}"
+            for subdir in subdirs:
+                paths.extend(sorted((self.store.data_dir / subdir / partition).glob("*.parquet")))
+            current += timedelta(days=1)
+        if not paths:
+            return pl.DataFrame()
+
+        try:
+            return (
+                pl.read_parquet(paths, columns=["symbol", "date", "close"])
+                .filter(pl.col("symbol") == symbol)
+                .select(["date", "close"])
+                .unique(subset=["date"], keep="first")
+                .sort("date")
+            )
+        except Exception as exc:
+            logger.debug(
+                "daily close partition fast path failed for %s: %s",
+                symbol,
+                exc,
+            )
+            return pl.DataFrame()
+
     def _minute_glob_for(self, asset_type: str) -> str:
         """按资产类型选择分钟K parquet glob。ETF 分钟数据独立存储于 kline_etf_minute。"""
         return self._etf_minute_glob if asset_type == "etf" else self._minute_glob
+
+    def _has_minute_parquet(self, asset_type: str) -> bool:
+        subdir = "kline_etf_minute" if asset_type == "etf" else "kline_minute"
+        return self.store._has_parquet(subdir)
 
     def get_minute(
         self,
@@ -1576,6 +1695,8 @@ class KlineRepository:
         asset_type: str = "stock",
     ) -> pl.DataFrame:
         """分钟K查询 — Polars scan_parquet + predicate pushdown。"""
+        if not self._has_minute_parquet(asset_type):
+            return pl.DataFrame()
         try:
             return pl.scan_parquet(self._minute_glob_for(asset_type)).filter(
                 (pl.col("symbol") == symbol)
@@ -1597,6 +1718,8 @@ class KlineRepository:
         避免逐只查询的 N 次 I/O。
         """
         if not symbols:
+            return pl.DataFrame()
+        if not self._has_minute_parquet(asset_type):
             return pl.DataFrame()
         try:
             return pl.scan_parquet(self._minute_glob_for(asset_type)).filter(
@@ -1620,6 +1743,8 @@ class KlineRepository:
         返回列: symbol, datetime, open, high, low, close, volume, amount。
         """
         if not symbols:
+            return pl.DataFrame()
+        if not self._has_minute_parquet(asset_type):
             return pl.DataFrame()
         try:
             lf = pl.scan_parquet(self._minute_glob_for(asset_type))
@@ -2100,6 +2225,71 @@ class KlineRepository:
         with self._lock:
             self.store._register_unified_views()
 
+    def _parquet_view_paths(self) -> dict[str, tuple[str, str]]:
+        """返回视图名到 (数据子目录, parquet glob) 的白名单映射。"""
+        d = self.store.data_dir.as_posix()
+        return {
+            "kline_daily": ("kline_daily", f"{d}/kline_daily/**/*.parquet"),
+            "kline_enriched": (
+                "kline_daily_enriched",
+                f"{d}/kline_daily_enriched/**/*.parquet",
+            ),
+            "kline_index_daily": (
+                "kline_index_daily",
+                f"{d}/kline_index_daily/**/*.parquet",
+            ),
+            "kline_index_enriched": (
+                "kline_index_enriched",
+                f"{d}/kline_index_enriched/**/*.parquet",
+            ),
+            "kline_etf_daily": (
+                "kline_etf_daily",
+                f"{d}/kline_etf_daily/**/*.parquet",
+            ),
+            "kline_etf_enriched": (
+                "kline_etf_enriched",
+                f"{d}/kline_etf_enriched/**/*.parquet",
+            ),
+            "kline_etf_minute": (
+                "kline_etf_minute",
+                f"{d}/kline_etf_minute/**/*.parquet",
+            ),
+            "kline_minute": ("kline_minute", f"{d}/kline_minute/**/*.parquet"),
+            "adj_factor": ("adj_factor", f"{d}/adj_factor/**/*.parquet"),
+            "adj_factor_etf": (
+                "adj_factor_etf",
+                f"{d}/adj_factor_etf/**/*.parquet",
+            ),
+            "instruments": ("instruments", f"{d}/instruments/**/*.parquet"),
+            "instruments_index": (
+                "instruments_index",
+                f"{d}/instruments_index/**/*.parquet",
+            ),
+            "instruments_etf": (
+                "instruments_etf",
+                f"{d}/instruments_etf/**/*.parquet",
+            ),
+        }
+
+    def _rebuild_view_locked(self, name: str, subdir: str, path: str) -> None:
+        if self.store._has_parquet(subdir):
+            self.db.execute(
+                f"CREATE OR REPLACE VIEW {name} AS "
+                f"SELECT * FROM read_parquet('{path}', union_by_name=true)"
+            )
+        else:
+            self.db.execute(f"DROP VIEW IF EXISTS {name}")
+
+    def rebuild_view(self, name: str) -> None:
+        """重建单个 parquet 视图; 空目录时移除旧视图。"""
+        spec = self._parquet_view_paths().get(name)
+        if spec is None:
+            return
+        subdir, path = spec
+        with self._lock:
+            self._rebuild_view_locked(name, subdir, path)
+            self.store._register_unified_views()
+
     def rebuild_views(self) -> None:
         """重建全部 13 张 parquet 视图并重挂 unified 视图 —— 唯一权威实现。
 
@@ -2107,32 +2297,12 @@ class KlineRepository:
         内联了同一份视图重建 SQL, 清库那份还漏了几张视图导致漂移。此处收敛为单一入口:
         覆盖全部 13 张视图 (二者的超集), 空目录 (清库后) 也能安全重挂。
         """
-        d = self.store.data_dir.as_posix()
-        views = {
-            "kline_daily": f"{d}/kline_daily/**/*.parquet",
-            "kline_enriched": f"{d}/kline_daily_enriched/**/*.parquet",
-            "kline_index_daily": f"{d}/kline_index_daily/**/*.parquet",
-            "kline_index_enriched": f"{d}/kline_index_enriched/**/*.parquet",
-            "kline_etf_daily": f"{d}/kline_etf_daily/**/*.parquet",
-            "kline_etf_enriched": f"{d}/kline_etf_enriched/**/*.parquet",
-            "kline_etf_minute": f"{d}/kline_etf_minute/**/*.parquet",
-            "kline_minute": f"{d}/kline_minute/**/*.parquet",
-            "adj_factor": f"{d}/adj_factor/**/*.parquet",
-            "adj_factor_etf": f"{d}/adj_factor_etf/**/*.parquet",
-            "instruments": f"{d}/instruments/**/*.parquet",
-            "instruments_index": f"{d}/instruments_index/**/*.parquet",
-            "instruments_etf": f"{d}/instruments_etf/**/*.parquet",
-        }
-        for name, path in views.items():
-            try:
-                with self._lock:
-                    self.db.execute(
-                        f"CREATE OR REPLACE VIEW {name} AS "
-                        f"SELECT * FROM read_parquet('{path}', union_by_name=true)"
-                    )
-            except Exception as e:  # noqa: BLE001
-                logger.warning("rebuild view %s failed: %s", name, e)
         with self._lock:
+            for name, (subdir, path) in self._parquet_view_paths().items():
+                try:
+                    self._rebuild_view_locked(name, subdir, path)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("rebuild view %s failed: %s", name, e)
             self.store._register_unified_views()
 
     @staticmethod

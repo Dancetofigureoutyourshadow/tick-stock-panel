@@ -8,8 +8,9 @@
 from __future__ import annotations
 
 import logging
+import math
 from collections.abc import Callable
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 
 import polars as pl
 
@@ -446,6 +447,90 @@ CANONICAL_MINUTE_COLS = [
     "symbol", "datetime", "open", "high", "low", "close", "volume", "amount",
 ]
 
+MINUTE_KLINE_FREQS = ("1m", "5m", "15m", "30m", "60m", "120m")
+MINUTE_KLINE_INTERVALS = {
+    "5m": 5,
+    "15m": 15,
+    "30m": 30,
+    "60m": 60,
+    "120m": 120,
+}
+
+
+def aggregate_minute_kline(minute: pl.DataFrame, freq: str = "1m") -> pl.DataFrame:
+    """Aggregate local 1-minute rows into an A-share intraday frequency."""
+    if freq not in MINUTE_KLINE_FREQS:
+        raise ValueError(f"unsupported minute kline frequency: {freq}")
+    if minute.is_empty() or "datetime" not in minute.columns:
+        return minute
+
+    ordered = minute.sort("datetime")
+    minute_of_day = (
+        pl.col("datetime").dt.hour().cast(pl.Int64) * 60
+        + pl.col("datetime").dt.minute().cast(pl.Int64)
+    )
+    if freq == "1m":
+        standard = ordered.with_columns(minute_of_day.alias("_minute_of_day")).filter(
+            ((pl.col("_minute_of_day") >= 9 * 60 + 30)
+             & (pl.col("_minute_of_day") < 11 * 60 + 30))
+            | ((pl.col("_minute_of_day") >= 13 * 60)
+               & (pl.col("_minute_of_day") < 15 * 60))
+        ).drop("_minute_of_day")
+        # Keep legacy/non-wall-clock fixtures readable when no valid session row exists.
+        return standard if not standard.is_empty() else ordered
+
+    filtered = (
+        ordered
+        .with_columns(minute_of_day.alias("_minute_of_day"))
+        .filter(
+            ((pl.col("_minute_of_day") >= 9 * 60 + 30)
+             & (pl.col("_minute_of_day") < 11 * 60 + 30))
+            | ((pl.col("_minute_of_day") >= 13 * 60)
+               & (pl.col("_minute_of_day") < 15 * 60))
+        )
+    )
+    if filtered.is_empty():
+        return filtered.drop("_minute_of_day")
+
+    interval = MINUTE_KLINE_INTERVALS[freq]
+    grouped = (
+        filtered
+        .with_columns([
+            pl.col("datetime").dt.date().alias("_trade_date"),
+            pl.when(pl.col("_minute_of_day") < 11 * 60 + 30)
+            .then(pl.lit("am"))
+            .otherwise(pl.lit("pm"))
+            .alias("_session"),
+            pl.when(pl.col("_minute_of_day") < 11 * 60 + 30)
+            .then(pl.col("_minute_of_day") - (9 * 60 + 30))
+            .otherwise(pl.col("_minute_of_day") - 13 * 60)
+            .alias("_session_minute"),
+        ])
+        .with_columns(
+            (pl.col("_session_minute") / interval).floor().cast(pl.Int64).alias("_bucket")
+        )
+        .sort(["_trade_date", "_session", "_bucket", "datetime"])
+    )
+    group_keys = ["_trade_date", "_session", "_bucket"]
+    if "symbol" in grouped.columns:
+        group_keys.insert(0, "symbol")
+
+    return (
+        grouped
+        .group_by(group_keys, maintain_order=True)
+        .agg([
+            pl.col("datetime").first().alias("datetime"),
+            pl.col("open").first().alias("open"),
+            pl.col("high").max().alias("high"),
+            pl.col("low").min().alias("low"),
+            pl.col("close").last().alias("close"),
+            pl.col("volume").sum().alias("volume"),
+            pl.col("amount").sum().alias("amount"),
+        ])
+        .sort("datetime")
+        .select([column for column in CANONICAL_MINUTE_COLS if column in grouped.columns])
+    )
+
 
 # 北京墙钟特征时段(含集合竞价 09:15 与收盘 15:00): 上午 09-11, 下午 13-15
 _BJ_HOURS = [9, 10, 11, 13, 14, 15]
@@ -696,6 +781,7 @@ def _try_custom_minute(
     asset_type: AssetType,
     freq: str = "1m",
     on_chunk_done: Callable[[int, int, str], None] | None = None,
+    empty_fallback_freq: str | None = None,
 ) -> tuple[pl.DataFrame | None, bool]:
     """尝试从自定义分钟源拉取。返回 (df, should_fallback_to_tickflow)。
 
@@ -715,6 +801,9 @@ def _try_custom_minute(
     on_chunk_done 适配: 上层回调是 3 参 (cur, total, seg_label), provider
     实现内部以 2 参 (cur, total) 调用。这里包装一层, provider 调 2 参时补
     默认 seg_label="custom" 转发给上层, 保证进度展示不降级。
+
+    empty_fallback_freq 仅供不落盘的展示路径使用: 请求频率返回空时以较低
+    频率重试。批量同步/落盘不传此参数, 保持分钟粒度契约不变。
     """
     provider_name = preferences.get_minute_data_provider()
     provider, fallback, err = _resolve_minute_provider(provider_name)
@@ -736,7 +825,33 @@ def _try_custom_minute(
             symbols, start_time=start_time, end_time=end_time,
             asset_type=asset_type, freq=freq, on_chunk_done=wrapped_cb,
         )
-    except Exception as e:
+        if empty_fallback_freq and (df is None or len(df) == 0):
+            try:
+                fallback_df = provider.get_minute(
+                    symbols,
+                    start_time=start_time,
+                    end_time=end_time,
+                    asset_type=asset_type,
+                    freq=empty_fallback_freq,
+                    on_chunk_done=wrapped_cb,
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "custom minute provider %s %s display fallback failed: %s",
+                    provider_name,
+                    empty_fallback_freq,
+                    e,
+                )
+            else:
+                if fallback_df is not None and len(fallback_df) > 0:
+                    logger.info(
+                        "custom minute provider %s returned no %s data; using %s display fallback",
+                        provider_name,
+                        freq,
+                        empty_fallback_freq,
+                    )
+                    df = fallback_df
+    except Exception as e:  # noqa: BLE001
         logger.warning("custom minute provider %s call failed, falling back to TickFlow: %s",
                        provider_name, e)
         return (None, True)
@@ -1080,7 +1195,7 @@ def fetch_minute_single(
     # 避免无 TickFlow Pro+ 权限的用户分时图首次打开(本地无数据)时补拉失败返回空。
     df, fallback = _try_custom_minute(
         [symbol], start_time=start_time, end_time=end_time,
-        asset_type=asset_type, freq="1m",
+        asset_type=asset_type, freq="1m", empty_fallback_freq="5m",
     )
     if not fallback:
         # 见 sync_minute_batch 同分支注释: df 在此必非 None。
@@ -1226,6 +1341,37 @@ def _migrate_symbol_to_date_partition(repo: KlineRepository) -> None:
     logger.info("minute-K migration done: %d rows migrated", combined.height)
 
 
+def _minute_date_ranges(
+    repo: KlineRepository,
+    symbol: str,
+    start_date: date,
+    end_date: date,
+    skip_existing_days: bool,
+) -> list[tuple[date, date]]:
+    """按日期范围生成实际请求段; 非强制模式跳过已有分区。"""
+    if not skip_existing_days:
+        return [(start_date, end_date)]
+
+    local = repo.get_minute_range([symbol], start_date, end_date, asset_type="stock")
+    existing_dates: set[date] = set()
+    if not local.is_empty() and "datetime" in local.columns:
+        existing_dates = set(local["datetime"].dt.date().unique().to_list())
+
+    ranges: list[tuple[date, date]] = []
+    missing_start: date | None = None
+    current = start_date
+    while current <= end_date:
+        has_data = current in existing_dates
+        if not has_data and missing_start is None:
+            missing_start = current
+        if (has_data or current == end_date) and missing_start is not None:
+            missing_end = current - timedelta(days=1) if has_data else current
+            ranges.append((missing_start, missing_end))
+            missing_start = None
+        current += timedelta(days=1)
+    return ranges
+
+
 def sync_and_persist_minute(
     symbols: list[str],
     repo: KlineRepository,
@@ -1234,6 +1380,9 @@ def sync_and_persist_minute(
     on_chunk_done: Callable[[int, int, str], None] | None = None,
     extend_backward: bool = False,
     force_full_days: bool = False,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    skip_existing_days: bool = False,
 ) -> int:
     """同步分钟 K 并存到 Parquet(前复权价格, SDK 端 adjust=qfq)。返回写入行数。
 
@@ -1241,6 +1390,11 @@ def sync_and_persist_minute(
     on_chunk_done(current, total) 每个 chunk 完成后回调。
     force_full_days=True 时强制回溯 days 自然日 (不增量补, 用于个股补齐历史)。
     """
+    if (start_date is None) != (end_date is None):
+        raise ValueError("start_date and end_date must be provided together")
+    if start_date is not None and end_date is not None and start_date > end_date:
+        raise ValueError("minute sync start_date must not be after end_date")
+
     minute_provider = preferences.get_minute_data_provider()
     # resolver 调用统一走 _resolve_minute_provider, 与 _try_custom_minute 共用异常边界。
     # resolver 异常时视为非 custom (minute_is_custom=False), 走 capset 检查 →
@@ -1263,8 +1417,20 @@ def sync_and_persist_minute(
     _migrate_symbol_to_date_partition(repo)
 
     now = datetime.now()
+    explicit_ranges: list[tuple[date, date]] | None = None
 
-    if extend_backward:
+    if start_date is not None and end_date is not None:
+        explicit_ranges = _minute_date_ranges(
+            repo,
+            symbols[0],
+            start_date,
+            end_date,
+            skip_existing_days,
+        )
+        if not explicit_ranges:
+            return 0
+        start_time = end_time = None
+    elif extend_backward:
         # 向前扩展模式: 从本地最早数据往前补, 叠加已有数据避免缺口。
         earliest_dt = _earliest_minute_datetime(repo)
         # 按交易日换算自然日 (7/5 系数)。>41 交易日时 +10 天余量覆盖节假日。
@@ -1311,14 +1477,62 @@ def sync_and_persist_minute(
             written_box[0] += _write_minute_partition(seg_df, minute_dir)
 
     segment_days = preferences.get_minute_sync_segment_days()
-    sync_minute_batch(
-        symbols, start_time=start_time, end_time=end_time,
-        batch_size=limit.batch, rpm=limit.rpm,
-        on_chunk_done=on_chunk_done,
-        segment_trading_days=segment_days,
-        on_segment=_persist,
-        asset_type="stock",
-    )
+    if explicit_ranges is None:
+        request_ranges = [(start_time, end_time)]
+        progress_total = 0
+    else:
+        request_ranges = [
+            (
+                datetime.combine(range_start, time(9, 25), tzinfo=CN_TZ),
+                datetime.combine(range_end, time(15, 5), tzinfo=CN_TZ),
+            )
+            for range_start, range_end in explicit_ranges
+        ]
+        segment_seconds = max(1, int(segment_days * 7 / 5)) * 86_400
+        progress_total = sum(
+            max(1, math.ceil((range_end - range_start).total_seconds() / segment_seconds))
+            for range_start, range_end in request_ranges
+        )
+        if on_chunk_done is not None:
+            on_chunk_done(0, progress_total, "准备")
+
+    completed_steps = 0
+    for range_start, range_end in request_ranges:
+        range_steps = 0
+        if explicit_ranges is not None:
+            range_steps = max(
+                1,
+                math.ceil((range_end - range_start).total_seconds() / segment_seconds),
+            )
+
+            def _range_progress(
+                current: int,
+                total: int,
+                label: str,
+                *,
+                offset: int = completed_steps,
+                expected: int = range_steps,
+            ) -> None:
+                if on_chunk_done is None:
+                    return
+                mapped = offset + min(expected, math.ceil(max(0, current) / max(total, 1) * expected))
+                on_chunk_done(mapped, progress_total, label)
+
+            chunk_progress = _range_progress
+        else:
+            chunk_progress = on_chunk_done
+        sync_minute_batch(
+            symbols, start_time=range_start, end_time=range_end,
+            batch_size=limit.batch, rpm=limit.rpm,
+            on_chunk_done=chunk_progress,
+            segment_trading_days=segment_days,
+            on_segment=_persist,
+            asset_type="stock",
+        )
+        if explicit_ranges is not None:
+            completed_steps += range_steps
+            if on_chunk_done is not None:
+                on_chunk_done(completed_steps, progress_total, f"{range_start.date()}~{range_end.date()}")
 
     if written_box[0] == 0:
         return 0
@@ -1336,3 +1550,106 @@ def sync_and_persist_minute(
 
     logger.info("minute K synced: %d rows (%d symbols)", written, len(symbols))
     return written
+
+
+def sync_and_persist_minute_range_for_chan(
+    symbol: str,
+    repo: KlineRepository,
+    capset: CapabilitySet | None,
+    start_date: date,
+    end_date: date,
+) -> dict[str, object]:
+    """按缠论训练区间同步一只股票的分钟 K, 并复用现有分区写入规则。
+
+    与全市场分钟同步不同, 这个入口只服务缠论训练的单只股票和明确区间。
+    provider 必须来自设置中的 ``minute_data_provider``; 自定义 provider 出错时
+    不回退到 TickFlow, 避免训练记录混入未配置的数据源。
+    """
+    if start_date > end_date:
+        raise ValueError("minute range start_date must not be after end_date")
+    if repo.resolve_asset_type(symbol) != "stock":
+        return {"source": preferences.get_minute_data_provider(), "written": 0, "error": "only stock minute data is supported"}
+
+    provider_name = preferences.get_minute_data_provider()
+    provider, should_fallback, resolve_error = _resolve_minute_provider(provider_name)
+    if provider_name == "tickflow" and capset is not None and not capset.has(Cap.KLINE_MINUTE_BATCH):
+        return {"source": provider_name, "written": 0, "error": "minute batch capability is unavailable"}
+    if provider_name != "tickflow" and should_fallback:
+        return {"source": provider_name, "written": 0, "error": resolve_error or "configured minute provider is unavailable"}
+
+    start_time = datetime.combine(start_date, time(9, 25), tzinfo=CN_TZ)
+    end_time = datetime.combine(end_date, time(15, 5), tzinfo=CN_TZ)
+    minute_dir = repo.store.data_dir / "kline_minute"
+    written_box = [0]
+
+    def persist(frame: pl.DataFrame) -> None:
+        normalized = _normalize_minute(frame, default_symbol=symbol)
+        if normalized.is_empty():
+            return
+        required = {"symbol", "datetime", "open", "high", "low", "close"}
+        missing = required.difference(normalized.columns)
+        if missing:
+            raise ValueError(f"minute provider response missing columns: {sorted(missing)}")
+        scoped = normalized.filter(
+            (pl.col("symbol").cast(pl.Utf8).str.to_uppercase() == symbol.upper())
+            & pl.col("datetime").is_not_null()
+            & (pl.col("datetime").dt.date() >= start_date)
+            & (pl.col("datetime").dt.date() <= end_date)
+        )
+        if scoped.is_empty():
+            return
+        with repo._write_lock:
+            written_box[0] += _write_minute_partition(scoped, minute_dir)
+
+    sync_error: str | None = None
+    try:
+        if provider_name == "tickflow":
+            limits = resolve_limit(
+                capset,
+                Cap.KLINE_MINUTE_BATCH,
+                default_batch=1,
+                default_rpm=30,
+                default_rpm_when_unset=False,
+            )
+            sync_minute_batch(
+                [symbol],
+                start_time=start_time,
+                end_time=end_time,
+                batch_size=limits.batch,
+                rpm=limits.rpm,
+                segment_trading_days=preferences.get_minute_sync_segment_days(),
+                on_segment=persist,
+                asset_type="stock",
+            )
+        else:
+            assert provider is not None
+            frame = provider.get_minute(
+                [symbol],
+                start_time=start_time,
+                end_time=end_time,
+                asset_type="stock",
+                freq="1m",
+            )
+            persist(frame)
+    except Exception as exc:
+        logger.warning("chan minute sync failed for %s [%s, %s] from %s: %s", symbol, start_date, end_date, provider_name, exc)
+        sync_error = str(exc)
+
+    refresh_error: str | None = None
+    if written_box[0] > 0:
+        try:
+            data_dir = repo.store.data_dir.as_posix()
+            with repo._write_lock:
+                repo.db.execute(
+                    f"""CREATE OR REPLACE VIEW kline_minute AS
+                        SELECT * FROM read_parquet('{data_dir}/kline_minute/**/*.parquet', union_by_name=true)"""
+                )
+        except Exception as exc:
+            logger.warning("refresh kline_minute view failed after chan sync: %s", exc)
+            refresh_error = f"refresh kline_minute view failed: {exc}"
+    errors = [value for value in (sync_error, refresh_error) if value]
+    return {
+        "source": provider_name,
+        "written": written_box[0],
+        "error": "; ".join(errors) if errors else None,
+    }

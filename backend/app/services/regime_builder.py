@@ -313,7 +313,8 @@ def _aggregate_daily(df: pl.DataFrame, index_pct_map: dict | None = None) -> pl.
             # 梯队指标(阶段判定所需); phase 由 refresh_phase_labels 统一重标
             **finalize_ladder_row(r),
         })
-    return pl.DataFrame(rows) if rows else pl.DataFrame()
+    # 日序可空指标可能连续数百天为 None, 需扫描完整行集后再确定列类型。
+    return pl.DataFrame(rows, infer_schema_length=None) if rows else pl.DataFrame()
 
 
 # 全量回填分批参数(控制内存峰值) —— 实际值从用户偏好读取(preferences.get_regime_*),

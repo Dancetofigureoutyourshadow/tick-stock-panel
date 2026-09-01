@@ -5,12 +5,15 @@ import { api, type MinuteKlineSession } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
 import { toast } from '@/components/Toast'
 import { EChartsMultiDayIntraday } from '@/components/EChartsMultiDayIntraday'
+import { StockDepth5Panel } from '@/components/StockDepth5Panel'
+import { chinaToday, useFocusMarketStream } from '@/lib/useFocusMarketStream'
 
 interface Props {
   symbol: string
   days: number
   height?: number
   refetchIntervalMs?: number
+  showDepth5?: boolean
   onPriceDoubleClick?: (price: number, currentPrice: number) => void
   priceLines?: { value: number; label?: string; color?: string }[]
 }
@@ -24,10 +27,16 @@ export function StockMultiDayIntradayChart({
   days,
   height = 420,
   refetchIntervalMs,
+  showDepth5 = false,
   onPriceDoubleClick,
   priceLines,
 }: Props) {
   const queryClient = useQueryClient()
+  const focusStream = useFocusMarketStream({
+    symbol,
+    date: chinaToday(),
+    enabled: showDepth5,
+  })
   const history = useQuery({
     queryKey: QK.klineMinuteRange(symbol, days),
     queryFn: () => api.klineMinuteRange(symbol, days),
@@ -40,7 +49,7 @@ export function StockMultiDayIntradayChart({
     // live: 当日盘中直接实时拉取, 不被分钟增量落盘的本地分区(≥60s一轮)拖慢
     queryFn: () => api.klineMinute(symbol, undefined, true),
     enabled: !!symbol,
-    refetchInterval: refetchIntervalMs,
+    refetchInterval: focusStream.streamEnabled ? false : refetchIntervalMs,
   })
 
   const sessions = useMemo(() => {
@@ -157,7 +166,8 @@ export function StockMultiDayIntradayChart({
   }
 
   return (
-    <div style={{ height }}>
+    <div className="flex flex-wrap items-start gap-3">
+      <div className="min-w-0 flex-1" style={{ height }}>
       {(showCoverage || (syncMinute.isPending && !isIndex)) && (
         <div className="flex h-8 items-center justify-between gap-3 border-b border-border/60 bg-elevated/40 px-3 text-[11px]">
           {syncMinute.isPending ? (
@@ -193,6 +203,19 @@ export function StockMultiDayIntradayChart({
       />
       {syncMinute.isError && (
         <div className="px-3 pt-1 text-center text-[11px] text-danger">{errorMessage(syncMinute.error)}</div>
+      )}
+      </div>
+      {showDepth5 && focusStream.isCurrentDate && (
+        <div className="basis-full w-full shrink-0">
+          <StockDepth5Panel
+            snapshot={focusStream.depth}
+            status={focusStream.depthStatus}
+            error={focusStream.depthError}
+            provider={focusStream.depthProvider}
+            updatedAt={focusStream.updatedAt}
+            className="min-h-0"
+          />
+        </div>
       )}
     </div>
   )

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import * as echarts from 'echarts'
 import type { ECharts, EChartsOption } from 'echarts'
 import type { MinuteKlineRow, MinuteKlineSession } from '@/lib/api'
-import { computeIntradayAverage, formatMinuteTime, FULL_DAY_TIMES } from '@/lib/intraday-chart'
+import { computeIntradayAverage, formatMinuteTime, FULL_DAY_TIMES, minuteBarDelta } from '@/lib/intraday-chart'
 import { useChartTheme } from '@/lib/theme'
 
 const COLORS = {
@@ -64,19 +64,17 @@ function buildModel(sessions: MinuteKlineSession[]) {
     }
 
     const averagePrices = computeIntradayAverage(session.rows)
-    const rowsByTime = new Map<string, { row: MinuteKlineRow; average: number }>()
+    const rowsByTime = new Map<string, { row: MinuteKlineRow; average: number; rowIndex: number }>()
     session.rows.forEach((row, index) => {
       rowsByTime.set(formatMinuteTime(row.datetime), {
         row,
         average: averagePrices[index],
+        rowIndex: index,
       })
     })
 
     const dayValues: (number | null)[] = []
     const dayAverages: (number | null)[] = []
-    // 量柱着色基准: 前一分钟 close; 当日第一根用 session 昨收。
-    // 不用 row.open — stock-sdk 历史日无真实分钟 open(为 null), close-vs-open 会全偏。
-    let prevRef: number | null = session.prev_close
     for (const time of FULL_DAY_TIMES) {
       const point = rowsByTime.get(time)
       const index = categories.length
@@ -88,22 +86,20 @@ function buildModel(sessions: MinuteKlineSession[]) {
         continue
       }
 
-      const { row, average } = point
+      const { row, average, rowIndex } = point
+      const delta = minuteBarDelta(row, session.rows[rowIndex - 1]?.close ?? session.prev_close)
       dayValues.push(row.close)
       dayAverages.push(average)
       volumeData.push({
         value: row.volume,
         itemStyle: {
-          color: prevRef == null
-            ? COLORS.volumeFlat
-            : row.close > prevRef
-              ? COLORS.volumeUp
-              : row.close < prevRef
-                ? COLORS.volumeDown
-                : COLORS.volumeFlat,
+          color: delta > 0
+            ? COLORS.volumeUp
+            : delta < 0
+              ? COLORS.volumeDown
+              : COLORS.volumeFlat,
         },
       })
-      prevRef = row.close
       priceValues.push(row.low, row.high, average)
       pointByIndex.set(index, {
         date: session.date,

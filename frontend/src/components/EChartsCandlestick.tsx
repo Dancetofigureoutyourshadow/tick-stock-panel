@@ -2,6 +2,9 @@ import { useEffect, useRef, useCallback, useMemo } from 'react'
 import { chartTheme, getTheme, useTheme } from '@/lib/theme'
 import * as echarts from 'echarts'
 import type { ECharts, EChartsOption } from 'echarts'
+import { getKlineLimitColor } from '@/lib/kline-colors'
+import { chartInspectionId } from '@/lib/chan-inspection'
+import { formatPriceAxisLabel } from '@/lib/chart-axis'
 
 export interface OHLC {
   date: string
@@ -10,6 +13,8 @@ export interface OHLC {
   low: number
   close: number
   volume?: number
+  signal_limit_up?: boolean | null
+  signal_limit_down?: boolean | null
   ma5?: number | null
   ma10?: number | null
   ma20?: number | null
@@ -30,11 +35,24 @@ export interface OHLC {
 export interface ChartMarker {
   date: string
   kind: 'buy' | 'sell' | 'neutral'
+  price?: number
   label?: string
+  /** 固定图形锚点在对应 K 线价格，文字仍可放在价格上下方。 */
+  lockToPrice?: boolean
+  /** 圆形交易标记（如训练页的 B/S）。 */
+  circle?: boolean
+  /** 标记相对 K 线的垂直像素偏移。 */
+  offsetY?: number
+  /** 同一根 K 线上同侧标签的层间距索引。 */
+  labelLevel?: number
   /** 若为 true，标记放在蜡烛上方（如涨停连板标签）。 */
   above?: boolean
   /** 自定义标签颜色，覆盖默认的 kind 对应色。 */
   color?: string
+  /** Tooltip/inspection text; label remains the compact chart glyph. */
+  description?: string
+  /** Optional opaque id reported when this marker is clicked. */
+  inspectionId?: string
 }
 
 export interface ChartRange {
@@ -42,6 +60,48 @@ export interface ChartRange {
   end: string
   label?: string
   color?: string
+  low?: number
+  high?: number
+  inspectionId?: string
+}
+
+function markerLabelDistance(markers: ChartMarker[] | undefined, markerIndex: number, marker: ChartMarker): number {
+  if (marker.circle) return 0
+  const isAbove = marker.above ?? marker.kind === 'sell'
+  const occupiedLevel = (markers ?? [])
+    .slice(0, markerIndex)
+    .filter(peer => !peer.circle
+      && peer.date === marker.date
+      && (peer.above ?? peer.kind === 'sell') === isAbove)
+    .length
+  const level = Math.max(marker.labelLevel ?? 0, occupiedLevel)
+  return 8 + level * 18
+}
+
+function markerTooltip(marker: ChartMarker) {
+  if (!marker.description) return undefined
+  return {
+    show: true,
+    trigger: 'item',
+    renderMode: 'richText',
+    formatter: marker.description,
+    backgroundColor: CT().tooltipBg,
+    borderColor: CT().border,
+    borderWidth: 1,
+    textStyle: { color: CT().tooltipText, fontSize: 11, lineHeight: 17 },
+    padding: [7, 9],
+  }
+}
+
+export interface ChartStructureLine {
+  start: string
+  end: string
+  startPrice: number
+  endPrice: number
+  color?: string
+  width?: number
+  type?: 'solid' | 'dashed'
+  inspectionId?: string
 }
 
 export interface ChartPriceLine {
@@ -322,16 +382,28 @@ interface Props {
   data: OHLC[]
   markers?: ChartMarker[]
   ranges?: ChartRange[]
+  structureLines?: ChartStructureLine[]
   priceLines?: ChartPriceLine[]
   height?: number
   showMA?: boolean
+  /** 是否将 MA5/MA20/MA60 放在顶部信息栏第一行居中显示。 */
+  centerMovingAverages?: boolean
   showInfoBar?: boolean
+  /** 是否在主图信息栏显示当前 K 线日期；默认显示。 */
+  showInfoDate?: boolean
+  /** 是否显示从所选 K 线开盘价到最新 K 线收盘价的涨跌；默认隐藏。 */
+  showSinceLatest?: boolean
+  /** 是否显示日期轴与十字线日期标签；默认保持显示。 */
+  showDateLabels?: boolean
   showMarkers?: boolean
   onToggleMarkers?: () => void
   stockInfo?: StockInfo
   symbol?: string
   linkedPrice?: number | null
-  onDateClick?: (date: string) => void
+  /** 当前分时浮窗对应的日 K；显示竖向定位线。 */
+  selectedDate?: string | null
+  onDateClick?: (date: string, anchor?: ChartClickAnchor) => void
+  onInspectionClick?: (inspectionId: string) => void
   onPriceDoubleClick?: (price: number, currentPrice: number) => void
   /** 默认可见蜡烛根数, 默认 60 */
   visibleBars?: number
@@ -339,6 +411,25 @@ interface Props {
   activeIndicators?: string[]
   /** 成交量柱相对前 N 个交易日均量的显示设置 */
   volumeCompare?: VolumeCompareConfig
+}
+
+export interface ChartClickAnchor {
+  clientX: number
+  clientY: number
+}
+
+function chartClickAnchor(params: any, container: HTMLDivElement): ChartClickAnchor | undefined {
+  const nativeEvent = params?.event?.event
+  const clientX = Number(nativeEvent?.clientX)
+  const clientY = Number(nativeEvent?.clientY)
+  if (Number.isFinite(clientX) && Number.isFinite(clientY)) {
+    return { clientX, clientY }
+  }
+  const offsetX = Number(params?.event?.offsetX)
+  const offsetY = Number(params?.event?.offsetY)
+  if (!Number.isFinite(offsetX) || !Number.isFinite(offsetY)) return undefined
+  const rect = container.getBoundingClientRect()
+  return { clientX: rect.left + offsetX, clientY: rect.top + offsetY }
 }
 
 // 序列颜色 (双主题通用); 画布轴/网格/文字等主题相关色走 CT() 动态取
@@ -465,6 +556,7 @@ function buildOption(
   dateIndexMap: Map<string, number>,
   markers: ChartMarker[] | undefined,
   ranges: ChartRange[] | undefined,
+  structureLines: ChartStructureLine[] | undefined,
   priceLines: ChartPriceLine[] | undefined,
   showMA: boolean,
   compact: boolean,
@@ -473,54 +565,99 @@ function buildOption(
   infoIdx: number,
   linkedPrice: number | null | undefined,
   volumeCompare: VolumeCompareConfig,
+  showDateLabels: boolean,
+  selectedDate: string | null | undefined,
 ): EChartsOption {
-  const candleData = data.map(d => [d.open, d.close, d.low, d.high])
+  const candleData = data.map(d => {
+    const limitColor = getKlineLimitColor(d)
+    return {
+      value: [d.open, d.close, d.low, d.high],
+      ...(limitColor ? {
+        itemStyle: {
+          color: limitColor,
+          color0: limitColor,
+          borderColor: limitColor,
+          borderColor0: limitColor,
+        },
+      } : {}),
+    }
+  })
 
   const hasMA = showMA && data.some(d => d.ma5 != null || d.ma10 != null || d.ma20 != null || d.ma60 != null)
 
   const markPointData: any[] = []
   if (markers && markers.length > 0) {
-    for (const m of markers) {
+    for (const [markerIndex, m] of markers.entries()) {
       const idx = dateIndexMap.get(m.date)
       if (idx == null) continue
       const d = data[idx]
       const isBuy = m.kind === 'buy'
       const isSell = m.kind === 'sell'
+      const isAbove = m.above ?? isSell
+      const labelDistance = markerLabelDistance(markers, markerIndex, m)
 
-      if (m.above) {
+      if (isAbove && !m.circle) {
         const dotColor = m.color ?? (isBuy ? '#FACC15' : CT().text)
         if (compact) {
           markPointData.push({
-            name: m.date, coord: [m.date, d.high],
-            symbol: 'circle', symbolSize: 4, symbolOffset: [0, -10],
+            name: m.date, value: m.description ?? m.date, inspectionId: m.inspectionId, coord: [idx, m.price ?? d.high],
+            symbol: 'circle', symbolSize: 4, symbolOffset: [0, m.lockToPrice ? 0 : (m.offsetY ?? (m.kind === 'neutral' ? 0 : -10))],
             itemStyle: { color: dotColor, cursor: 'pointer' },
+            tooltip: markerTooltip(m),
             label: { show: false }, z: 100, zlevel: 10,
           })
         } else {
           markPointData.push({
-            name: m.date, coord: [m.date, d.high],
-            symbol: 'circle', symbolSize: 12, symbolOffset: [0, -2],
-            itemStyle: { color: 'transparent' },
+            name: m.date, value: m.description ?? m.date, inspectionId: m.inspectionId, coord: [idx, m.price ?? d.high],
+            symbol: 'circle', symbolSize: m.lockToPrice ? 8 : 12, symbolOffset: [0, m.lockToPrice ? 0 : (m.offsetY ?? (m.kind === 'neutral' ? 0 : -2))],
+            itemStyle: { color: m.lockToPrice ? dotColor : 'transparent' },
+            tooltip: markerTooltip(m),
             label: {
-              show: true, formatter: m.label ?? '', position: 'top', distance: 0,
+              show: true, formatter: m.label ?? '', position: 'top', distance: labelDistance,
               color: dotColor, fontSize: 10, fontWeight: 'normal',
               fontFamily: 'JetBrains Mono, monospace',
             },
             z: 100, zlevel: 10,
           })
         }
+      } else if (m.circle) {
+        markPointData.push({
+          name: m.date, value: m.description ?? m.label ?? '', inspectionId: m.inspectionId,
+          coord: [idx, m.price ?? (isBuy ? d.low : d.high)],
+          symbol: 'circle',
+          symbolSize: 18,
+          symbolOffset: [0, m.offsetY ?? (isBuy ? 18 : -18)],
+          itemStyle: { color: m.color ?? (isBuy ? THEME.bull : THEME.bear), borderColor: CT().tooltipBg, borderWidth: 1 },
+          tooltip: markerTooltip(m),
+          label: {
+            show: !!m.label,
+            formatter: m.label ?? '',
+            position: 'inside',
+            color: '#FFFFFF',
+            fontSize: 11,
+            fontWeight: 'bold',
+            fontFamily: 'JetBrains Mono, monospace',
+          },
+          z: 120,
+          zlevel: 20,
+        })
       } else {
         markPointData.push({
-          name: m.label ?? '',
-          coord: [m.date, isBuy ? d.low : d.high],
-          symbol: 'arrow', symbolSize: 12,
-          symbolRotate: isBuy ? 0 : 180,
-          symbolOffset: isBuy ? [0, '60%'] : [0, '-60%'],
-          itemStyle: { color: isBuy ? THEME.bull : isSell ? THEME.bear : CT().text },
+          name: m.date, value: m.description ?? m.label ?? '', inspectionId: m.inspectionId,
+          coord: [idx, m.price ?? (isAbove ? d.high : d.low)],
+          symbol: m.circle ? 'circle' : m.kind === 'neutral' ? 'circle' : 'arrow', symbolSize: m.circle ? 18 : m.kind === 'neutral' ? 8 : 12,
+          symbolRotate: m.circle || m.kind === 'neutral' ? undefined : isBuy ? 0 : 180,
+          symbolOffset: [
+            0,
+            m.lockToPrice ? 0 : (m.offsetY ?? (m.circle ? (isBuy ? 18 : -18) : (m.kind === 'neutral' ? 0 : (isAbove ? -60 : 60)))),
+          ],
+          itemStyle: { color: m.circle ? (m.color ?? (isBuy ? THEME.bull : THEME.bear)) : (isBuy ? THEME.bull : isSell ? THEME.bear : CT().text) },
+          tooltip: markerTooltip(m),
           label: {
             show: !!m.label, formatter: m.label ?? '',
-            position: isBuy ? 'bottom' : 'top', distance: 8,
-            color: CT().text, fontSize: 10,
+            position: m.circle ? 'inside' : (isAbove ? 'top' : 'bottom'), distance: labelDistance,
+            color: m.circle ? '#FFFFFF' : CT().text, fontSize: m.circle ? 11 : 10,
+            fontWeight: m.circle ? 'bold' : 'normal',
             fontFamily: 'JetBrains Mono, monospace',
           },
         })
@@ -545,6 +682,19 @@ function buildOption(
   if (activeSubDefs.length > 0) subTotalH += activeSubDefs.length * SUB_GAP_PX
 
   const candleAvail = Math.max(containerHeight - topPad - candleBottomPad - subTotalH, 100)
+  const markerOffsetPx = Math.max(
+    28,
+    ...(markers ?? []).map((marker, markerIndex) => (
+      Math.abs(marker.offsetY ?? 0)
+      + (marker.circle ? 12 : markerLabelDistance(markers, markerIndex, marker) + 14)
+    )),
+  )
+  const safeMarkerOffsetPx = Math.min(markerOffsetPx, candleAvail * 0.12)
+  // Markers use pixel offsets, so convert that space to a data-range ratio
+  // against the available plot height. Dividing by the remaining height
+  // compounds the ratio when markers are dense and leaves large empty bands
+  // above and below the candles.
+  const markerPaddingRatio = safeMarkerOffsetPx / Math.max(1, candleAvail)
 
   const grids: any[] = []
   const xAxes: any[] = []
@@ -555,66 +705,77 @@ function buildOption(
   const priceLineValues = (priceLines ?? [])
     .map(line => line.value)
     .filter(value => Number.isFinite(value) && value > 0)
-  const axisMin = priceLineValues.length > 0
-    ? ({ min, max }: { min: number; max: number }) => {
-        const nextMin = Math.min(min, ...priceLineValues)
-        const nextMax = Math.max(max, ...priceLineValues)
-        return nextMin - Math.max((nextMax - nextMin) * 0.03, nextMax * 0.001)
-      }
-    : undefined
-  const axisMax = priceLineValues.length > 0
-    ? ({ min, max }: { min: number; max: number }) => {
-        const nextMin = Math.min(min, ...priceLineValues)
-        const nextMax = Math.max(max, ...priceLineValues)
-        return nextMax + Math.max((nextMax - nextMin) * 0.03, nextMax * 0.001)
-      }
-    : undefined
+  const axisBounds = ({ min, max }: { min: number; max: number }) => {
+    const nextMin = Math.min(min, ...priceLineValues)
+    const nextMax = Math.max(max, ...priceLineValues)
+    const span = Math.max(nextMax - nextMin, Math.abs(nextMax) * 0.01, 0.01)
+    const padding = span * Math.max(0.03, markerPaddingRatio)
+    return { min: nextMin - padding, max: nextMax + padding }
+  }
 
   // ===== grid 0: K线主图 =====
   grids.push({ left, right, top: topPad, height: candleAvail })
   xAxes.push({
     type: 'category', data: dates, boundaryGap: true,
     axisLine: { lineStyle: { color: CT().border } },
-    axisLabel: { color: CT().text, fontSize: 10, fontFamily: 'JetBrains Mono, monospace' },
+    axisLabel: { show: showDateLabels, color: CT().text, fontSize: 10, fontFamily: 'JetBrains Mono, monospace' },
     axisTick: { show: false },
     splitLine: { show: false },
   })
   yAxes.push({
     scale: true,
-    min: axisMin,
-    max: axisMax,
-    // 上下各留 3% 边距: 防止最高/最低点的蜡烛贴边, 涨停/炸板标签被遮挡
-    boundaryGap: [0.03, 0.03],
+    min: (params: { min: number; max: number }) => axisBounds(params).min,
+    max: (params: { min: number; max: number }) => axisBounds(params).max,
+    // 价格边界根据最外侧标记轨道动态留白，缩放后顶/底标记仍不会被图表边界压叠。
+    boundaryGap: [0, 0],
     splitArea: { show: false },
     axisLine: { show: false }, axisTick: { show: false },
     splitLine: { lineStyle: { color: CT().grid } },
-    axisLabel: { color: CT().text, fontSize: 10, fontFamily: 'JetBrains Mono, monospace' },
+    axisLabel: {
+      color: CT().text,
+      fontSize: 10,
+      fontFamily: 'JetBrains Mono, monospace',
+      // axisBounds deliberately keeps fractional padding for structure markers.
+      // Do not expose that calculation precision as a long, clipped price label.
+      formatter: formatPriceAxisLabel,
+    },
   })
   xAxisIndices.push(0)
 
   const markAreaData = (ranges ?? [])
     .filter(r => dateIndexMap.has(r.start) && dateIndexMap.has(r.end))
-    .map(r => ([
-      {
-        name: r.label ?? '',
-        xAxis: r.start,
-        itemStyle: { color: r.color ?? 'rgba(59,130,246,0.08)' },
-        label: {
-          show: !!r.label,
-          position: 'insideTop',
-          distance: 8,
-          color: CT().tooltipText,
-          backgroundColor: CT().tooltipBg,
-          borderColor: 'rgba(59,130,246,0.35)',
-          borderWidth: 1,
-          borderRadius: 4,
-          padding: [2, 6],
-          fontSize: 10,
-          fontFamily: 'JetBrains Mono, monospace',
+    .map(r => {
+      const startIndex = dateIndexMap.get(r.start) as number
+      const endIndex = dateIndexMap.get(r.end) as number
+      const hasPriceBounds = Number.isFinite(r.low) && Number.isFinite(r.high)
+      return [
+        {
+          name: r.label ?? '',
+          inspectionId: r.inspectionId,
+          xAxis: startIndex,
+          ...(hasPriceBounds ? { yAxis: r.high } : {}),
+          itemStyle: {
+            color: r.color ?? 'rgba(139,92,246,0.18)',
+            borderColor: 'rgba(167,139,250,0.75)',
+            borderWidth: hasPriceBounds ? 1 : 0,
+          },
+          label: {
+            show: !!r.label,
+            position: 'insideTop',
+            distance: 8,
+            color: CT().tooltipText,
+            backgroundColor: CT().tooltipBg,
+            borderColor: 'rgba(167,139,250,0.75)',
+            borderWidth: 1,
+            borderRadius: 4,
+            padding: [2, 6],
+            fontSize: 10,
+            fontFamily: 'JetBrains Mono, monospace',
+          },
         },
-      },
-      { xAxis: r.end },
-    ]))
+        { xAxis: endIndex, inspectionId: r.inspectionId, ...(hasPriceBounds ? { yAxis: r.low } : {}) },
+      ]
+    })
 
   const markLineData: any[] = (priceLines ?? [])
     .filter(line => Number.isFinite(line.value))
@@ -645,6 +806,28 @@ function buildOption(
       return { yAxis: line.value, lineStyle, label, symbol: 'none' }
     })
 
+  for (const line of structureLines ?? []) {
+    const startIndex = dateIndexMap.get(line.start)
+    const endIndex = dateIndexMap.get(line.end)
+    if (startIndex == null || endIndex == null) continue
+    if (!Number.isFinite(line.startPrice) || !Number.isFinite(line.endPrice)) continue
+    markLineData.push([
+      { xAxis: startIndex, yAxis: line.startPrice, inspectionId: line.inspectionId },
+      {
+        xAxis: endIndex,
+        yAxis: line.endPrice,
+        inspectionId: line.inspectionId,
+        symbol: 'none',
+        lineStyle: {
+          color: line.color ?? '#38BDF8',
+          width: line.width ?? 1.5,
+          type: line.type ?? 'solid',
+        },
+        label: { show: false },
+      },
+    ])
+  }
+
   if (linkedPrice != null) {
     markLineData.push({
       yAxis: linkedPrice,
@@ -666,6 +849,16 @@ function buildOption(
     })
   }
 
+  const selectedDateIndex = selectedDate ? dateIndexMap.get(selectedDate) : undefined
+  if (selectedDateIndex != null) {
+    markLineData.push({
+      xAxis: selectedDateIndex,
+      lineStyle: { color: '#60A5FA', type: 'dashed', width: 1.5, opacity: 0.95 },
+      label: { show: false },
+      symbol: 'none',
+    })
+  }
+
   series.push({
     name: 'K', type: 'candlestick', data: candleData,
     animation: false,
@@ -675,8 +868,8 @@ function buildOption(
       cursor: 'pointer',
     },
     markPoint: markPointData.length > 0 ? { data: markPointData, animation: false } : undefined,
-    markArea: markAreaData.length > 0 ? { silent: true, data: markAreaData } : undefined,
-    markLine: markLineData.length > 0 ? { silent: true, symbol: 'none', data: markLineData, animation: false } : undefined,
+    markArea: markAreaData.length > 0 ? { silent: !(ranges ?? []).some(range => !!range.inspectionId), data: markAreaData } : undefined,
+    markLine: markLineData.length > 0 ? { silent: !(structureLines ?? []).some(line => !!line.inspectionId), symbol: 'none', data: markLineData, animation: false } : undefined,
   })
 
   if (hasMA) {
@@ -774,6 +967,7 @@ function buildOption(
     axisPointer: {
       link: [{ xAxisIndex: 'all' }],
       label: {
+        show: showDateLabels,
         backgroundColor: CT().crosshairLabelBg,
         fontFamily: 'JetBrains Mono, monospace',
         fontSize: 10,
@@ -802,16 +996,23 @@ export function EChartsCandlestick({
   data,
   markers,
   ranges,
+  structureLines,
   priceLines,
   height = 480,
   showMA = true,
+  centerMovingAverages = false,
   showInfoBar = true,
+  showInfoDate = true,
+  showSinceLatest = false,
+  showDateLabels = true,
   showMarkers: showMarkersProp = true,
   onToggleMarkers: _onToggleMarkers,
   stockInfo,
   symbol: _symbol,
   linkedPrice,
+  selectedDate,
   onDateClick,
+  onInspectionClick,
   onPriceDoubleClick,
   visibleBars = 60,
   activeIndicators = [],
@@ -823,6 +1024,8 @@ export function EChartsCandlestick({
   dataRef.current = data
   const onDateClickRef = useRef(onDateClick)
   onDateClickRef.current = onDateClick
+  const onInspectionClickRef = useRef(onInspectionClick)
+  onInspectionClickRef.current = onInspectionClick
   const onPriceDoubleClickRef = useRef(onPriceDoubleClick)
   onPriceDoubleClickRef.current = onPriceDoubleClick
   // 主题: buildOption/信息栏内部通过 CT() 动态取调色板, 这里只负责切换时触发重建
@@ -873,7 +1076,7 @@ export function EChartsCandlestick({
   activeSubDefs.forEach(def => { subTotalH += INFO_BAR_H + def.height })
   if (activeSubDefs.length > 0) subTotalH += activeSubDefs.length * SUB_GAP_PX
 
-  const mainInfoBarH = showInfoBar ? 40 : 0
+  const mainInfoBarH = showInfoBar ? (centerMovingAverages ? 20 : 40) : 0
   const minCandleH = 120
 
   const chartHeight = Math.max(height - mainInfoBarH, 8 + minCandleH + 14 + subTotalH)
@@ -907,12 +1110,13 @@ export function EChartsCandlestick({
     const prev = idx > 0 ? data[idx - 1] : null
     const chg = prev ? d.close - prev.close : 0
     const isUp = chg >= 0
-    const clr = isUp ? THEME.bull : THEME.bear
+    const clr = getKlineLimitColor(d) ?? (isUp ? THEME.bull : THEME.bear)
     const floatShares = stockInfo?.float_shares
     const turnoverRate = floatShares && d.volume ? (d.volume * 100 / floatShares * 100) : null
 
-    let html = `<div style="display:flex;align-items:center;gap:6px;padding:0 8px;font:11px 'JetBrains Mono',monospace;select:none;height:20px;flex-wrap:wrap">`
-    html += `<span style="color:${CT().text}">${d.date}</span>`
+    let html = `<div style="position:relative;display:flex;align-items:center;gap:6px;padding:0 8px;font:11px 'JetBrains Mono',monospace;select:none;height:20px;white-space:nowrap;overflow:hidden">`
+    html += `<div style="display:flex;align-items:center;gap:6px;min-width:0;white-space:nowrap;overflow:hidden">`
+    if (showInfoDate) html += `<span style="color:${CT().text}">${d.date}</span>`
     html += `<span style="color:${CT().text}">开</span>`
     html += `<span style="color:${d.open >= d.close ? THEME.bear : THEME.bull}">${d.open.toFixed(2)}</span>`
     html += `<span style="color:${CT().text}">高</span>`
@@ -926,14 +1130,31 @@ export function EChartsCandlestick({
       const chgPct = (chg / prev.close * 100)
       html += `<span style="color:${clr};margin-left:8px">${isUp ? '+' : ''}${chgPct.toFixed(2)}%</span>`
     }
+    if (showSinceLatest && d.open > 0) {
+      const latestClose = data[data.length - 1]?.close ?? d.close
+      const sinceAmount = latestClose - d.open
+      const sincePct = sinceAmount / d.open * 100
+      const sinceColor = sinceAmount >= 0 ? THEME.bull : THEME.bear
+      const sinceSign = sinceAmount > 0 ? '+' : ''
+      html += `<span style="color:${CT().text};margin-left:8px">至今涨跌</span>`
+      html += `<span style="color:${sinceColor};font-weight:600">${sinceSign}${sinceAmount.toFixed(2)} / ${sinceSign}${sincePct.toFixed(2)}%</span>`
+    }
     if (turnoverRate != null) {
       html += `<span style="color:${CT().text}">换手</span>`
       html += `<span style="color:${CT().text}">${turnoverRate.toFixed(2)}%</span>`
     }
     html += `</div>`
+    if (centerMovingAverages && showMA && (d.ma5 != null || d.ma20 != null || d.ma60 != null)) {
+      html += `<div style="position:absolute;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:10px;white-space:nowrap;pointer-events:none">`
+      if (d.ma5 != null) html += `<span style="color:${THEME.ma5}">MA5:${Number(d.ma5).toFixed(2)}</span>`
+      if (d.ma20 != null) html += `<span style="color:${THEME.ma20}">MA20:${Number(d.ma20).toFixed(2)}</span>`
+      if (d.ma60 != null) html += `<span style="color:${THEME.ma60}">MA60:${Number(d.ma60).toFixed(2)}</span>`
+      html += `</div>`
+    }
+    html += `</div>`
 
     // 第二行: MA + BOLL
-    if (showMA) {
+    if (showMA && !centerMovingAverages) {
       html += `<div style="display:flex;align-items:center;gap:10px;padding:0 8px;font:11px 'JetBrains Mono',monospace;select:none;height:20px;flex-wrap:wrap">`
       if (d.ma5 != null) html += `<span style="color:${THEME.ma5}">MA5:${Number(d.ma5).toFixed(2)}</span>`
       if (d.ma10 != null) html += `<span style="color:${THEME.ma10}">MA10:${Number(d.ma10).toFixed(2)}</span>`
@@ -944,9 +1165,8 @@ export function EChartsCandlestick({
       }
       html += `</div>`
     }
-
     return html
-  }, [data, stockInfo, showMA, activeIndicators])
+  }, [data, stockInfo, showMA, showInfoDate, showSinceLatest, activeIndicators, centerMovingAverages])
   getInfoBarHTMLRef.current = getInfoBarHTML
 
   // data 变化时重置 infoIdx
@@ -994,15 +1214,20 @@ export function EChartsCandlestick({
     })
 
     chart.on('click', (params: any) => {
+      const inspectionId = chartInspectionId(params)
+      if (inspectionId) {
+        onInspectionClickRef.current?.(inspectionId)
+        return
+      }
       if (params.componentType === 'markPoint' && params.name) {
-        onDateClickRef.current?.(params.name)
+        onDateClickRef.current?.(params.name, chartClickAnchor(params, el))
         return
       }
       if (params.seriesName !== 'K' || params.dataIndex == null) return
       const d = dataRef.current
       const idx = params.dataIndex
       if (idx >= 0 && idx < d.length) {
-        onDateClickRef.current?.(d[idx].date)
+        onDateClickRef.current?.(d[idx].date, chartClickAnchor(params, el))
       }
     })
 
@@ -1058,28 +1283,32 @@ export function EChartsCandlestick({
     const compact = compactRef.current
     const seriesUpdates: any[] = []
     const markPointData: any[] = []
-    for (const m of mkrs ?? []) {
+    for (const [markerIndex, m] of (mkrs ?? []).entries()) {
       const idx = dateIndexMap.get(m.date)
       if (idx == null) continue
       const d = data[idx]
       const isBuy = m.kind === 'buy'
       const isSell = m.kind === 'sell'
-      if (m.above) {
+      const isAbove = m.above ?? isSell
+      const labelDistance = markerLabelDistance(mkrs, markerIndex, m)
+      if (isAbove && !m.circle) {
         const dotColor = m.color ?? (isBuy ? '#FACC15' : CT().text)
         if (compact) {
           markPointData.push({
-            name: m.date, coord: [m.date, d.high],
-            symbol: 'circle', symbolSize: 4, symbolOffset: [0, -10],
+            name: m.date, value: m.description ?? m.date, inspectionId: m.inspectionId, coord: [idx, m.price ?? d.high],
+            symbol: 'circle', symbolSize: 4, symbolOffset: [0, m.lockToPrice ? 0 : (m.offsetY ?? (m.kind === 'neutral' ? 0 : -10))],
             itemStyle: { color: dotColor, cursor: 'pointer' },
+            tooltip: markerTooltip(m),
             label: { show: false }, z: 100, zlevel: 10,
           })
         } else {
           markPointData.push({
-            name: m.date, coord: [m.date, d.high],
-            symbol: 'circle', symbolSize: 12, symbolOffset: [0, -2],
-            itemStyle: { color: 'transparent' },
+            name: m.date, value: m.description ?? m.date, inspectionId: m.inspectionId, coord: [idx, m.price ?? d.high],
+            symbol: 'circle', symbolSize: m.lockToPrice ? 8 : 12, symbolOffset: [0, m.lockToPrice ? 0 : (m.offsetY ?? (m.kind === 'neutral' ? 0 : -2))],
+            itemStyle: { color: m.lockToPrice ? dotColor : 'transparent' },
+            tooltip: markerTooltip(m),
             label: {
-              show: true, formatter: m.label ?? '', position: 'top', distance: 0,
+              show: true, formatter: m.label ?? '', position: 'top', distance: labelDistance,
               color: dotColor, fontSize: 10, fontWeight: 'normal',
               fontFamily: 'JetBrains Mono, monospace',
             },
@@ -1088,16 +1317,21 @@ export function EChartsCandlestick({
         }
       } else {
         markPointData.push({
-          name: m.label ?? '',
-          coord: [m.date, isBuy ? d.low : d.high],
-          symbol: 'arrow', symbolSize: 12,
-          symbolRotate: isBuy ? 0 : 180,
-          symbolOffset: isBuy ? [0, '60%'] : [0, '-60%'],
-          itemStyle: { color: isBuy ? THEME.bull : isSell ? THEME.bear : CT().text },
+          name: m.date, value: m.description ?? m.label ?? '', inspectionId: m.inspectionId,
+          coord: [idx, m.price ?? (isAbove ? d.high : d.low)],
+          symbol: m.circle ? 'circle' : m.kind === 'neutral' ? 'circle' : 'arrow', symbolSize: m.circle ? 18 : m.kind === 'neutral' ? 8 : 12,
+          symbolRotate: m.circle || m.kind === 'neutral' ? undefined : isBuy ? 0 : 180,
+          symbolOffset: [
+            0,
+            m.lockToPrice ? 0 : (m.offsetY ?? (m.circle ? (isBuy ? 18 : -18) : (m.kind === 'neutral' ? 0 : (isAbove ? -60 : 60)))),
+          ],
+          itemStyle: { color: m.circle ? (m.color ?? (isBuy ? THEME.bull : THEME.bear)) : (isBuy ? THEME.bull : isSell ? THEME.bear : CT().text) },
+          tooltip: markerTooltip(m),
           label: {
             show: !!m.label, formatter: m.label ?? '',
-            position: isBuy ? 'bottom' : 'top', distance: 8,
-            color: CT().text, fontSize: 10,
+            position: m.circle ? 'inside' : (isAbove ? 'top' : 'bottom'), distance: labelDistance,
+            color: m.circle ? '#FFFFFF' : CT().text, fontSize: m.circle ? 11 : 10,
+            fontWeight: m.circle ? 'bold' : 'normal',
             fontFamily: 'JetBrains Mono, monospace',
           },
         })
@@ -1127,12 +1361,15 @@ export function EChartsCandlestick({
       data, dates, dateIndexMap,
       showMarkersProp ? markers : undefined,
       ranges,
+      structureLines,
       priceLines,
       showMA, compactRef.current,
       activeIndicators, chartHeight,
       infoIdxRef.current,
       linkedPrice,
       volumeCompare,
+      showDateLabels,
+      selectedDate,
     )
 
     chart.setOption(option, true)
@@ -1150,7 +1387,7 @@ export function EChartsCandlestick({
     if (infoEl) {
       infoEl.innerHTML = getInfoBarHTML()
     }
-  }, [data, markers, ranges, priceLines, linkedPrice, showMA, showMarkersProp, activeIndicators, volumeCompare, chartHeight, dates, dateIndexMap, initialZoom, getInfoBarHTML, theme])
+  }, [data, markers, ranges, structureLines, priceLines, linkedPrice, selectedDate, showMA, showMarkersProp, activeIndicators, volumeCompare, showDateLabels, chartHeight, dates, dateIndexMap, initialZoom, getInfoBarHTML, theme])
 
   // 渲染信息栏容器 (内容由 JS 直接写入)
   const initialHTML = useMemo(() => {
@@ -1159,8 +1396,9 @@ export function EChartsCandlestick({
     if (!d) return ''
     const floatShares = stockInfo?.float_shares
     const turnoverRate = floatShares && d.volume ? (d.volume * 100 / floatShares * 100) : null
-    let html = `<div style="display:flex;align-items:center;gap:6px;padding:0 8px;font:11px 'JetBrains Mono',monospace;height:20px;flex-wrap:wrap">`
-    html += `<span style="color:${CT().text}">${d.date}</span>`
+    let html = `<div style="position:relative;display:flex;align-items:center;gap:6px;padding:0 8px;font:11px 'JetBrains Mono',monospace;height:20px;white-space:nowrap;overflow:hidden">`
+    html += `<div style="display:flex;align-items:center;gap:6px;min-width:0;white-space:nowrap;overflow:hidden">`
+    if (showInfoDate) html += `<span style="color:${CT().text}">${d.date}</span>`
     html += `<span style="color:${CT().text}">开</span>`
     html += `<span style="color:${d.open >= d.close ? THEME.bear : THEME.bull}">${d.open.toFixed(2)}</span>`
     html += `<span style="color:${CT().text}">高</span>`
@@ -1176,12 +1414,29 @@ export function EChartsCandlestick({
       const chgPct0 = ((d.close - prevClose0) / prevClose0 * 100)
       html += `<span style="color:${clr0};margin-left:8px">${chgPct0 >= 0 ? '+' : ''}${chgPct0.toFixed(2)}%</span>`
     }
+    if (showSinceLatest && d.open > 0) {
+      const latestClose = data[data.length - 1]?.close ?? d.close
+      const sinceAmount = latestClose - d.open
+      const sincePct = sinceAmount / d.open * 100
+      const sinceColor = sinceAmount >= 0 ? THEME.bull : THEME.bear
+      const sinceSign = sinceAmount > 0 ? '+' : ''
+      html += `<span style="color:${CT().text};margin-left:8px">至今涨跌</span>`
+      html += `<span style="color:${sinceColor};font-weight:600">${sinceSign}${sinceAmount.toFixed(2)} / ${sinceSign}${sincePct.toFixed(2)}%</span>`
+    }
     if (turnoverRate != null) {
       html += `<span style="color:${CT().text}">换手</span>`
       html += `<span style="color:${CT().text}">${turnoverRate.toFixed(2)}%</span>`
     }
     html += `</div>`
-    if (showMA) {
+    if (centerMovingAverages && showMA && (d.ma5 != null || d.ma20 != null || d.ma60 != null)) {
+      html += `<div style="position:absolute;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:10px;white-space:nowrap;pointer-events:none">`
+      if (d.ma5 != null) html += `<span style="color:${THEME.ma5}">MA5:${Number(d.ma5).toFixed(2)}</span>`
+      if (d.ma20 != null) html += `<span style="color:${THEME.ma20}">MA20:${Number(d.ma20).toFixed(2)}</span>`
+      if (d.ma60 != null) html += `<span style="color:${THEME.ma60}">MA60:${Number(d.ma60).toFixed(2)}</span>`
+      html += `</div>`
+    }
+    html += `</div>`
+    if (showMA && !centerMovingAverages) {
       html += `<div style="display:flex;align-items:center;gap:10px;padding:0 8px;font:11px 'JetBrains Mono',monospace;height:20px;flex-wrap:wrap">`
       if (d.ma5 != null) html += `<span style="color:${THEME.ma5}">MA5:${Number(d.ma5).toFixed(2)}</span>`
       if (d.ma10 != null) html += `<span style="color:${THEME.ma10}">MA10:${Number(d.ma10).toFixed(2)}</span>`

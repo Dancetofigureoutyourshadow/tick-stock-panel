@@ -3,16 +3,18 @@ import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Trash2, RefreshCw, Star, X, Search, LayoutGrid, List, Rows3, BarChart3, Settings2, Plus, Check, Filter, Eye, EyeOff, Minus, ChevronsUp, Clock, RotateCcw, ImagePlus, FolderOpen, FolderMinus, FolderPlus } from 'lucide-react'
+import { Trash2, RefreshCw, Star, X, Search, LayoutGrid, List, Rows3, BarChart3, Settings2, Plus, Check, Filter, Eye, EyeOff, Minus, ChevronsUp, Clock, RotateCcw, FileUp, FolderOpen, FolderMinus, FolderPlus } from 'lucide-react'
 import { api, type KlineRow, type MinuteKlineRow, type WatchlistGroup, type WatchlistGroupColor } from '@/lib/api'
+import { fetchMinuteBatchIncremental } from '@/lib/minuteBatchIncremental'
 import { QK } from '@/lib/queryKeys'
 import { storage } from '@/lib/storage'
 import { fmtPrice, fmtPct, fmtBigNum, priceColorClass, formatExtNumber } from '@/lib/format'
+import { cn } from '@/lib/cn'
 import { computeGroupPcts, loadGroupStatsConfig, type GroupStatsConfigPatch } from '@/lib/watchlistGroupStats'
 import { PageHeader } from '@/components/PageHeader'
 import { EmptyState } from '@/components/EmptyState'
 import { Modal } from '@/components/Modal'
-import { StockPreviewDialog } from '@/components/StockPreviewDialog'
+import { StockPreviewDialog, toNavItems, type NavItem } from '@/components/StockPreviewDialog'
 import {
   DimensionMembersDialog,
   dimensionKindForSourceField,
@@ -32,7 +34,6 @@ import { toast } from '@/components/Toast'
 
 // 分时列开放排序 (StockDataTable 实例级白名单; 表头眼睛/刷新按钮已 stopPropagation)
 const INTRADAY_SORTABLE_KEYS = new Set(['intraday'])
-import { getOcrInstallHint } from '@/lib/ocrInstallHint'
 import { ColumnCustomizer } from '@/components/ColumnCustomizer'
 import { StockDataTable } from '@/components/stock-table/StockDataTable'
 import { VIRTUAL_LIST_THRESHOLD, useParentScroll } from '@/components/virtual-list/useParentScroll'
@@ -483,6 +484,7 @@ const StockCard = React.memo(function StockCard({
   onToggleExpand,
   onDimensionClick,
   isMonitored,
+  active,
   groups,
   onToggleMember,
   groupChangePending,
@@ -500,6 +502,8 @@ const StockCard = React.memo(function StockCard({
   onToggleExpand: (key: string) => void
   onDimensionClick: (target: DimensionMembersTarget) => void
   isMonitored?: boolean
+  /** 正在 K 线弹窗预览中 → 高亮卡片 */
+  active?: boolean
   groups: WatchlistGroup[]
   onToggleMember: (symbol: string, groupId: string, member: boolean) => void
   groupChangePending: boolean
@@ -525,7 +529,7 @@ const StockCard = React.memo(function StockCard({
 
   return (
     <div
-      className={`relative rounded-lg border border-border bg-surface hover:border-border/80 transition-all duration-200 group cursor-pointer overflow-hidden ${bgGlow}`}
+      className={`relative rounded-lg border border-border bg-surface hover:border-border/80 transition-all duration-200 group cursor-pointer overflow-hidden ${bgGlow} ${active ? 'ring-2 ring-accent/60' : ''}`}
       onClick={() => onPreview(r.symbol, name ?? '')}
     >
       {/* 左侧彩色指示条 */}
@@ -692,33 +696,12 @@ export function Watchlist() {
     const g = (searchParams.get('group') as WatchlistGroupFilter | null) ?? 'all'
     setSelectedGroup(g)
   }, [searchParams])
-  const [ocrAvailable, setOcrAvailable] = useState<boolean | null>(null)
-  const [ocrInstallHint, setOcrInstallHint] = useState('')
   const columnsLoaded = useRef(false)
 
   useEffect(() => {
     if (columnsLoaded.current) return
     columnsLoaded.current = true
     loadColumnConfig().then(setColumns)
-  }, [])
-
-  useEffect(() => {
-    let cancelled = false
-    void api.watchlistOcrStatus().then(
-      res => {
-        if (cancelled) return
-        setOcrAvailable(res.available)
-        if (!res.available) setOcrInstallHint(getOcrInstallHint())
-      },
-      () => {
-        if (cancelled) return
-        setOcrAvailable(false)
-        setOcrInstallHint(getOcrInstallHint())
-      },
-    )
-    return () => {
-      cancelled = true
-    }
   }, [])
 
   const handleColumnsChange = useCallback((next: ColumnConfig[]) => {
@@ -791,11 +774,14 @@ export function Watchlist() {
   }, [])
   const [previewSymbol, setPreviewSymbol] = useState<string | null>(null)
   const [previewName, setPreviewName] = useState<string>('')
+  // 切股导航: 默认用 previewNavItems(自选列表); 从成分弹窗打开时用成分列表覆盖
+  const [previewNavList, setPreviewNavList] = useState<NavItem[]>([])
   const [dimensionTarget, setDimensionTarget] = useState<DimensionMembersTarget | null>(null)
   const [expandedCells, setExpandedCells] = useState<Set<string>>(new Set())
   const closePreview = useCallback(() => {
     setPreviewSymbol(null)
     setPreviewName('')
+    setPreviewNavList([])
   }, [])
 
   const handleToggleExpand = useCallback((cellKey: string) => {
@@ -903,14 +889,74 @@ export function Watchlist() {
   // 兼容旧配置：后端未返回该字段时，实时行情运行即默认刷新分时。
   const intradayRefreshEnabled = prefsData?.minute_intraday_refresh ?? realtimeRunning
   const intradayRefreshInterval = prefsData?.minute_intraday_refresh_interval ?? 6
+  // 视口感知: 虚拟器渲染中的 symbol 集合 (可见 + overscan 缓冲), 由下方虚拟器
+  // 区域的 effect 写入; null = 未就绪/非虚拟化视图, 沿用全列表。首轮全量播种
+  // 缓存 (queryFn 在挂载时先于 ref 填充执行), 之后各轮只拉视口集合。
+  const minuteRequestSymbolsRef = useRef<string[] | null>(null)
   const minuteBatch = useQuery({
     queryKey: QK.minuteBatch(minuteSymbolsKey),
-    queryFn: () => api.klineMinuteBatch(minuteSymbols),
+    // 增量轮询 (prefer_local): 读缓存以最后一根为 since 只拉新增, 本地合并为
+    // 完整序列; 全量分钟健康时服务端零补拉, 不健康时也只增量。
+    // 请求集合 = 视口内 symbol (缓存按 symbol upsert, 视口外保留旧序列)
+    queryFn: () => {
+      const reqSymbols = minuteRequestSymbolsRef.current ?? minuteSymbols
+      return fetchMinuteBatchIncremental(qc, QK.minuteBatch(minuteSymbolsKey), reqSymbols, true)
+    },
     enabled: intradayVisible && minuteSymbols.length > 0 && !groupCardsOpen,
     staleTime: 10_000,
-    refetchInterval: (intradayRefreshEnabled && realtimeRunning) ? intradayRefreshInterval * 1000 : false,
+    // SSE tick 新鲜 (enriched 10s 内被行情推送刷新过) → 分时图已由下方续画本地
+    // 跳动, 轮询降为 30s 兜底校准; tick 断流时回到用户设定间隔
+    refetchInterval: () => {
+      if (!(intradayRefreshEnabled && realtimeRunning)) return false
+      const tickFresh = Date.now() - enriched.dataUpdatedAt < 10_000
+      return tickFresh ? 30_000 : intradayRefreshInterval * 1000
+    },
   })
-  const minuteData = intradayVisible ? (minuteBatch.data?.data ?? {}) : {}
+
+  // 分时图 SSE 续画: enriched 行情列每 tick 刷新 (SSE 触发), 前端本地续写分钟序列
+  // 的最后一根 / 分钟滚动追加新K — 轮询间隔内分时图也随实时价跳动, 零额外请求。
+  // 纯视图叠加不写回缓存: 轮询拉回的服务端定版K始终是权威值, 覆盖续画值。
+  const minuteData = useMemo(() => {
+    const base: Record<string, MinuteKlineRow[]> = intradayVisible ? (minuteBatch.data?.data ?? {}) : {}
+    const liveRows = enriched.data?.rows
+    if (!intradayVisible || !liveRows?.length) return base
+    const liveBySymbol = new Map<string, any>(liveRows.map((r: any) => [r.symbol, r]))
+    // 仅连续竞价时段续画 (9:31-11:30, 13:01-15:00); 收盘后 rt_price 即收盘价无需续写
+    const now = new Date()
+    const hh = now.getHours(), mm = now.getMinutes()
+    const inSession =
+      (hh === 9 && mm >= 31) || hh === 10 ||
+      (hh === 11 && mm <= 30) || (hh === 13 && mm >= 1) || hh === 14
+    if (!inSession) return base
+    // 与服务端同构的 naive 北京时间戳 (手工拼本地时间, 不能用 toISOString — 那是 UTC)
+    const pad = (n: number) => String(n).padStart(2, '0')
+    const barTs = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}T${pad(hh)}:${pad(mm)}:00`
+    const patched: Record<string, MinuteKlineRow[]> = {}
+    for (const sym of Object.keys(base)) {
+      const arr = base[sym]
+      if (!Array.isArray(arr) || arr.length === 0) { patched[sym] = arr; continue }
+      const live = liveBySymbol.get(sym)
+      const price = live?.rt_price ?? live?.close
+      if (typeof price !== 'number' || !Number.isFinite(price)) { patched[sym] = arr; continue }
+      const last = arr[arr.length - 1]
+      if (last.datetime === barTs) {
+        patched[sym] = [...arr.slice(0, -1), {
+          ...last,
+          close: price,
+          high: Math.max(last.high, price),
+          low: Math.min(last.low, price),
+        }]
+      } else if (barTs > last.datetime) {
+        patched[sym] = [...arr, {
+          datetime: barTs, open: price, high: price, low: price, close: price,
+          volume: 0, amount: 0,   // 量/额由下一轮轮询定版覆盖
+        }]
+      } else {
+        patched[sym] = arr   // 轮询数据已新于本地时钟 (钟差兜底), 不动
+      }
+    }
+    return patched
+  }, [intradayVisible, minuteBatch.data, enriched.data])
 
   const [minuteSyncDialog, setMinuteSyncDialog] = useState<string | null>(null)
   const [minuteSyncStart, setMinuteSyncStart] = useState('')
@@ -1202,9 +1248,6 @@ export function Watchlist() {
     if (selectedGroup === 'ungrouped') return rowsWithGroup.filter(row => row.group_ids.length === 0)
     return rowsWithGroup.filter(row => row.group_ids.includes(selectedGroup))
   }, [groupBySymbol, rows, selectedGroup])
-  const activeGroup = activeGroupId
-    ? groups.find(group => group.id === activeGroupId)
-    : undefined
   const watchlistContentLoading = list.isLoading || (allSymbols.length > 0 && enriched.isLoading)
 
   // 实时监控圆点: 仅 Free/低档 "按自选股实时监控" 模式 (mode === 'watchlist') 下显示;
@@ -1349,6 +1392,13 @@ export function Watchlist() {
     [filteredRows, sortRows, columns],
   )
 
+  // 切股导航列表: 按列表当前展示顺序 (与 sortedRows 一致, 排序/筛选后行序随之变化)。
+  // 弹窗未打开时跳过构建 — sortedRows 随行情 tick 重建, 避免无谓分配。
+  const previewNavItems = useMemo(
+    () => previewSymbol ? toNavItems(sortedRows) : [],
+    [previewSymbol, sortedRows],
+  )
+
   const cardColumns = useCardColumnCount()
   const cardGridRef = useRef<HTMLDivElement>(null)
   const virtualizeCards = viewMode === 'card' && !groupCardsOpen && sortedRows.length > VIRTUAL_LIST_THRESHOLD
@@ -1366,6 +1416,40 @@ export function Watchlist() {
     overscan: 3,
     scrollMargin: cardScrollMargin,
   })
+
+  // 视口感知 (数据层): 从虚拟器派生"正在渲染的 symbol" (可见 + overscan 缓冲,
+  // 滚动前已就绪)。非虚拟化视图 (小列表/表格/分组) 为 null → 沿用全列表。
+  // 每次渲染直读 getVirtualItems (滚动不换 deps, 不能 useMemo), 副作用集中在 effect。
+  const visibleCardSymbols = (() => {
+    if (!virtualizeCards) return null
+    // 与 minuteSymbols 同口径: 剔除指数 (minute-batch 契约只收股票/ETF)
+    const scope = new Set(minuteSymbols as string[])
+    const items = cardRowVirtualizer.getVirtualItems()
+    const out: string[] = []
+    for (const item of items) {
+      for (let i = item.index * cardColumns; i < (item.index + 1) * cardColumns && i < sortedRows.length; i++) {
+        const s = (sortedRows[i] as any)?.symbol
+        if (typeof s === 'string' && scope.has(s)) out.push(s)
+      }
+    }
+    return out.length ? out : null
+  })()
+  const minuteVisibleKey = visibleCardSymbols?.join(',') ?? ''
+  const lastVisibleKeyRef = useRef<string | null>(null)
+  useEffect(() => {
+    minuteRequestSymbolsRef.current = visibleCardSymbols
+    if (!minuteVisibleKey) return
+    if (lastVisibleKeyRef.current === minuteVisibleKey) return
+    const prevKey = lastVisibleKeyRef.current
+    lastVisibleKeyRef.current = minuteVisibleKey
+    if (prevKey === null) return   // 首次: 挂载播种轮已按全列表发出, 不额外触发
+    // 视口集合变化 (滚动到新区段) → 防抖 300ms 补拉一次, 新滚入的 symbol 即时就绪
+    const t = setTimeout(() => {
+      qc.invalidateQueries({ queryKey: QK.minuteBatch(minuteSymbolsKey) })
+    }, 300)
+    return () => clearTimeout(t)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [minuteVisibleKey, minuteSymbolsKey])
 
   // 可见的 ext 列（卡片视图使用）
   const visibleExtCols = useMemo(
@@ -1401,6 +1485,7 @@ export function Watchlist() {
       onToggleExpand={handleToggleExpand}
       onDimensionClick={setDimensionTarget}
       isMonitored={monitoredSymbols.has(r.symbol)}
+      active={previewSymbol === r.symbol}
       groups={groups}
       onToggleMember={handleToggleMember}
       groupChangePending={addGroupMember.isPending || removeGroupMember.isPending}
@@ -1477,19 +1562,12 @@ export function Watchlist() {
               memberPending={addGroupMember.isPending || removeGroupMember.isPending}
             />
             <button
-              onClick={() => {
-                if (ocrAvailable === false) return
-                setImportOpen(true)
-              }}
-              disabled={ocrAvailable === false}
-              className="inline-flex items-center justify-center h-8 w-8 rounded-btn bg-elevated hover:bg-elevated/80 text-secondary hover:text-foreground transition-colors duration-150 ease-smooth disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-elevated disabled:hover:text-secondary"
-              title={
-                ocrAvailable === false
-                  ? ocrInstallHint || 'OCR 不可用，请先安装 Tesseract'
-                  : '从截图导入自选'
-              }
+              onClick={() => setImportOpen(true)}
+              className="inline-flex items-center justify-center h-8 w-8 rounded-btn bg-elevated hover:bg-elevated/80 text-secondary hover:text-foreground transition-colors duration-150 ease-smooth"
+              title="批量导入自选（截图 / CSV / 粘贴代码）"
+              aria-label="批量导入自选"
             >
-              <ImagePlus className="h-4 w-4" />
+              <FileUp className="h-4 w-4" />
             </button>
             <div className="w-px h-5 bg-border" />
             {/* 视图 */}
@@ -1700,13 +1778,13 @@ export function Watchlist() {
             <EmptyState
               icon={Star}
               title="自选股为空"
-              hint="点击右上角搜索添加标的，或点击图片图标从券商自选截图批量导入。"
+              hint="点击右上角搜索添加标的，或用导入按钮从券商自选 CSV / 截图批量导入、粘贴代码。"
             />
           ) : rowsInSelectedGroup.length === 0 ? (
             <EmptyState
               icon={FolderOpen}
               title="该分组暂无标的"
-              hint="使用右上角搜索添加，或通过股票旁的分组按钮移入当前分组。"
+              hint="使用右上角搜索添加、通过股票旁的分组按钮移入，或用导入弹窗把整批标的并入本组。"
             />
           ) : groupCardsOpen ? (
             <WatchlistGroupCards
@@ -1728,7 +1806,7 @@ export function Watchlist() {
               onSortToggle={handleSortToggle}
               extraSortableKeys={INTRADAY_SORTABLE_KEYS}
               rowKey={(r: any) => r.symbol}
-              rowClassName={() => 'border-t border-border hover:bg-elevated/50 transition-colors duration-150 ease-smooth'}
+              rowClassName={(r: any) => cn('border-t border-border transition-colors duration-150 ease-smooth hover:bg-elevated/50', r.symbol === previewSymbol && 'bg-accent/10 hover:bg-accent/15')}
               // 日k列表头：标签 + 显示/隐藏眼睛按钮
               renderHeaderContent={(col) => {
                 if (col.source.type === 'builtin' && col.source.key === 'candle') {
@@ -2200,15 +2278,19 @@ export function Watchlist() {
         symbol={previewSymbol}
         name={previewName}
         onClose={closePreview}
+        navList={previewNavList.length > 0 ? previewNavList : previewNavItems}
+        onNavigate={(sym, n) => { setPreviewSymbol(sym); setPreviewName(n ?? '') }}
       />
 
       <DimensionMembersDialog
         target={dimensionTarget}
         onClose={() => setDimensionTarget(null)}
-        onStockClick={(symbol, name) => {
+        onStockClick={(symbol, name, navList) => {
           setDimensionTarget(null)
           setPreviewSymbol(symbol)
           setPreviewName(name ?? '')
+          // 成分列表作为切股导航 (成员可能不在自选列表, 不能退回 previewNavItems)
+          setPreviewNavList(navList ?? previewNavItems)
         }}
       />
 
@@ -2216,8 +2298,8 @@ export function Watchlist() {
         open={importOpen}
         onClose={() => setImportOpen(false)}
         groupId={activeGroupId}
-        groupName={activeGroup?.name}
-        groupColor={activeGroup?.color}
+        groups={groups}
+        existingBySymbol={groupBySymbol}
       />
     </div>
   )

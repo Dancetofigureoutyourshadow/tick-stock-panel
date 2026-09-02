@@ -1683,6 +1683,7 @@ export type ProviderField =
   | 'daily_data_provider'
   | 'adj_factor_provider'
   | 'minute_data_provider'
+  | 'full_minute_data_provider'
   | 'depth5_data_provider'
   | 'realtime_data_provider'
   | 'financial_data_provider'
@@ -1793,7 +1794,6 @@ export interface WecomBotStatus {
 
 export interface Preferences {
   realtime_quotes_enabled: boolean
-  indices_nav_pinned: boolean
   watchlist_groups_in_nav: boolean
   minute_sync_enabled: boolean
   minute_sync_days: number
@@ -1803,6 +1803,8 @@ export interface Preferences {
   daily_data_provider?: string
   adj_factor_provider?: string
   minute_data_provider?: string
+  /** 全量分钟 (盘中全市场分钟落盘) 生效源; 默认 tickflow (需 Expert 档) */
+  full_minute_data_provider?: string
   /** 分钟源 1 分钟历史深度(交易日); null/缺省 = 深历史 (如 tickflow)。分时档位据此收窄 */
   minute_history_days?: number | null
   depth5_data_provider?: string
@@ -1810,11 +1812,10 @@ export interface Preferences {
   financial_data_provider?: string
   data_source_job_timeout_s: number
   data_source_long_job_timeout_s: number
+  minute_batch_compress: boolean
+  daily_batch_compress: boolean
   realtime_pull_stock?: boolean
   realtime_pull_etf?: boolean
-  realtime_pull_index?: boolean
-  realtime_index_mode?: 'core' | 'all'
-  realtime_index_symbols?: string[]
   pipeline_pull_a_share: boolean
   pipeline_pull_etf: boolean
   pipeline_pull_index: boolean
@@ -1843,7 +1844,6 @@ export interface Preferences {
   wecom_bot_enabled?: boolean
   webhook_enabled_default?: boolean
   webhook_default_channels?: string[]
-  sidebar_index_symbols: string[]
   nav_order: string[]
   nav_hidden: string[]
   screener_auto_run: boolean
@@ -1988,8 +1988,23 @@ export const api = {
           data_source_job_timeout_s: dataSourceJobTimeoutS,
           data_source_long_job_timeout_s: dataSourceLongJobTimeoutS,
         }),
+
       },
     ),
+
+  /** 分时批量响应 gzip 压缩开关 (网络设置) — 逐请求即时生效 */
+  updateMinuteBatchCompress: (enabled: boolean) =>
+    request<Pick<Preferences, 'minute_batch_compress'>>('/api/settings/preferences/minute-batch-compress', {
+      method: 'PUT',
+      body: JSON.stringify({ minute_batch_compress: enabled }),
+    }),
+
+  /** 日K批量响应 gzip 压缩开关 (与分时独立) — 逐请求即时生效 */
+  updateDailyBatchCompress: (enabled: boolean) =>
+    request<Pick<Preferences, 'daily_batch_compress'>>('/api/settings/preferences/daily-batch-compress', {
+      method: 'PUT',
+      body: JSON.stringify({ daily_batch_compress: enabled }),
+    }),
   updateMinuteSync: (enabled: boolean, days: number, segmentDays?: number) =>
     request<Preferences>('/api/settings/preferences/minute-sync', {
       method: 'PUT',
@@ -2000,15 +2015,19 @@ export const api = {
       }),
     }),
 
-  /** 全量分钟 (盘中全市场分钟落盘) 服务状态 (TickFlow Expert 专有) */
+  /** 全量分钟 (盘中全市场分钟落盘) 服务状态 (按能力路由: TickFlow Expert 或声明 full_minute 的插件/自定义源) */
   minuteRefreshStatus: () =>
     request<{
       available: boolean
       enabled?: boolean
       running?: boolean
+      /** 读侧 freshness: 本地分区正被服务持续写入 (前端据此切本地读/解除截断) */
+      healthy?: boolean
+      provider?: string
+      provider_effective?: string
+      repair_only?: boolean
       interval_seconds?: number
       capability_ok?: boolean
-      custom_provider_active?: boolean
       in_trading_hours?: boolean
       gate_reason?: string | null
       rounds?: number
@@ -2049,15 +2068,10 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ realtime_quotes_enabled: enabled }),
     }),
-  updateRealtimeQuoteScope: (cfg: Partial<Pick<Preferences, 'realtime_pull_stock' | 'realtime_pull_etf' | 'realtime_pull_index' | 'realtime_index_mode' | 'realtime_index_symbols'>>) =>
+  updateRealtimeQuoteScope: (cfg: Partial<Pick<Preferences, 'realtime_pull_stock' | 'realtime_pull_etf'>>) =>
     request<Partial<Preferences>>('/api/settings/preferences/realtime-quote-scope', {
       method: 'PUT',
       body: JSON.stringify(cfg),
-    }),
-  updateIndicesNavPinned: (pinned: boolean) =>
-    request<{ indices_nav_pinned: boolean }>('/api/settings/preferences/indices-nav-pinned', {
-      method: 'PUT',
-      body: JSON.stringify({ indices_nav_pinned: pinned }),
     }),
   updateWatchlistGroupsInNav: (enabled: boolean) =>
     request<{ watchlist_groups_in_nav: boolean }>('/api/settings/preferences/watchlist-groups-in-nav', {
@@ -2102,7 +2116,6 @@ export const api = {
     sse_refresh_pages?: Record<string, boolean>
     strategy_monitor_enabled?: boolean
     strategy_monitor_ids?: string[]
-    sidebar_index_symbols?: string[]
     screener_auto_run?: boolean
     minute_intraday_refresh?: boolean
     minute_intraday_refresh_interval?: number
@@ -2112,7 +2125,6 @@ export const api = {
       sse_refresh_pages: Record<string, boolean>
       strategy_monitor_enabled: boolean
       strategy_monitor_ids: string[]
-      sidebar_index_symbols: string[]
       screener_auto_run: boolean
       minute_intraday_refresh: boolean
       minute_intraday_refresh_interval: number
@@ -2135,6 +2147,11 @@ export const api = {
     request<{ wecom_webhook_url: string }>('/api/settings/preferences/wecom-webhook', {
       method: 'PUT',
       body: JSON.stringify({ url }),
+    }),
+  sendTestWebhook: (channel: 'feishu' | 'wecom') =>
+    request<{ ok: boolean; detail: string }>('/api/settings/preferences/webhook-test', {
+      method: 'POST',
+      body: JSON.stringify({ channel }),
     }),
   updateWecomBot: (botId: string, secret: string, enabled: boolean = true) =>
     request<{
@@ -2332,10 +2349,10 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ symbols, days }),
     }),
-  klineMinuteBatch: (symbols: string[], date?: string) =>
-    request<{ data: Record<string, MinuteKlineRow[]> }>('/api/kline/minute-batch', {
+  klineMinuteBatch: (symbols: string[], date?: string, preferLocal?: boolean, since?: string) =>
+    request<{ data: Record<string, MinuteKlineRow[]>; full_minute_local?: boolean; incremental?: boolean }>('/api/kline/minute-batch', {
       method: 'POST',
-      body: JSON.stringify({ symbols, date }),
+      body: JSON.stringify({ symbols, date, ...(preferLocal ? { prefer_local: true } : {}), ...(since ? { since } : {}) }),
     }),
   instrumentSearch: (q: string, limit = 20, assetTypes?: string) =>
     request<{ results: { symbol: string; name: string; code: string; asset_type?: string }[] }>(
@@ -2375,11 +2392,6 @@ export const api = {
     }>(
       `/api/kline/minute-range?symbol=${encodeURIComponent(symbol)}&days=${days}&freq=${encodeURIComponent(freq)}`,
     ),
-  indexList: () => request<{ results: IndexInstrument[]; count: number }>('/api/index/list'),
-  indexSearch: (q: string, limit = 20) =>
-    request<{ results: IndexInstrument[] }>(
-      `/api/index/search?q=${encodeURIComponent(q)}&limit=${limit}`,
-    ),
   indexDaily: (symbol: string, days = 120, dateRange?: { start: string; end: string }) =>
     request<{
       symbol: string
@@ -2396,7 +2408,6 @@ export const api = {
     request<{
       symbol: string
       name?: string
-      index_info?: IndexInstrument
       date: string | null
       rows: MinuteKlineRow[]
       source?: string
@@ -2470,10 +2481,15 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ symbol, note, group_id: groupId ?? null }),
     }),
-  watchlistBatchAdd: (symbols: string[], note = '', groupId?: string | null) =>
+  watchlistBatchAdd: (symbols: string[], note = '', groupId?: string | null, groupIds?: string[]) =>
     request<{ symbols: WatchlistEntry[]; added: number }>('/api/watchlist/batch', {
       method: 'POST',
-      body: JSON.stringify({ symbols, note, group_id: groupId ?? null }),
+      body: JSON.stringify({
+        symbols,
+        note,
+        group_id: groupId ?? null,
+        group_ids: groupIds?.length ? groupIds : null,
+      }),
     }),
   watchlistGroups: () =>
     request<{ groups: WatchlistGroup[] }>('/api/watchlist/groups'),
@@ -2529,6 +2545,22 @@ export const api = {
       quiet,
     })
   },
+  watchlistImportCsv: (file: File, signal?: AbortSignal, quiet = false) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    return request<WatchlistImportResult>('/api/watchlist/import-csv', {
+      method: 'POST',
+      body: fd,
+      signal,
+      quiet,
+    })
+  },
+  watchlistImportCodes: (text: string, signal?: AbortSignal) =>
+    request<WatchlistImportResult>('/api/watchlist/import-codes', {
+      method: 'POST',
+      body: JSON.stringify({ text }),
+      signal,
+    }),
   watchlistRemove: (symbol: string) =>
     request<{ symbols: WatchlistEntry[] }>(
       `/api/watchlist/${encodeURIComponent(symbol)}`,
@@ -2808,6 +2840,9 @@ export const api = {
     '/api/pipeline/run', { method: 'POST' },
   ),
   pipelineJob: (id: string) => request<PipelineJob>(`/api/pipeline/jobs/${id}`),
+  /** 手动停止一个 running/pending 的同步任务 (协作式: 当前分块完成后线程自行退出) */
+  pipelineJobCancel: (id: string) =>
+    request<{ cancelled: string }>(`/api/pipeline/jobs/${id}/cancel`, { method: 'POST' }),
   pipelineJobs: (limit = 20) =>
     request<{ active_id: string | null; jobs: PipelineJobSummary[] }>(
       `/api/pipeline/jobs?limit=${limit}`,

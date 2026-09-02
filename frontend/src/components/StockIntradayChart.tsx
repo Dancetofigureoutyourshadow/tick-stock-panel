@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Loader2 } from 'lucide-react'
 import { api, type MinuteKlineRow } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
+import { klineMinuteQueryOptions } from '@/lib/kline'
 import { EChartsIntraday, type DailyOhlc } from '@/components/EChartsIntraday'
 import { alignMinutePricesToDailyClose } from '@/lib/intraday-chart'
 
@@ -50,15 +51,9 @@ export function StockIntradayChart({
   const [minuteDismissed, setMinuteDismissed] = useState(false)
 
   const minute = useQuery({
-    queryKey: QK.klineMinute(symbol, date ?? ''),
     // 轮询上下文 (个股详情) 传 live: 当日盘中后端直接实时拉取最新K,
     // 避免读到分钟增量落盘的上一轮本地分区; 历史日期后端自行忽略 live。
-    queryFn: ({ signal }) => api.klineMinute(
-      symbol,
-      date ?? undefined,
-      live ?? refetchIntervalMs != null,
-      signal,
-    ),
+    ...klineMinuteQueryOptions(symbol, date ?? undefined, live ?? refetchIntervalMs != null),
     enabled: !!symbol && !!date,
     refetchInterval: disablePolling ? false : refetchIntervalMs,
   })

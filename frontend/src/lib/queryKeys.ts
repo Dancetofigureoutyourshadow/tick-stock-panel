@@ -20,7 +20,6 @@ export const QK = {
   quoteInterval:  ['quote-interval'] as const,
   overviewMarket: (asOf?: string) => ['overview-market', asOf ?? 'latest'] as const,
   indexQuotes:    ['index-quotes'] as const,
-  indexList:      ['index-list'] as const,
 
   // Watchlist
   watchlist:            ['watchlist'] as const,
@@ -88,9 +87,9 @@ export const QK = {
   chanTrainingRecords:  ['chan-training-records'] as const,
   chanTrainingRecord:   (id: string) => ['chan-training-record', id] as const,
   indexDaily:           (symbol: string, start: string, end: string) =>
-                           ['index-daily', symbol, start, end] as const,
+                             ['index-daily', symbol, start, end] as const,
   indexMinute:          (symbol: string, date: string) =>
-                           ['index-minute', symbol, date] as const,
+                             ['index-minute', symbol, date] as const,
 
   // Schema
   extDataSchemaAll:     ['ext-data-schema-all'] as const,

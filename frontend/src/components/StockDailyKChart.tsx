@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { api, type DailyKlinePeriod, type KlineRow } from '@/lib/api'
-import { QK } from '@/lib/queryKeys'
+import { type KlineRow } from '@/lib/api'
+import { klineDailyQueryOptions } from '@/lib/kline'
 import { storage } from '@/lib/storage'
 import {
   EChartsCandlestick,
@@ -11,13 +11,11 @@ import {
   type ChartPriceLine,
   type ChartRange,
   type OHLC,
-  type StockInfo,
   type VolumeCompareConfig,
 } from '@/components/EChartsCandlestick'
 
 const SUB_INFO_H = 16
 const SUB_GAP = 4
-const MAX_DAYS = 2000
 const DEFAULT_VOLUME_COMPARE: VolumeCompareConfig = { enabled: true, days: 1 }
 
 function normalizeVolumeCompare(config: VolumeCompareConfig): VolumeCompareConfig {
@@ -27,16 +25,8 @@ function normalizeVolumeCompare(config: VolumeCompareConfig): VolumeCompareConfi
   }
 }
 
-export interface StockDailyKChartResult {
-  rows: OHLC[]
-  rawRows: KlineRow[]
-  stockInfo?: StockInfo
-  name?: string
-}
-
 interface Props {
   symbol: string
-  period?: DailyKlinePeriod
   height?: number
   className?: string
   dateRange?: { start: string; end: string }
@@ -52,7 +42,6 @@ interface Props {
   linkedPrice?: number | null
   onDateClick?: (date: string) => void
   onPriceDoubleClick?: (price: number, currentPrice: number) => void
-  onDataChange?: (result: StockDailyKChartResult) => void
   /** 扩展数据列参数（逗号分隔 config_id.field_name），透传给 klineDaily 接口 */
   extColumns?: string
   /** 日K自动刷新间隔(ms)。undefined = 不轮询(默认)。个股对话框实时刷新时传入, 盘中今日蜡烛随之更新 */
@@ -116,15 +105,8 @@ export function getDefaultRange(): { start: string; end: string } {
   return { start, end }
 }
 
-function rangeDays(range: { start: string; end: string }): number {
-  const start = new Date(range.start)
-  const end = new Date(range.end)
-  return Math.min(Math.ceil((end.getTime() - start.getTime()) / 86400000) + 30, MAX_DAYS)
-}
-
 export function StockDailyKChart({
   symbol,
-  period = 'day',
   height = 520,
   className,
   dateRange: externalDateRange,
@@ -140,7 +122,6 @@ export function StockDailyKChart({
   linkedPrice,
   onDateClick,
   onPriceDoubleClick,
-  onDataChange,
   extColumns,
   refetchIntervalMs,
 }: Props) {
@@ -150,16 +131,9 @@ export function StockDailyKChart({
     normalizeVolumeCompare(storage.stockVolumeCompare.get(DEFAULT_VOLUME_COMPARE)),
   )
   const dateRange = externalDateRange ?? getDefaultRange()
-  const days = useMemo(() => rangeDays(dateRange), [dateRange])
 
-  // extColumns 纳入 query key：勾选/取消扩展字段时需重新请求（带 ext_columns 参数）
-  const kline = useQuery({
-    queryKey: QK.kline(symbol, dateRange.start, dateRange.end, extColumns, period),
-    queryFn: () => api.klineDaily(symbol, days, dateRange, extColumns, period),
-    enabled: !!symbol,
-    refetchInterval: refetchIntervalMs,
-    placeholderData: (prev) => prev,
-  })
+  // 查询配置统一来自 klineDailyQueryOptions, 与 StockPanel 信息条/邻近预取共享同一 cache key (只发一次请求)
+  const kline = useQuery({ ...klineDailyQueryOptions(symbol, dateRange, extColumns), enabled: !!symbol, refetchInterval: refetchIntervalMs })
 
   const rows = useMemo(() => toOHLC(kline.data?.rows ?? []), [kline.data?.rows])
   const stockInfo = kline.data?.stock_info
@@ -188,10 +162,6 @@ export function StockDailyKChart({
   activeSubDefs.forEach(def => { subExtraH += SUB_INFO_H + def.height })
   if (activeSubDefs.length > 0) subExtraH += activeSubDefs.length * SUB_GAP + 14
   const chartHeight = height + subExtraH
-
-  useEffect(() => {
-    onDataChange?.({ rows, rawRows: kline.data?.rows ?? [], stockInfo, name: kline.data?.name })
-  }, [kline.data?.name, kline.data?.rows, onDataChange, rows, stockInfo])
 
   if (!symbol) return null
 

@@ -344,12 +344,23 @@ class DepthService:
         for i, chunk in enumerate(chunks):
             sleep_between_batches(i, limit.rpm, default_interval=2.0)
             try:
-                # SDK 的 batch 内部已按 batch_size 切, 这里再切一层防单请求过大
-                data = tf.depth.batch(chunk)
+                data = fetch_depth(chunk)
                 if isinstance(data, dict):
                     result.update(data)
+                else:
+                    logger.warning(
+                        "depth provider %s 第 %d 批返回非 dict, 已跳过",
+                        provider_name,
+                        i + 1,
+                    )
             except Exception as e:  # noqa: BLE001
-                logger.warning("depth.batch 第 %d 批失败(%d 只): %s", i + 1, len(chunk), e)
+                logger.warning(
+                    "depth provider %s 第 %d 批失败(%d 只): %s",
+                    provider_name,
+                    i + 1,
+                    len(chunk),
+                    e,
+                )
                 # 单批失败不影响其他批
         return result
 

@@ -40,7 +40,7 @@ class PullConfig:
         "url", "method", "headers", "body", "response_path",
         "field_map", "schedule_minutes", "enabled",
         "last_run", "last_status", "last_message", "last_rows",
-        "next_run", "time_window_start", "time_window_end",
+        "next_run", "time_window_start", "time_window_end", "date_param",
     )
 
     def __init__(
@@ -60,6 +60,7 @@ class PullConfig:
         next_run: str | None = None,
         time_window_start: str | None = None,
         time_window_end: str | None = None,
+        date_param: str | None = None,
     ) -> None:
         self.url = url
         self.method = method              # GET | POST
@@ -76,6 +77,9 @@ class PullConfig:
         self.next_run = next_run            # 下次预计运行 (ISO, 调度器写入)
         self.time_window_start = time_window_start  # 每日拉取窗口起始 "HH:MM", None=不限
         self.time_window_end = time_window_end      # 每日拉取窗口结束 "HH:MM", None=不限
+        # 接口按日期查询的参数名 (如 "date"): 非 None 时请求
+        # 带 ?{date_param}=YYYY-MM-DD, 支持历史回补; None = 接口只有当日快照
+        self.date_param = date_param
 
     def to_dict(self) -> dict:
         return {
@@ -94,6 +98,7 @@ class PullConfig:
             "next_run": self.next_run,
             "time_window_start": self.time_window_start,
             "time_window_end": self.time_window_end,
+            "date_param": self.date_param,
         }
 
     @classmethod
@@ -116,6 +121,7 @@ class PullConfig:
             next_run=d.get("next_run"),
             time_window_start=d.get("time_window_start"),
             time_window_end=d.get("time_window_end"),
+            date_param=d.get("date_param"),
         )
 
 
@@ -273,6 +279,8 @@ class ExtConfigStore:
             json.dumps(config.to_dict(), ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+        # 字段集/模式变化会改变扩展列集合: 失效扩展帧缓存与策略结果缓存
+        _invalidate_ext_derived(self._base.parent)
 
     def delete(self, config_id: str) -> bool:
         import shutil
@@ -283,6 +291,7 @@ class ExtConfigStore:
         if not cp.exists():
             return False
         shutil.rmtree(cp.parent, ignore_errors=True)
+        _invalidate_ext_derived(self._base.parent)
         return True
 
     def _migrate_legacy(self, old_path: Path) -> None:
@@ -582,7 +591,23 @@ def write_ext_parquet(
     df = cast_df_to_schema(df, config.fields)
     df.write_parquet(out_path)
     logger.info("扩展表写入: %s → %s (%d 行)", config.id, out_path, len(df))
+    # 扩展列已接入 enriched 帧/因子注册表: 写入后必须失效相关缓存
+    _invalidate_ext_derived(data_dir)
     return len(df)
+
+
+def _invalidate_ext_derived(data_dir: Path) -> None:
+    """扩展数据/配置变更 → 扩展帧缓存 + 因子同步状态 + 策略结果缓存。
+
+    惰性导入避免与 ext_factors (反向惰性引用本模块) 构成模块级环。
+    repo 内存 enriched 缓存由 API 层 repo.clear_cache() 补充清理。
+    """
+    try:
+        from app.factors.ext_factors import invalidate_ext_caches
+
+        invalidate_ext_caches(data_dir)
+    except Exception as e:
+        logger.warning("扩展数据缓存失效失败: %s", e)
 
 
 def delete_ext_parquet(config_id: str, data_dir: Path) -> None:
@@ -601,6 +626,7 @@ def delete_ext_parquet(config_id: str, data_dir: Path) -> None:
     if ts_dir.exists():
         import shutil
         shutil.rmtree(ts_dir, ignore_errors=True)
+    _invalidate_ext_derived(data_dir)
 
 
 def fix_symbol_format(config: ExtConfig, data_dir: Path) -> int:

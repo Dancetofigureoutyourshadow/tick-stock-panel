@@ -25,11 +25,12 @@ interface Props {
 interface InfoPoint {
   date: string
   row: MinuteKlineRow
-  average: number
+  average: number | null
   prevClose: number | null
 }
 
-function formatAmount(value: number): string {
+function formatAmount(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return '—'
   if (value >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(2)}亿`
   if (value >= 10_000) return `${(value / 10_000).toFixed(0)}万`
   return value.toFixed(0)
@@ -417,7 +418,7 @@ export function EChartsMultiDayIntraday({
               {changePct != null && (
                 <span style={{ color: infoColor }}>{changePct >= 0 ? '+' : ''}{changePct.toFixed(2)}%</span>
               )}
-              <span className="text-muted">均价</span><span style={{ color: COLORS.average }}>{info.average.toFixed(2)}</span>
+              <span className="text-muted">均价</span><span style={{ color: COLORS.average }}>{info.average != null ? info.average.toFixed(2) : '—'}</span>
               <span className="text-muted">量</span><span className="text-secondary">{info.row.volume.toFixed(0)}</span>
               <span className="text-muted">额</span><span className="text-secondary">{formatAmount(info.row.amount)}</span>
             </>

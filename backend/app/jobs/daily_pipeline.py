@@ -2,7 +2,8 @@
 
 调度:
   09:10 盘前 — 同步个股维表 instruments (全量覆盖)
-  15:30 盘后 — 日K同步 + 增量除权因子 + enriched 计算 + 刷新视图
+  15:35 盘后 — 日K同步 + 增量除权因子 + enriched 计算 + 刷新视图
+  (默认 15:35: 盘后固定价 15:30 终止 + 供应商日线定稿缓冲, 见 preferences)
 
 盘后同步策略:
   日 K: QuoteService 交易时段已实时落盘 → 有数据时跳过 batch,首次拉 1 年区间
@@ -29,6 +30,83 @@ from app.tickflow.repository import KlineRepository
 logger = logging.getLogger(__name__)
 
 ProgressCb = Callable[..., None]
+
+
+def _prune_partial_enriched_partitions(daily_dir: Path, enriched_dir: Path) -> list[str]:
+    """删除 symbol 覆盖不完整的 enriched 日期分区, 返回被删的日期 (#223)。
+
+    自选实时路径会在全市场 enriched 生成前提前创建当日分区 (只有几只自选),
+    仅按日期目录计数比较会把它误判为完整分区而跳过计算, 造成日K缺失与
+    均线错误。同日 enriched 行数 < daily 行数即判定为部分分区: 删除后
+    run_pipeline(new_dates_only=True) 会把它们当"新日期"全市场补齐, 与
+    data_integrity.prune_enriched_partitions 的修复语义一致。
+    daily 同日分区不存在 (今日日K尚未同步) 时不处理, 留给当日正常流程。
+    """
+    import shutil
+
+    import pyarrow.parquet as pq
+
+    def _rows(part_dir: Path) -> int:
+        total = 0
+        for f in part_dir.glob("*.parquet"):
+            try:
+                total += pq.ParquetFile(f).metadata.num_rows
+            except Exception:  # noqa: BLE001
+                return -1  # 不可读 → 不动, 交给既有完整性检查兜底
+        return total
+
+    pruned: list[str] = []
+    for part in enriched_dir.glob("date=*"):
+        daily_part = daily_dir / part.stem
+        if not daily_part.exists():
+            continue
+        e_rows, d_rows = _rows(part), _rows(daily_part)
+        if e_rows >= 0 and d_rows > 0 and e_rows < d_rows:
+            shutil.rmtree(part, ignore_errors=True)
+            pruned.append(part.stem.split("=")[1])
+    return pruned
+
+
+def _prune_stale_price_partitions(
+    daily_dir: Path, enriched_dir: Path, max_dates: int = 5
+) -> list[str]:
+    """删除收盘价与官方日线不一致的 enriched 日期分区。
+
+    实时 flush 写入的当日分区行数与 daily 相同, 但收盘价可能停留在收盘集合
+    竞价前的快照 (实测: TickFlow 实时端点收盘后仍长期返回旧价, 3392/5554 只
+    股票当日收盘价与官方日线不符), #223 的行数校验识别不到。对最近若干交易日
+    做值级比对: enriched.raw_close 与 daily.close 任一标的差超过半个最小报价
+    单位即删分区, 由后续增量重算按官方日线全市场重建。
+    """
+    import shutil
+
+    common = sorted(
+        (
+            p.stem.split("=", 1)[1]
+            for p in enriched_dir.glob("date=*")
+            if (daily_dir / p.stem).exists()
+        ),
+        reverse=True,
+    )[:max_dates]
+    pruned: list[str] = []
+    for ds in common:
+        try:
+            daily = pl.read_parquet(
+                daily_dir / f"date={ds}" / "*.parquet", columns=["symbol", "close"]
+            )
+            enr = pl.read_parquet(
+                enriched_dir / f"date={ds}" / "*.parquet", columns=["symbol", "raw_close"]
+            )
+        except Exception:
+            continue  # 列缺失/不可读 → 交给既有完整性检查兜底
+        joined = enr.join(daily, on="symbol", how="inner").drop_nulls()
+        if joined.is_empty():
+            continue
+        bad = joined.filter((pl.col("raw_close") - pl.col("close")).abs() > 0.005)
+        if not bad.is_empty():
+            shutil.rmtree(enriched_dir / f"date={ds}", ignore_errors=True)
+            pruned.append(ds)
+    return pruned
 
 
 class PipelineStageError(RuntimeError):
@@ -352,6 +430,23 @@ def run_now(
     daily_dir = repo.store.data_dir / "kline_daily"
     daily_days = len(list(daily_dir.glob("date=*"))) if daily_dir.exists() else 0
     prev_enriched_days = len(list(enriched_dir.glob("date=*"))) if enriched_exists else 0
+
+    # 部分分区修复 (#223) + 收盘价过期分区修复: 删除被实时合并提前创建、覆盖不全
+    # 或收盘价停留在竞价前快照的 enriched 分区, 让下方计数比较与增量计算把它们
+    # 重新当新日期处理 (值级比对以官方日线为准, 实时源不纠错也能自愈)
+    if enriched_exists:
+        partial_pruned = _prune_partial_enriched_partitions(daily_dir, enriched_dir)
+        stale_pruned = _prune_stale_price_partitions(daily_dir, enriched_dir)
+        pruned_dates = sorted(set(partial_pruned) | set(stale_pruned))
+        if pruned_dates:
+            logger.warning(
+                "compute_enriched: 发现 %d 个异常 enriched 分区 (覆盖不全 %d / 收盘价过期 %d), "
+                "已删除待重算: %s",
+                len(pruned_dates), len(partial_pruned), len(stale_pruned),
+                ", ".join(pruned_dates[:10]),
+            )
+            enriched_exists = enriched_dir.exists() and any(enriched_dir.glob("date=*"))
+            prev_enriched_days = len(list(enriched_dir.glob("date=*"))) if enriched_exists else 0
 
     # 判断新日期方向: 找 daily 和 enriched 的日期集合做比较
     forward_incremental = False
@@ -828,9 +923,11 @@ async def _run_scheduled_review(repo) -> None:
             quote_service.push_review_event(json.dumps(
                 {"type": "done", "archived": True}, ensure_ascii=False))
 
-        # 推送到飞书(可选): 运行时读取配置, 用户改设置下次触发即生效。
+        # 推送门控: review_push_mode=manual 时定时复盘只归档不推送,
+        # 由用户对当日报告显式确认后才推; auto 时保持既有自动推送行为。
         # 失败静默降级, 不影响已归档的报告。
-        _maybe_push_review(content, meta)
+        if _prefs.get_review_push_mode() == "auto":
+            _maybe_push_review(content, meta)
     except Exception as e:  # noqa: BLE001
         logger.exception("scheduled review failed: %s", e)
         # 兜底: 异常时通知前端停止「生成中」状态, 避免页面卡在 streaming
@@ -910,11 +1007,12 @@ def _maybe_push_review(content: str, meta: dict) -> None:
     """复盘报告归档后, 按 review_push_channels 选定的外部工具逐个推送完整报告。
 
     定时生成与手动生成共用本函数 (手动归档端点 POST /api/market-recap/reports 也会调用)。
-    channels 为空则不推送; 'feishu' 复用监控中心的全局飞书 Webhook 通道。
+    channels 为空则不推送; 复用监控中心的全局外部渠道配置。
     推送失败静默降级 (Webhook 是辅助通道), 不影响已归档的报告。
     """
     try:
-        from app.services import preferences, webhook_adapter
+        from app import secrets_store
+        from app.services import email_adapter, preferences, webhook_adapter
 
         channels = preferences.get_review_push_channels()
         if not channels:
@@ -946,6 +1044,33 @@ def _maybe_push_review(content: str, meta: dict) -> None:
                     url, "每日复盘", full_body
                 )
                 logger.info("review push(wecom) %s", "sent" if ok else "failed")
+            elif ch == "custom":
+                url = preferences.get_custom_webhook_url()
+                if not url:
+                    logger.info("review push(custom) skipped: webhook not configured")
+                    continue
+                ok = webhook_adapter.send_custom(
+                    url,
+                    "每日复盘",
+                    content,
+                    "market_review",
+                    meta,
+                    secrets_store.get_custom_webhook_secret(),
+                )
+                logger.info("review push(custom) %s", "sent" if ok else "failed")
+            elif ch == "email":
+                config = preferences.get_email_smtp_config()
+                if not email_adapter.is_configured(config):
+                    logger.info("review push(email) skipped: SMTP not configured")
+                    continue
+                email_body = (f"{subtitle}\n\n{content}" if subtitle else content)
+                ok = email_adapter.send_email(
+                    config,
+                    secrets_store.get_email_smtp_password(),
+                    "每日复盘",
+                    email_body,
+                )
+                logger.info("review push(email) %s", "sent" if ok else "failed")
             # 未来更多渠道在此追加分支
     except Exception as e:  # noqa: BLE001
         logger.warning("review push error: %s", e)
@@ -977,7 +1102,7 @@ def start_scheduler(repo: KlineRepository, capset: CapabilitySet) -> AsyncIOSche
     """启动调度器。
 
     工作日 09:10 — 同步个股维表
-    工作日 HH:MM — 盘后管道（时间由用户偏好决定，默认 15:30）
+    工作日 HH:MM — 盘后管道（时间由用户偏好决定，默认 15:35）
     """
     from app.services import preferences
     sched = preferences.get_pipeline_schedule()

@@ -53,6 +53,8 @@ interface Props {
   intradayDays?: number
   /** 日K/分时并排时日K图占宽 (默认 1:1; 弹窗内图表信息栏较宽需更多空间时传 flex-[1.4] 之类) */
   dailyKlineFlex?: string
+  /** 初始可见蜡烛根数 (默认 60); 'all' = 初始适配显示全部数据 (用于全区间回放) */
+  visibleBars?: number | 'all'
 }
 
 export { getDefaultRange }
@@ -81,6 +83,7 @@ export function StockPanel({
   prefetchSymbols,
   intradayDays = DEFAULT_INTRADAY_DAYS,
   dailyKlineFlex = 'flex-1',
+  visibleBars,
 }: Props) {
   const [linkedPrice, setLinkedPrice] = useState<number | null>(null)
   const [selectedDate, setSelectedDate] = useState<string | null>(null)
@@ -225,7 +228,7 @@ export function StockPanel({
           linkedPrice={linkedPrice}
           onDateClick={handleDateClick}
           onPriceDoubleClick={onPriceDoubleClick}
-          visibleBars={showIntraday ? 40 : 60}
+          visibleBars={visibleBars ?? (showIntraday ? 40 : 60)}
           extColumns={extColumns}
           refetchIntervalMs={refetchIntervalMs}
           />

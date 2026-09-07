@@ -562,8 +562,6 @@ def _compute_label_and_missing(
 
     base_caps = _tier_caps_set(tiers, base)
     missing = sorted(c.value for c in (base_caps - held))
-    extras = base_caps and (held - base_caps) or set()  # extras 是超出该档的部分
-
     # 实际超出 = held 中"既不属于本档、也不属于本档下方任何档"的 cap
     # 简化:extras = held - base_caps
     extras_set = held - base_caps

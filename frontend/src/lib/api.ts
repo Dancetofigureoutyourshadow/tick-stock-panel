@@ -452,6 +452,13 @@ export interface WatchlistEntry {
   group_ids?: string[]
 }
 
+export interface WatchlistPerformanceEntry {
+  symbol: string
+  added_at: string
+  base_price: number | null
+  base_time: string | null
+}
+
 export type WatchlistGroupColor =
   | 'sky'
   | 'blue'
@@ -2724,6 +2731,8 @@ export const api = {
   watchlistClear: () =>
     request<{ removed: number }>('/api/watchlist', { method: 'DELETE' }),
   watchlistQuotes: () => request<{ quotes: Quote[] }>('/api/watchlist/quotes'),
+  watchlistPerformance: () =>
+    request<{ rows: WatchlistPerformanceEntry[]; elapsed_ms: number }>('/api/watchlist/performance'),
   watchlistEnriched: (extColumns?: string) =>
     request<{ rows: any[]; as_of: string | null; elapsed_ms: number }>(
       extColumns

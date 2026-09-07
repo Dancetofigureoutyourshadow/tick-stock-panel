@@ -9,11 +9,13 @@ universe 里的自选股静默丢弃.
 """
 from __future__ import annotations
 
+from datetime import datetime
 from types import SimpleNamespace
 
 import polars as pl
 
 from app.api import watchlist as wl_api
+from app.services.watchlist_performance import reference_prices_from_minutes
 
 
 class _FakeRepo:
@@ -72,6 +74,111 @@ def _enriched_df(symbols_data):
             "amount": pl.Float64, "turnover_rate": pl.Float64,
         },
     )
+
+
+def test_watchlist_reference_price_uses_last_minute_at_added_time():
+    class _MinuteRepo:
+        @staticmethod
+        def get_minute_by_dates(symbols, dates, asset_type="stock"):
+            assert asset_type == "stock"
+            assert set(symbols) == {"600000.SH", "000001.SZ"}
+            assert [str(value) for value in dates] == ["2026-09-07"]
+            return pl.DataFrame({
+                "symbol": ["600000.SH", "600000.SH", "000001.SZ", "000001.SZ"],
+                "datetime": [
+                    datetime(2026, 9, 7, 10, 15),
+                    datetime(2026, 9, 7, 10, 16),
+                    datetime(2026, 9, 7, 14, 59),
+                    datetime(2026, 9, 7, 15, 0),
+                ],
+                "close": [10.0, 10.2, 20.0, 20.5],
+            })
+
+    prices, price_times = reference_prices_from_minutes(
+        _MinuteRepo(),
+        [
+            # 历史 added_at 由 datetime.utcnow() 生成且无时区：02:15 UTC = 10:15 北京时间。
+            {"symbol": "600000.SH", "added_at": "2026-09-07T02:15:30"},
+            # 收盘后加入：08:10 UTC = 16:10 北京时间，应取 15:00 最后一根。
+            {"symbol": "000001.SZ", "added_at": "2026-09-07T08:10:00Z"},
+        ],
+        etf_set=set(),
+        index_set=set(),
+    )
+
+    assert prices == {"600000.SH": 10.0, "000001.SZ": 20.5}
+    assert price_times == {
+        "600000.SH": "2026-09-07T10:15:00",
+        "000001.SZ": "2026-09-07T15:00:00",
+    }
+
+
+def test_watchlist_performance_is_a_separate_endpoint(monkeypatch):
+    entries = [
+        {"symbol": "600000.SH", "added_at": "2026-09-07T02:15:30"},
+        {"symbol": "510300.SH", "added_at": "2026-09-07T08:10:00"},
+    ]
+    monkeypatch.setattr(wl_api.watchlist, "list_symbols", lambda: entries)
+
+    def _reference_prices(repo, actual_entries, etf_set, index_set):
+        assert actual_entries == entries
+        assert etf_set == {"510300.SH"}
+        assert index_set == set()
+        return (
+            {"600000.SH": 10.0, "510300.SH": 4.2},
+            {
+                "600000.SH": "2026-09-07T10:15:00",
+                "510300.SH": "2026-09-07T15:00:00",
+            },
+        )
+
+    monkeypatch.setattr(wl_api, "get_reference_prices", _reference_prices)
+    repo = _FakeRepo(
+        enriched_df=pl.DataFrame(),
+        enriched_date=None,
+        etf_set={"510300.SH"},
+    )
+
+    result = wl_api.watchlist_performance(_make_request(repo))
+
+    assert result["rows"] == [
+        {
+            "symbol": "600000.SH",
+            "added_at": "2026-09-07T02:15:30",
+            "base_price": 10.0,
+            "base_time": "2026-09-07T10:15:00",
+        },
+        {
+            "symbol": "510300.SH",
+            "added_at": "2026-09-07T08:10:00",
+            "base_price": 4.2,
+            "base_time": "2026-09-07T15:00:00",
+        },
+    ]
+
+
+def test_watchlist_enriched_does_not_query_performance(monkeypatch):
+    monkeypatch.setattr(
+        wl_api,
+        "get_reference_prices",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("enriched 接口不应查询自选历史表现")
+        ),
+    )
+    monkeypatch.setattr(
+        wl_api.watchlist,
+        "list_symbols",
+        lambda: [{"symbol": "600519.SH"}],
+    )
+    repo = _FakeRepo(
+        enriched_df=_enriched_df([("600519.SH", 1800.0, 1.2, 1e9)]),
+        enriched_date="2026-09-07",
+    )
+
+    result = wl_api.watchlist_enriched(_make_request(repo), ext_columns=None)
+
+    assert result["rows"][0]["symbol"] == "600519.SH"
+    assert "watchlist_base_price" not in result["rows"][0]
 
 
 def test_watchlist_symbol_not_in_enriched_still_returned(monkeypatch):

@@ -14,6 +14,7 @@ from pydantic import BaseModel
 
 from app.db_safe import is_valid_ext_ident, quote_ident
 from app.services import watchlist
+from app.services.watchlist_performance import get_reference_prices
 from app.services.watchlist_csv import import_watchlist_codes, import_watchlist_csv
 from app.services.watchlist_ocr import import_watchlist_image
 from app.services.watchlist_ocr.provider import get_ocr_provider
@@ -350,6 +351,36 @@ def clear_all():
     return {"removed": count}
 
 
+@router.get("/performance")
+def watchlist_performance(request: Request):
+    """独立返回自选加入时间及对应分钟基准价，不进入 enriched 行情链路。"""
+    t0 = time.perf_counter()
+    entries = watchlist.list_symbols()
+    if not entries:
+        return {"rows": [], "elapsed_ms": 0}
+
+    repo = request.app.state.repo
+    reference_prices, reference_times = get_reference_prices(
+        repo,
+        entries,
+        repo.get_etf_symbol_set(),
+        repo.get_index_symbol_set(),
+    )
+    rows = [
+        {
+            "symbol": str(entry["symbol"]),
+            "added_at": str(entry.get("added_at") or ""),
+            "base_price": reference_prices.get(str(entry["symbol"])),
+            "base_time": reference_times.get(str(entry["symbol"])),
+        }
+        for entry in entries
+    ]
+    return {
+        "rows": rows,
+        "elapsed_ms": round((time.perf_counter() - t0) * 1000, 2),
+    }
+
+
 # 自选页需要的列
 _WATCHLIST_COLS = [
     "symbol", "close", "open", "high", "low", "change_pct", "change_amount", "amount",
@@ -399,7 +430,6 @@ def watchlist_enriched(
     etf_symbols = [s for s in symbols if s in etf_set]
     index_symbols = [s for s in symbols if s not in etf_set and s in index_set]
     stock_symbols = [s for s in symbols if s not in etf_set and s not in index_set]
-
     df_e, cache_date = repo.get_enriched_latest()
 
     # 以自选列表为主表 LEFT JOIN enriched, 保证自选的每一只都返回一行;

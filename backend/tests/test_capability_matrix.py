@@ -237,6 +237,21 @@ def test_depth5_capability_semantics(monkeypatch):
     assert cap["effective"] == "mootdx"
     assert cap["usable"] is True
 
+    _fake_sources(
+        monkeypatch,
+        [{"name": "mootdx", "display_name": "MooTDX", "datasets": ["depth5"],
+          "available": True, "status": "ok"}],
+    )
+    cap = _by_id(
+        build_capability_matrix(
+            dict(DEFAULT_CURRENT, depth5_data_provider="mootdx"), tickflow_tier="free",
+        ),
+    )["depth5"]
+    assert cap["tf_available"] is False
+    assert [c["name"] for c in cap["candidates"]] == ["mootdx"]
+    assert cap["effective"] == "mootdx"
+    assert cap["usable"] is True
+
 
 def test_unknown_current_display_falls_back_to_name(monkeypatch):
     """偏好指向未注册源 (正常经 getters 校验不会发生): 展示回退为原始名, 不抛异常。"""

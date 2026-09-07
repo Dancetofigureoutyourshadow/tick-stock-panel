@@ -164,6 +164,7 @@ export function StockPreviewDialog({ symbol, name, onClose, triggerInfo, navList
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: QK.watchlist })
       qc.invalidateQueries({ queryKey: ['watchlist-enriched'] })
+      qc.invalidateQueries({ queryKey: QK.watchlistPerformance })
     },
   })
 

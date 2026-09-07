@@ -67,6 +67,24 @@ function localDateDaysAgo(days: number): string {
   return localIsoDate(value)
 }
 
+function watchlistEntryTime(value: string | null | undefined): string {
+  if (!value) return '—'
+  const date = new Date(/[zZ]|[+-]\d{2}:?\d{2}$/.test(value) ? value : `${value}Z`)
+  if (Number.isNaN(date.getTime())) return value
+  return date.toLocaleString('zh-CN', {
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hour12: false,
+  }).replace(/\//g, '-')
+}
+
+function watchlistGain(row: any): number | null {
+  const current = row.rt_price ?? row.close
+  const base = row.watchlist_base_price
+  return typeof current === 'number' && typeof base === 'number' && Number.isFinite(current) && base > 0
+    ? current / base - 1
+    : null
+}
+
 // ===== 板块标识（筛选/卡片用） =====
 // 注: boardTag（创/科/北 标签）已移至共享 @/components/stock-table/primitives
 
@@ -530,6 +548,8 @@ const StockCard = React.memo(function StockCard({
   const barColor = isUp ? 'bg-bull/70' : isDown ? 'bg-bear/70' : 'bg-muted/30'
   // 涨跌幅标签背景
   const pctBg = isUp ? 'bg-bull/12 text-bull' : isDown ? 'bg-bear/12 text-bear' : 'bg-elevated text-secondary'
+  const addedGain = watchlistGain(r)
+  const addedAt = watchlistEntryTime(r.watchlist_added_at)
 
   return (
     <div
@@ -606,6 +626,15 @@ const StockCard = React.memo(function StockCard({
               {fmtPct(pct)}
             </span>
           )}
+        </div>
+
+        <div className="flex items-center justify-between gap-2 mb-2 text-[10px] text-muted">
+          <span title={r.watchlist_base_price != null ? `分时基准 ${watchlistEntryTime(r.watchlist_base_time)}，价格 ${fmtPrice(r.watchlist_base_price)} → 当前价 ${fmtPrice(price)}` : '该时间点缺少本地分钟K，无法计算基准价'}>
+            自选 {addedAt}
+          </span>
+          <span className={`font-mono tabular-nums ${priceColorClass(addedGain)}`}>
+            至今 {fmtPct(addedGain)}
+          </span>
         </div>
 
         {/* 第三行: 指标 */}
@@ -827,6 +856,14 @@ export function Watchlist() {
     queryKey: QK.watchlistEnriched(extColumnsParam),
     queryFn: () => api.watchlistEnriched(extColumnsParam || undefined),
     enabled: (list.data?.symbols.length ?? 0) > 0,
+  })
+
+  // 自选表现独立取数：历史分钟查询不会阻塞或改变 enriched 行情接口。
+  const performance = useQuery({
+    queryKey: QK.watchlistPerformance,
+    queryFn: api.watchlistPerformance,
+    enabled: (list.data?.symbols.length ?? 0) > 0,
+    staleTime: 5 * 60_000,
   })
 
   const symbols = enriched.data?.rows?.map((r: any) => r.symbol) ?? []
@@ -1099,6 +1136,7 @@ export function Watchlist() {
       qc.setQueryData(QK.watchlist, data)
       qc.invalidateQueries({ queryKey: QK.watchlist })
       qc.invalidateQueries({ queryKey: ['watchlist-enriched'] })
+      qc.invalidateQueries({ queryKey: QK.watchlistPerformance })
       qc.invalidateQueries({ queryKey: ['kline-batch'] })
     },
   })
@@ -1114,6 +1152,7 @@ export function Watchlist() {
       // 2. 清除 list 缓存，触发后台 refetch
       qc.invalidateQueries({ queryKey: QK.watchlist })
       qc.invalidateQueries({ queryKey: ['watchlist-enriched'] })
+      qc.invalidateQueries({ queryKey: QK.watchlistPerformance })
       qc.invalidateQueries({ queryKey: ['kline-batch'] })
     },
   })
@@ -1136,6 +1175,7 @@ export function Watchlist() {
       setConfirmClear(false)
       // 立即清空 enriched 缓存
       qc.setQueryData(['watchlist-enriched', extColumnsParam], { rows: [], as_of: null, elapsed_ms: 0 })
+      qc.setQueryData(QK.watchlistPerformance, { rows: [], elapsed_ms: 0 })
       qc.invalidateQueries({ queryKey: QK.watchlist })
       qc.invalidateQueries({ queryKey: ['watchlist-enriched'] })
       qc.invalidateQueries({ queryKey: ['kline-batch'] })
@@ -1214,7 +1254,23 @@ export function Watchlist() {
 
   const listEntries = list.data?.symbols ?? []
   const allSymbols = listEntries.map(s => s.symbol)
-  const rows = enriched.data?.rows ?? []
+  const performanceBySymbol = useMemo(
+    () => new Map((performance.data?.rows ?? []).map(row => [row.symbol, row])),
+    [performance.data?.rows],
+  )
+  const rows = useMemo(
+    () => (enriched.data?.rows ?? []).map((row: any) => {
+      const item = performanceBySymbol.get(row.symbol)
+      if (!item) return row
+      return {
+        ...row,
+        watchlist_added_at: item.added_at,
+        watchlist_base_price: item.base_price,
+        watchlist_base_time: item.base_time,
+      }
+    }),
+    [enriched.data?.rows, performanceBySymbol],
+  )
   const groupBySymbol = useMemo(
     () => new Map(listEntries.map(entry => [entry.symbol, entry.group_ids ?? []])),
     [listEntries],
@@ -2007,6 +2063,20 @@ export function Watchlist() {
                 }
                 if (key === 'pct') {
                   return <td className={`${numCls} ${priceColorClass(pct)}`}>{fmtPct(pct)}</td>
+                }
+                if (key === 'watchlist_gain') {
+                  const gain = watchlistGain(r)
+                  return (
+                    <td
+                      className={`${numCls} whitespace-nowrap`}
+                      title={gain == null ? '该时间点缺少本地分钟K，无法计算' : `分时基准 ${watchlistEntryTime(r.watchlist_base_time)}，价格 ${fmtPrice(r.watchlist_base_price)} → 当前价 ${fmtPrice(price)}`}
+                    >
+                      <div className={`font-medium ${priceColorClass(gain)}`}>{fmtPct(gain)}</div>
+                      <div className="mt-0.5 text-[10px] font-normal text-muted">
+                        {watchlistEntryTime(r.watchlist_added_at)}
+                      </div>
+                    </td>
+                  )
                 }
                 if (key === 'amount') {
                   return <td className={`${numCls} text-secondary`}>{fmtBigNum(r.rt_amount ?? r.amount)}</td>

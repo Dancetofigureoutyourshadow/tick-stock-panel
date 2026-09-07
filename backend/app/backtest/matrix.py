@@ -70,6 +70,32 @@ def _raise_if_matrix_cancelled(cancel_event: threading.Event | None) -> None:
         raise MatrixPrewarmCancelledError("matrix cache prewarm cancelled")
 
 
+def _publish_matrix_cache_directory(temporary: Path, cache_path: Path) -> None:
+    """Publish a completed matrix cache without being blocked by a stale target.
+
+    Windows refuses to replace an existing directory.  A previous interrupted
+    build can leave that directory without ``manifest.json``; it is not a
+    usable cache and may safely be removed before retrying the publish.
+    Completed caches remain authoritative and keep the existing discard-temp
+    behavior when another builder won the race.
+    """
+    try:
+        os.replace(temporary, cache_path)
+        return
+    except OSError:
+        if (cache_path / "manifest.json").exists():
+            shutil.rmtree(temporary, ignore_errors=True)
+            return
+
+        if not cache_path.is_dir():
+            raise
+        try:
+            shutil.rmtree(cache_path)
+        except OSError:
+            raise
+        os.replace(temporary, cache_path)
+
+
 _MATRIX_DISK_CACHE_LOCK = threading.RLock()
 _MATRIX_DISK_CACHE_LEASES: dict[str, int] = {}
 _MATRIX_DISK_CACHE_PENDING_DELETE: set[str] = set()
@@ -1214,13 +1240,7 @@ def _build_market_data_matrix_cache_from_dataset(
             encoding="utf-8",
         )
         _raise_if_matrix_cancelled(cancel_event)
-        try:
-            os.replace(temporary, cache_path)
-        except OSError:
-            if (cache_path / "manifest.json").exists():
-                shutil.rmtree(temporary, ignore_errors=True)
-            else:
-                raise
+        _publish_matrix_cache_directory(temporary, cache_path)
     except BaseException:
         _close_matrix_memmaps(mapped)
         shutil.rmtree(temporary, ignore_errors=True)

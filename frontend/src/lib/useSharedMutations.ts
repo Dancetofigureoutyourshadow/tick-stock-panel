@@ -46,6 +46,7 @@ export function useWatchlistBatchAdd() {
       // 前缀匹配: 实际 key 为 ['watchlist-enriched', extColumnsParam],
       // 不能用 QK.watchlistEnriched()(= undefined) 精确匹配, 否则列表不刷新。
       qc.invalidateQueries({ queryKey: ['watchlist-enriched'] })
+      qc.invalidateQueries({ queryKey: QK.watchlistPerformance })
     },
   })
 }

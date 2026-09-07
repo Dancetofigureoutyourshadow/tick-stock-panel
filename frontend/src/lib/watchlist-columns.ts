@@ -28,6 +28,7 @@ export const BUILTIN_COLUMNS: ColumnConfig[] = [
   // 价格
   { id: 'builtin:price', source: { type: 'builtin', key: 'price' }, label: '现价', visible: true, align: 'center' },
   { id: 'builtin:pct', source: { type: 'builtin', key: 'pct' }, label: '涨跌幅', visible: true, align: 'center' },
+  { id: 'builtin:watchlist_gain', source: { type: 'builtin', key: 'watchlist_gain' }, label: '自选至今', visible: true, align: 'center' },
   { id: 'builtin:change_amount', source: { type: 'builtin', key: 'change_amount' }, label: '涨跌额', visible: false, align: 'center' },
   { id: 'builtin:amplitude', source: { type: 'builtin', key: 'amplitude' }, label: '振幅', visible: false, align: 'center' },
   // 成交
@@ -86,7 +87,7 @@ export const BUILTIN_COLUMNS: ColumnConfig[] = [
 ]
 
 export const COLUMN_GROUPS: ColumnGroup[] = [
-  { id: 'price', label: '价格', icon: '💰', keys: ['price', 'pct', 'change_amount', 'amplitude'] },
+  { id: 'price', label: '价格', icon: '💰', keys: ['price', 'pct', 'watchlist_gain', 'change_amount', 'amplitude'] },
   { id: 'volume', label: '成交', icon: '📊', keys: ['turnover', 'amount', 'float_val', 'vol_ratio', 'annual_vol'] },
   { id: 'ma', label: '均线', icon: '📈', keys: ['ma5', 'ma10', 'ma20', 'ma60'] },
   { id: 'range', label: '区间', icon: '📏', keys: ['high_60d', 'low_60d'] },

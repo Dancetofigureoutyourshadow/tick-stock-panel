@@ -1776,13 +1776,14 @@ class KlineRepository:
         """
         if not symbols or not dates:
             return pl.DataFrame()
-        base = self._etf_minute_glob.rsplit("/", 2)[0] if asset_type == "etf" else self._minute_glob.rsplit("/", 2)[0]
+        dirname = "kline_etf_minute" if asset_type == "etf" else "kline_minute"
+        base = self.store.data_dir / dirname
         # 收集存在的分区文件路径, 避免对不存在的文件 scan 报错
         parts: list[str] = []
         for d in dates:
-            p = f"{base}/date={d.isoformat()}/part.parquet"
-            if Path(p).exists():
-                parts.append(p)
+            p = base / f"date={d.isoformat()}" / "part.parquet"
+            if p.exists():
+                parts.append(str(p))
         if not parts:
             return pl.DataFrame()
         try:

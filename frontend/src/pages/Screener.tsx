@@ -581,6 +581,7 @@ export function Screener() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: QK.watchlist })
       qc.invalidateQueries({ queryKey: ['watchlist-enriched'] })
+      qc.invalidateQueries({ queryKey: QK.watchlistPerformance })
     },
   })
 

@@ -46,7 +46,7 @@ const BUILTIN_PAGES: NavEntry[] = [
   { id: '/monitor', label: '监控中心', type: 'builtin', visible: true },
   { id: '/regime', label: '市场环境', type: 'builtin', visible: true },
   { id: '/abnormal', label: '异动监控', type: 'builtin', visible: true },
-  { id: '/lots', label: '持仓提醒', type: 'builtin', visible: true },
+  { id: '/lots', label: '持仓账户', type: 'builtin', visible: true },
   { id: '/signals', label: '信号库', type: 'builtin', visible: true },
   { id: '/review', label: '复盘', type: 'builtin', visible: true },
   { id: '/indices', label: '指数', type: 'builtin', visible: true },

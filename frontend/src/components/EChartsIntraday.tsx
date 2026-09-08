@@ -14,6 +14,14 @@ export interface DailyOhlc {
   close: number
 }
 
+export interface IntradayChartMarker {
+  date: string
+  time: string
+  price: number
+  kind: 'buy' | 'sell'
+  description?: string
+}
+
 // 序列颜色 (双主题通用); 画布轴/网格/十字线等主题相关色走 ChartTheme
 const THEME = {
   line: '#3B82F6',
@@ -34,6 +42,7 @@ interface Props {
   currentPrice?: number
   dailyOhlc?: DailyOhlc
   priceLines?: { value: number; label?: string; color?: string }[]
+  markers?: IntradayChartMarker[]
   showLimitLines?: boolean
   showAvgLine?: boolean
   /** 分钟成交额计算出的均价需要同步应用的复权比例。 */
@@ -73,7 +82,20 @@ function getLimitPrices(prevClose: number, priceLimit?: PriceLimitInfo): {
   return { limitUp, limitDown, upPct, downPct }
 }
 
-function buildOption(data: MinuteKlineRow[], prevClose: number | undefined, avgPrices: (number | null)[], lineColor: string, areaColor: string, yMode: YMode, ct: ChartTheme, priceLimit?: PriceLimitInfo, showLimitLines = true, showAvgLine = true, priceLines: Props['priceLines'] = []): EChartsOption {
+function nearestTradingTime(time: string): string {
+  const [hour, minute] = time.split(':').map(Number)
+  const target = Number.isFinite(hour) && Number.isFinite(minute) ? hour * 60 + minute : 15 * 60
+  return FULL_DAY_TIMES.reduce((nearest, candidate) => {
+    const [candidateHour, candidateMinute] = candidate.split(':').map(Number)
+    const [nearestHour, nearestMinute] = nearest.split(':').map(Number)
+    return Math.abs(candidateHour * 60 + candidateMinute - target)
+      < Math.abs(nearestHour * 60 + nearestMinute - target)
+      ? candidate
+      : nearest
+  }, FULL_DAY_TIMES[0])
+}
+
+function buildOption(data: MinuteKlineRow[], prevClose: number | undefined, avgPrices: (number | null)[], lineColor: string, areaColor: string, yMode: YMode, ct: ChartTheme, priceLimit?: PriceLimitInfo, showLimitLines = true, showAvgLine = true, priceLines: Props['priceLines'] = [], markers: IntradayChartMarker[] = [], date?: string): EChartsOption {
   // 将数据映射到全天时间轴上的正确位置
   const timeIndexMap = new Map(FULL_DAY_TIMES.map((t, i) => [t, i]))
   const closes = new Array(FULL_DAY_TIMES.length).fill(null) as (number | null)[]
@@ -125,6 +147,27 @@ function buildOption(data: MinuteKlineRow[], prevClose: number | undefined, avgP
       symbol: 'none',
     })
   }
+
+  const markerData: any[] = markers
+    .filter(marker => marker.date === date && Number.isFinite(marker.price) && marker.price > 0)
+    .map(marker => ({
+      name: marker.description ?? '',
+      value: marker.description ?? '',
+      coord: [nearestTradingTime(marker.time), marker.price],
+      symbol: 'circle',
+      symbolSize: 9,
+      symbolOffset: [0, 0],
+      itemStyle: {
+        color: marker.kind === 'buy' ? '#B91C1C' : '#15803D',
+        borderColor: '#FFFFFF',
+        borderWidth: 1.5,
+      },
+      label: { show: false },
+      tooltip: marker.description
+        ? { show: true, renderMode: 'richText', formatter: marker.description }
+        : undefined,
+      z: 130,
+    }))
   for (const line of priceLines) {
     if (!Number.isFinite(line.value) || line.value <= 0) continue
     markLineData.push({
@@ -379,6 +422,7 @@ function buildOption(data: MinuteKlineRow[], prevClose: number | undefined, avgP
         areaStyle,
         connectNulls: true,
         markLine: markLineData.length > 0 ? { symbol: 'none', data: markLineData, animation: false, silent: true } : undefined,
+        markPoint: markerData.length > 0 ? { data: markerData, animation: false } : undefined,
       },
       ...(showAvgLine ? [{
         name: '均价',
@@ -413,6 +457,7 @@ export function EChartsIntraday({
   currentPrice,
   dailyOhlc,
   priceLines,
+  markers,
   showLimitLines = true,
   showAvgLine = true,
   averagePriceScale = 1,
@@ -523,11 +568,11 @@ export function EChartsIntraday({
       }
       fullDayToDataIdx.current = mapping
 
-      chart.setOption(buildOption(data, prevClose, avgPrices, lineColor, areaFill, yMode, ct, priceLimit, showLimitLines, showAvgLine, priceLines), true)
+      chart.setOption(buildOption(data, prevClose, avgPrices, lineColor, areaFill, yMode, ct, priceLimit, showLimitLines, showAvgLine, priceLines, markers, date), true)
     } else {
       chart.clear()
     }
-  }, [data, prevClose, height, lineColor, areaFill, yMode, ct, priceLimit, showLimitLines, showAvgLine, priceLines])
+  }, [data, prevClose, height, lineColor, areaFill, yMode, ct, priceLimit, showLimitLines, showAvgLine, priceLines, markers, date])
 
   useEffect(() => {
     return () => {

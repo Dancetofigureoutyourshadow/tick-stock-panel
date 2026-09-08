@@ -20,11 +20,15 @@ from app.data_providers.normalizer import (
 )
 from app.market_time import cn_today, in_continuous_session
 from app.plugins.mootdx import bridge
+from app.plugins.mootdx.batch_scheduler import run_heap_batch
 
 logger = logging.getLogger(__name__)
 _CODE_RE = re.compile(r"^(?:(sh|sz))?(\d{6})(?:\.(sh|sz))?$", re.IGNORECASE)
 _MINUTE_COLUMNS = ["symbol", "datetime", "open", "high", "low", "close", "volume", "amount"]
-_DATASETS = ("daily", "adj_factor", "minute", "realtime", "depth5", "transactions", "financial", "instruments")
+_DATASETS = (
+    "daily", "adj_factor", "minute", "full_minute", "realtime", "depth5",
+    "transactions", "financial", "instruments",
+)
 _QUOTE_BATCH_SIZE = 100
 # Keep this in sync with ``tdxpy.helper.get_security_type``.  MooTDX's
 # ``stock_all`` also contains special securities (for example 4xxxxx and
@@ -467,6 +471,54 @@ class MooTdxProvider:
         if not frame.is_empty() and end is not None:
             frame = frame.filter(pl.col("datetime") <= pl.lit(end))
         return frame
+
+    def get_intraday_batch(self, symbols, count=300, asset_type="stock"):
+        """Return current-day 1-minute rows for the full-minute repair round.
+
+        MooTDX exposes one symbol per ``minutes`` request, so the plugin performs
+        the fan-out locally with resource-aware worker isolation. Each worker
+        owns its own TCP client; one bad symbol/server does not discard rows
+        already fetched by the other workers.
+        """
+        if asset_type != "stock":
+            raise ValueError("MooTDX full-minute provider only supports stock")
+        requested_count = int(count)
+        if requested_count <= 0:
+            raise ValueError("MooTDX full-minute count must be positive")
+        requested = list(dict.fromkeys(symbols or []))
+        if not requested:
+            return pl.DataFrame()
+
+        day = cn_today()
+        day_text = day.strftime("%Y%m%d")
+
+        def _fetch(client, symbol: str) -> pl.DataFrame:
+            raw = client.minutes(symbol=_code(symbol), date=day_text)
+            frame = _minute_frame(raw, symbol, day)
+            return frame.tail(requested_count) if frame.height > requested_count else frame
+
+        result = run_heap_batch(
+            requested,
+            client_factory=bridge.tdx_client,
+            fetch=_fetch,
+        )
+        frames = [frame for frame in result.values if not frame.is_empty()]
+        logger.info(
+            "MooTDX full-minute batch: %d/%d symbols, workers=%d, cpu=%d, "
+            "available_memory=%d, gpu=%d, failed=%d",
+            len(frames), len(requested), result.workers,
+            result.resources.logical_cpus, result.resources.available_memory_bytes,
+            result.resources.gpu_count, len(result.failed),
+        )
+        if result.failed:
+            logger.warning(
+                "MooTDX full-minute skipped %d symbols after one retry: %s",
+                len(result.failed), ", ".join(result.failed[:20]),
+            )
+        return (
+            pl.concat(frames, how="diagonal_relaxed").sort("symbol", "datetime")
+            if frames else pl.DataFrame()
+        )
 
     def get_realtime(self, universes=None, symbols=None):
         if universes and symbols:

@@ -141,6 +141,7 @@ function patchMatrix(
       cap.current_display = displayOfName({ capabilities: caps }, value)
       cap.effective = value
       cap.effective_display = cap.current_display
+      cap.usable = cap.candidates.some(candidate => candidate.name === value && candidate.available)
     }
   }
   return { ...matrix, capabilities: caps }

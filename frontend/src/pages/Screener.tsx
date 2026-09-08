@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { motion } from 'framer-motion'
 import { ScanSearch, Clock, TrendingUp, Star, Filter, Layers, Network, Sparkles, RefreshCw, Settings2, Store, RotateCcw, X } from 'lucide-react'
-import { api, genRuleId, type ScreenerStrategy, type ScreenerResult } from '@/lib/api'
+import { api, ApiError, genRuleId, type ScreenerStrategy, type ScreenerResult } from '@/lib/api'
 import { fetchMinuteBatchIncremental } from '@/lib/minuteBatchIncremental'
 import { DEFAULT_STRATEGY_NOTIFY_EVENTS } from '@/lib/strategyMonitorEvents'
 import { toast } from '@/components/Toast'
@@ -24,6 +24,7 @@ import { StrategyPoolDialog } from '@/components/screener/StrategyPoolDialog'
 import { StrategyBuilderDialog } from '@/components/screener/StrategyBuilderDialog'
 import { StrategyStoreDialog } from '@/components/screener/StrategyStoreDialog'
 import { CompositeStrategyDialog } from '@/components/screener/CompositeStrategyDialog'
+import { PortfolioBuyDialog } from '@/components/portfolio/PortfolioBuyDialog'
 import { ListColumnCustomizer } from '@/components/ListColumnCustomizer'
 import { useTableSort } from '@/components/stock-table/useTableSort'
 import { resolveCandleConfig } from '@/lib/list-columns'
@@ -62,6 +63,7 @@ export function Screener() {
   const [builderMode, setBuilderMode] = useState<'create' | 'modify'>('create')
   const [showStore, setShowStore] = useState(false)
   const [showComposite, setShowComposite] = useState(false)
+  const [buyTarget, setBuyTarget] = useState<any | null>(null)
   const { pool, addToPool, removeFromPool, reorderPool, prune } = useStrategyPool()
   const [cardSize, setCardSize] = useState<CardSize>(loadCardSize)
   // 日k蜡烛图显示开关（仅当 candle 列可见时才有意义；持久化）
@@ -575,9 +577,14 @@ export function Screener() {
       symbol: string
       action: 'add' | 'remove'
       groupId?: string | null
-    }) => action === 'remove'
-      ? api.watchlistRemove(symbol)
-      : api.watchlistAdd(symbol, '', groupId),
+    }) => {
+      if (action === 'add') return api.watchlistAdd(symbol, '', groupId)
+      return api.watchlistRemove(symbol).catch(error => {
+        if (!(error instanceof ApiError) || error.status !== 409) throw error
+        if (!window.confirm('该股票仍有未平仓批次。确认仅移出普通自选？持仓账户数据不会被删除。')) throw error
+        return api.watchlistRemove(symbol, true)
+      })
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: QK.watchlist })
       qc.invalidateQueries({ queryKey: ['watchlist-enriched'] })
@@ -993,6 +1000,18 @@ export function Screener() {
                     onPreview={(symbol, name, navList) => { setPreviewSymbol(symbol); setPreviewName(name ?? ''); setPreviewNavList(navList ?? []) }}
                     onAddToWatchlist={(symbol, groupId) => toggleWatchlist.mutate({ symbol, action: 'add', groupId })}
                     onRemoveFromWatchlist={symbol => toggleWatchlist.mutate({ symbol, action: 'remove' })}
+                    onBuy={assetType === 'stock' ? row => {
+                      const ids = symbolStrategyMap.get(row.symbol) ?? (activeStrategy ? [activeStrategy] : [])
+                      const supportsAccount = ids.some(id => {
+                        const strategy = strategyMap.get(id)
+                        return strategy && strategy.timeframes?.includes('1d') !== false
+                      })
+                      if (!supportsAccount) {
+                        toast('首版持仓账户仅支持日线 A 股策略', 'error')
+                        return
+                      }
+                      setBuyTarget(row)
+                    } : undefined}
                     watchlistPending={toggleWatchlist.isPending}
                     klineData={klineData}
                     dailyKChartVisible={dailyKChartVisible}
@@ -1128,6 +1147,32 @@ export function Screener() {
         open={showStore}
         onClose={() => setShowStore(false)}
       />
+      {buyTarget && (() => {
+        const ids = symbolStrategyMap.get(buyTarget.symbol) ?? (activeStrategy ? [activeStrategy] : [])
+        const options = ids
+          .map(id => strategyMap.get(id))
+          .filter((strategy): strategy is ScreenerStrategy => !!strategy && strategy.timeframes?.includes('1d') !== false)
+          .map(strategy => ({ id: strategy.id, name: strategy.name }))
+        const scoresByStrategy = Object.fromEntries(ids.map(id => {
+          const cachedRow = effectiveResults?.[id]?.rows.find((row: any) => row.symbol === buyTarget.symbol)
+          const activeRow = id === activeStrategy
+            ? result?.rows.find((row: any) => row.symbol === buyTarget.symbol)
+            : undefined
+          const rawScore = cachedRow?.score ?? activeRow?.score
+          return [id, typeof rawScore === 'number' && Number.isFinite(rawScore) ? rawScore : null]
+        }))
+        return options.length > 0 ? (
+          <PortfolioBuyDialog
+            symbol={buyTarget.symbol}
+            name={buyTarget.name ?? ''}
+            score={buyTarget.score ?? null}
+            scoresByStrategy={scoresByStrategy}
+            strategies={options}
+            initialStrategyId={activeStrategy}
+            onClose={() => setBuyTarget(null)}
+          />
+        ) : null
+      })()}
     </>
   )
 }

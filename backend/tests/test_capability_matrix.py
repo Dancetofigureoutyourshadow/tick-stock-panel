@@ -296,3 +296,35 @@ def test_full_minute_routable_like_other_capabilities(monkeypatch):
     fm_default = caps_pro_default["full_minute"]
     assert [c["name"] for c in fm_default["candidates"]] == ["myfm"]
     assert fm_default["usable"] is False
+
+
+def test_settings_matrix_uses_full_minute_preference(monkeypatch):
+    """The settings API must pass the dedicated full-minute route to the matrix."""
+    from app.api import settings as settings_api
+    from app.services import preferences
+    from app.tickflow import policy
+
+    _fake_sources(
+        monkeypatch,
+        [{
+            "name": "mootdx",
+            "display_name": "MooTDX",
+            "datasets": ["full_minute"],
+            "available": True,
+            "status": "ok",
+        }],
+    )
+    monkeypatch.setattr(policy, "base_tier_name", lambda: "pro")
+    monkeypatch.setattr(preferences, "get_realtime_data_provider", lambda: "tickflow")
+    monkeypatch.setattr(preferences, "get_daily_data_provider", lambda: "tickflow")
+    monkeypatch.setattr(preferences, "get_minute_data_provider", lambda: "tickflow")
+    monkeypatch.setattr(preferences, "get_full_minute_data_provider", lambda: "mootdx")
+    monkeypatch.setattr(preferences, "get_depth5_data_provider", lambda: "tickflow")
+    monkeypatch.setattr(preferences, "get_adj_factor_provider", lambda: "tickflow")
+    monkeypatch.setattr(preferences, "get_financial_provider", lambda: "tickflow")
+
+    full_minute = _by_id(settings_api.get_capability_matrix())["full_minute"]
+
+    assert full_minute["current"] == "mootdx"
+    assert full_minute["effective"] == "mootdx"
+    assert full_minute["usable"] is True

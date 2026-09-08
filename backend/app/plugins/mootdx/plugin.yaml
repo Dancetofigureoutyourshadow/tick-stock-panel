@@ -4,6 +4,6 @@ display_name: "MooTDX（通达信）"
 runtime: python
 entry: app.plugins.mootdx.provider:MooTdxProvider
 check: app.plugins.mootdx.bridge:availability
-datasets: [daily, adj_factor, minute, realtime, depth5, transactions, financial, instruments]
-description: "通过 MooTDX 连接通达信行情服务器，提供 K 线、复权因子、历史分时、逐笔、行情、股票列表、财务、F10 和除权除息接口。"
+datasets: [daily, adj_factor, minute, full_minute, realtime, depth5, transactions, financial, instruments]
+description: "通过 MooTDX 连接通达信行情服务器，提供 K 线、复权因子、历史分时、全量分钟、逐笔、行情、股票列表、财务、F10 和除权除息接口。"
 install_hint: "在后端环境安装插件依赖：uv pip install -r app/plugins/mootdx/requirements.txt"

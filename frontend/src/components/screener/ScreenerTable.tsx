@@ -6,7 +6,7 @@
  * score、signals、candle、ext 列。其余纯数据列（价格/指标/财务…）交给共享原语。
  */
 import { useState, type CSSProperties, type ReactNode } from 'react'
-import { Check, Plus, Eye, EyeOff, RefreshCw, ListCollapse, ListTree } from 'lucide-react'
+import { Check, Plus, Eye, EyeOff, RefreshCw, ListCollapse, ListTree, ShoppingCart } from 'lucide-react'
 import type { KlineRow, MinuteKlineRow } from '@/lib/api'
 import { fmtPrice, formatExtNumber } from '@/lib/format'
 import type { ColumnConfig } from '@/lib/screener-columns'
@@ -35,6 +35,7 @@ interface ScreenerTableProps {
   onPreview: (symbol: string, name?: string, navList?: NavItem[]) => void
   onAddToWatchlist: (symbol: string, groupId: string | null) => void
   onRemoveFromWatchlist: (symbol: string) => void
+  onBuy?: (row: any) => void
   watchlistPending: boolean
   /** symbol → 日k 数据，仅当启用日k列时传入 */
   klineData?: Record<string, KlineRow[]>
@@ -160,7 +161,7 @@ function renderExtValue(
 
 export function ScreenerTable({
   rows, columns, strategyIdToName, symbolStrategyMap, activeStrategy,
-  watchlistSet, onPreview, onAddToWatchlist, onRemoveFromWatchlist, watchlistPending, klineData = {},
+  watchlistSet, onPreview, onAddToWatchlist, onRemoveFromWatchlist, onBuy, watchlistPending, klineData = {},
   dailyKChartVisible = true, onToggleDailyKChart,
   minuteData = {}, intradayChartVisible = true, onToggleIntradayChart,
   intradayAutoRefresh = false, onRefreshIntraday, intradayRefreshing = false,
@@ -267,6 +268,17 @@ export function ScreenerTable({
                   </span>
                 )}
               </button>
+              {!isExpired && onBuy && (
+                <button
+                  type="button"
+                  onClick={() => onBuy(r)}
+                  className="shrink-0 inline-flex h-6 items-center gap-1 rounded-btn border border-accent/40 bg-accent/10 px-1.5 text-[10px] font-medium text-accent transition-colors hover:bg-accent/20"
+                  title="买入并加入自选"
+                  aria-label={`买入 ${r.symbol} 并加入自选`}
+                >
+                  <ShoppingCart className="h-3 w-3" />买入
+                </button>
+              )}
               {isExpired ? (
                 <span className="shrink-0 inline-flex items-center px-1.5 py-px rounded text-[9px] font-medium leading-tight bg-red-500/10 text-red-400/60 border border-red-500/15">
                   失效

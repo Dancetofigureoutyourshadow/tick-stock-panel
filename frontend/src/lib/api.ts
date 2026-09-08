@@ -1144,6 +1144,103 @@ export interface Lot {
   created_at?: string
 }
 
+export interface PortfolioSettings {
+  max_positions: number
+  max_total_position: string
+  commission_rate: string
+  stamp_tax_rate: string
+}
+
+export interface PortfolioSummary {
+  available_cash: string
+  market_value: string
+  total_assets: string
+  net_deposits: string
+  realized_pnl: string
+  unrealized_pnl: string
+  total_pnl: string
+}
+
+export interface PortfolioPosition {
+  id: string
+  symbol: string
+  name: string
+  buy_price: string
+  bought_qty: number
+  remaining_qty: number
+  available_qty: number
+  cost_basis: string
+  remaining_cost: string
+  current_price: string | null
+  market_value: string
+  unrealized_pnl: string
+  source_strategy_id: string
+  source_strategy_name: string
+  source_strategy_version: string
+  buy_score: string | null
+  strategy_snapshot: Record<string, any>
+  status: 'holding' | 'pending_sell' | 'closed'
+  pending_reason: string | null
+  pending_at: string | null
+  has_exit_rules: boolean
+  high_water_price: string
+  buy_trade_date: string
+  buy_time: string
+  holding_days: number
+  realized_pnl: string
+  closed_at: string | null
+}
+
+export interface PortfolioTrade {
+  id: string
+  position_id: string
+  side: 'buy' | 'sell'
+  symbol: string
+  price: string
+  quantity: number
+  gross_amount: string
+  commission: string
+  stamp_tax: string
+  cash_delta: string
+  realized_pnl: string | null
+  trade_date: string
+  created_at: string
+}
+
+export interface PortfolioCashFlow {
+  id: string
+  type: 'deposit' | 'withdrawal' | 'reversal'
+  amount: string
+  cash_delta: string
+  reverses_id: string | null
+  note: string
+  created_at: string
+}
+
+export interface PortfolioBuyPreviewItem {
+  symbol: string
+  score: string
+  weight: string
+  price: string
+  price_source: 'realtime' | 'latest_close' | 'manual' | 'missing'
+  suggested_budget: string
+  suggested_qty: number
+  estimated_fee: string
+  estimated_cash_required: string
+  blocked_reason: string | null
+  has_exit_rules: boolean
+}
+
+export interface PortfolioBuyPreview {
+  available_cash: string
+  market_value: string
+  total_assets: string
+  total_budget: string
+  single_position_cap: string
+  remaining_slots: number
+  items: PortfolioBuyPreviewItem[]
+}
+
 export interface VDBasicFilter {
   price_min?: number | null                 // 股价下限 (元)
   price_max?: number | null                 // 股价上限 (元)
@@ -2009,7 +2106,7 @@ export interface MonitorExtFieldItem {
   hiddenIndices?: number[]
 }
 export interface StrategyAlertEvent {
-  source: 'strategy' | 'depth'
+  source: 'strategy' | 'depth' | 'portfolio'
   type: string
   strategy_id?: string
   symbol?: string
@@ -2718,9 +2815,9 @@ export const api = {
       body: JSON.stringify({ text }),
       signal,
     }),
-  watchlistRemove: (symbol: string) =>
+  watchlistRemove: (symbol: string, confirmOpenPosition = false) =>
     request<{ symbols: WatchlistEntry[] }>(
-      `/api/watchlist/${encodeURIComponent(symbol)}`,
+      `/api/watchlist/${encodeURIComponent(symbol)}${confirmOpenPosition ? '?confirm_open_position=true' : ''}`,
       { method: 'DELETE' },
     ),
   watchlistMoveToTop: (symbol: string) =>
@@ -2728,8 +2825,11 @@ export const api = {
       `/api/watchlist/${encodeURIComponent(symbol)}/top`,
       { method: 'POST' },
     ),
-  watchlistClear: () =>
-    request<{ removed: number }>('/api/watchlist', { method: 'DELETE' }),
+  watchlistClear: (confirmOpenPositions = false) =>
+    request<{ removed: number }>(
+      `/api/watchlist${confirmOpenPositions ? '?confirm_open_positions=true' : ''}`,
+      { method: 'DELETE' },
+    ),
   watchlistQuotes: () => request<{ quotes: Quote[] }>('/api/watchlist/quotes'),
   watchlistPerformance: () =>
     request<{ rows: WatchlistPerformanceEntry[]; elapsed_ms: number }>('/api/watchlist/performance'),
@@ -3653,6 +3753,57 @@ export const api = {
 
   monitorRuleDelete: (id: string) =>
     request<{ ok: boolean }>(`/api/monitor-rules/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
+  // ===== Local strategy portfolio account =====
+  portfolioSettings: () =>
+    request<PortfolioSettings>('/api/portfolio/settings'),
+  portfolioSettingsUpdate: (payload: Partial<PortfolioSettings>) =>
+    request<PortfolioSettings>('/api/portfolio/settings', {
+      method: 'PUT', body: JSON.stringify(payload),
+    }),
+  portfolioSummary: () =>
+    request<PortfolioSummary>('/api/portfolio/summary'),
+  portfolioPositions: (includeClosed = false) =>
+    request<{ positions: PortfolioPosition[] }>(
+      `/api/portfolio/positions${includeClosed ? '?include_closed=true' : ''}`,
+    ),
+  portfolioTransactions: () =>
+    request<{ trades: PortfolioTrade[]; cash_flows: PortfolioCashFlow[] }>(
+      '/api/portfolio/transactions',
+    ),
+  portfolioCash: (payload: { type: 'deposit' | 'withdrawal'; amount: string; note?: string }) =>
+    request<{ cash_flow: PortfolioCashFlow }>('/api/portfolio/cash', {
+      method: 'POST', body: JSON.stringify(payload),
+    }),
+  portfolioCashReverse: (id: string, note = '') =>
+    request<{ cash_flow: PortfolioCashFlow }>(
+      `/api/portfolio/cash/${encodeURIComponent(id)}/reverse`,
+      { method: 'POST', body: JSON.stringify({ note }) },
+    ),
+  portfolioBuyPreview: (payload: {
+    items: Array<{ symbol: string; strategy_id: string; score?: number | string | null; price?: number | string | null }>
+  }) => request<PortfolioBuyPreview>('/api/portfolio/buys/preview', {
+    method: 'POST', body: JSON.stringify(payload),
+  }),
+  portfolioBuy: (payload: {
+    symbol: string; strategy_id: string; buy_score?: number | string | null
+    price?: number | string | null; quantity: number; name?: string
+    watchlist_group_id?: string | null
+  }) => request<{ position: PortfolioPosition; trade: PortfolioTrade }>(
+    '/api/portfolio/buys', { method: 'POST', body: JSON.stringify(payload) },
+  ),
+  portfolioSell: (positionId: string, payload: {
+    price?: number | string | null; quantity?: number | null
+    remove_from_watchlist?: boolean
+  }) => request<{ position: PortfolioPosition; trade: PortfolioTrade }>(
+    `/api/portfolio/positions/${encodeURIComponent(positionId)}/sell`,
+    { method: 'POST', body: JSON.stringify(payload) },
+  ),
+  portfolioContinueHolding: (positionId: string) =>
+    request<{ position: PortfolioPosition }>(
+      `/api/portfolio/positions/${encodeURIComponent(positionId)}/continue-holding`,
+      { method: 'POST' },
+    ),
 
   // ===== Lots (批次登记, 页面名"持仓提醒"; 保存/删除自动同步监控规则) =====
   lotsList: () =>

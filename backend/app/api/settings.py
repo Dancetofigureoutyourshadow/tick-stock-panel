@@ -592,6 +592,7 @@ def get_capability_matrix() -> dict:
             "realtime_data_provider": preferences.get_realtime_data_provider(),
             "daily_data_provider": preferences.get_daily_data_provider(),
             "minute_data_provider": preferences.get_minute_data_provider(),
+            "full_minute_data_provider": preferences.get_full_minute_data_provider(),
             "depth5_data_provider": preferences.get_depth5_data_provider(),
             "adj_factor_provider": preferences.get_adj_factor_provider(),
             "financial_data_provider": preferences.get_financial_provider(),
@@ -689,6 +690,7 @@ def uninstall_plugin(name: str) -> dict:
     for getter, key, default in [
         (preferences.get_daily_data_provider, "daily_data_provider", "tickflow"),
         (preferences.get_minute_data_provider, "minute_data_provider", "tickflow"),
+        (preferences.get_full_minute_data_provider, "full_minute_data_provider", "tickflow"),
         (preferences.get_depth5_data_provider, "depth5_data_provider", "tickflow"),
         (preferences.get_realtime_data_provider, "realtime_data_provider", "tickflow"),
         (preferences.get_financial_provider, "financial_data_provider", "tickflow"),
@@ -749,6 +751,8 @@ def delete_data_source(name: str, request: Request) -> dict:
         updates["financial_data_provider"] = "tickflow"
     if preferences.get_adj_factor_provider() == name:
         updates["adj_factor_provider"] = "tickflow"
+    if preferences.get_full_minute_data_provider() == name:
+        updates["full_minute_data_provider"] = "tickflow"
     if preferences.get_depth5_data_provider() == name:
         updates["depth5_data_provider"] = "tickflow"
     if updates:

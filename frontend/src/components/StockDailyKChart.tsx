@@ -45,6 +45,8 @@ interface Props {
   onPriceDoubleClick?: (price: number, currentPrice: number) => void
   /** 扩展数据列参数（逗号分隔 config_id.field_name），透传给 klineDaily 接口 */
   extColumns?: string
+  /** 盘中详情弹窗的日 K 实时刷新间隔(ms)。 */
+  refetchIntervalMs?: number
 }
 
 function isValidRow(r: any): boolean {
@@ -122,6 +124,7 @@ export function StockDailyKChart({
   onDateClick,
   onPriceDoubleClick,
   extColumns,
+  refetchIntervalMs,
 }: Props) {
   const [activeIndicators, setActiveIndicators] = useState<string[]>(['vol'])
   const [showMarkers, setShowMarkers] = useState(true)
@@ -131,7 +134,11 @@ export function StockDailyKChart({
   const dateRange = externalDateRange ?? getDefaultRange()
 
   // 查询配置统一来自 klineDailyQueryOptions, 与 StockPanel 信息条/邻近预取共享同一 cache key (只发一次请求)
-  const kline = useQuery({ ...klineDailyQueryOptions(symbol, dateRange, extColumns), enabled: !!symbol })
+  const kline = useQuery({
+    ...klineDailyQueryOptions(symbol, dateRange, extColumns),
+    enabled: !!symbol,
+    refetchInterval: refetchIntervalMs,
+  })
 
   const rows = useMemo(() => toOHLC(kline.data?.rows ?? []), [kline.data?.rows])
   const stockInfo = kline.data?.stock_info

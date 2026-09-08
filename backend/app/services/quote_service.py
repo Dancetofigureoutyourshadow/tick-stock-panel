@@ -44,6 +44,7 @@ SOURCE_LABELS = {
     "strategy": "策略", "signal": "信号", "price": "价格",
     "market": "异动", "ladder": "连板梯队", "sector": "板块",
     "volume_delta": "放量", "abnormal": "异动", "date": "日期提醒",
+    "portfolio": "持仓账户",
 }
 
 # final 定版确认容差: 快照时间戳允许早于边界 5s 内 (供应商时间戳精度不一)
@@ -1247,45 +1248,62 @@ class QuoteService:
                                 )
                         except Exception as e:  # noqa: BLE001
                             logger.warning("指数监控评估失败 (不影响股票/ETF 告警): %s", e)
-                    if rule_events:
-                        rule_events = self._format_extension_notifications(rule_events)
-                        # 落盘到 alerts.jsonl
-                        try:
-                            from app.services import alert_store
-                            alert_store.append_many(
-                                self._app_state.repo.store.data_dir, rule_events,
+
+                # 持仓账户只过滤并检查当前未平仓批次，不为每批次重跑完整策略选股。
+                portfolio_account = getattr(self._app_state, "portfolio_account", None)
+                if stock_ready and portfolio_account is not None:
+                    try:
+                        open_symbols = portfolio_account.open_symbols()
+                        if open_symbols:
+                            position_rows = enriched_today.filter(
+                                pl.col("symbol").is_in(open_symbols)
+                            ).to_dicts()
+                            rule_events += portfolio_account.evaluate_exit_rules(
+                                position_rows,
+                                trade_date=cn_today().isoformat(),
                             )
-                        except Exception as e:  # noqa: BLE001
-                            logger.warning("告警落盘失败: %s", e)
-                        # 转为 SSE 推送格式 (兼容旧 alert schema)
-                        for ev in rule_events:
-                            alert = {
-                                "source": ev["source"],
-                                "type": ev["type"],
-                                "rule_id": ev.get("rule_id"),
-                                "strategy_id": ev.get("strategy_id") if ev["source"] == "strategy" else None,
-                                "symbol": ev["symbol"],
-                                "name": ev["name"],
-                                "message": ev["message"],
-                                "price": ev["price"],
-                                "change_pct": ev["change_pct"],
-                                "signals": ev["signals"],
-                                "severity": ev.get("severity", "info"),
-                                "conditions": ev.get("conditions") or [],
-                                "logic": ev.get("logic") or "and",
-                            }
-                            for key in (
-                                "sector_kind", "sector_key", "sector_name",
-                                "sector_source_field", "sector_value", "sector_level",
-                                "window_change_pct", "coverage_ratio", "valid_count",
-                                "total_count", "up_count", "down_count", "leader",
-                                "abnormal_window", "abnormal_value", "abnormal_threshold",
-                                "abnormal_closeness", "volume_delta", "volume_delta_span",
-                                "volume_delta_amount",
-                            ):
-                                if key in ev:
-                                    alert[key] = ev[key]
-                            all_alerts.append(alert)
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning("持仓账户退出规则评估失败 (不影响其他告警): %s", e)
+
+                if rule_events:
+                    rule_events = self._format_extension_notifications(rule_events)
+                    # 落盘到 alerts.jsonl
+                    try:
+                        from app.services import alert_store
+                        alert_store.append_many(
+                            self._app_state.repo.store.data_dir, rule_events,
+                        )
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning("告警落盘失败: %s", e)
+                    # 转为 SSE 推送格式 (兼容旧 alert schema)
+                    for ev in rule_events:
+                        alert = {
+                            "source": ev["source"],
+                            "type": ev["type"],
+                            "rule_id": ev.get("rule_id"),
+                            "strategy_id": ev.get("strategy_id"),
+                            "symbol": ev["symbol"],
+                            "name": ev["name"],
+                            "message": ev["message"],
+                            "price": ev["price"],
+                            "change_pct": ev["change_pct"],
+                            "signals": ev["signals"],
+                            "severity": ev.get("severity", "info"),
+                            "conditions": ev.get("conditions") or [],
+                            "logic": ev.get("logic") or "and",
+                        }
+                        for key in (
+                            "sector_kind", "sector_key", "sector_name",
+                            "sector_source_field", "sector_value", "sector_level",
+                            "window_change_pct", "coverage_ratio", "valid_count",
+                            "total_count", "up_count", "down_count", "leader",
+                            "abnormal_window", "abnormal_value", "abnormal_threshold",
+                            "abnormal_closeness", "volume_delta", "volume_delta_span",
+                            "volume_delta_amount", "position_id", "exit_reason",
+                        ):
+                            if key in ev:
+                                alert[key] = ev[key]
+                        all_alerts.append(alert)
 
             # 策略页实时回显: 不写文件 (实时行情每轮更新 enriched, 写文件会被 read_cache
             # 的 mtime 校验判过期, 反复读不到)。监控引擎本轮已算出的结果存在内存
@@ -1604,7 +1622,11 @@ class QuoteService:
                 rule = rules.get(ev.get("rule_id"))
                 # webhook_channels 指定本规则需要投递的外部渠道。
                 # 空列表 = 该规则不推送。仅推送「渠道已选 + 对应地址已配置」的组合。
-                channels = rule.get("webhook_channels") if rule else None
+                channels = (
+                    rule.get("webhook_channels")
+                    if rule
+                    else ev.get("webhook_channels")
+                )
                 if not channels:
                     continue
                 source = ev.get("source", "")

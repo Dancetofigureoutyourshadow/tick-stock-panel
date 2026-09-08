@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import sys
 from datetime import date, datetime
+from pathlib import Path
 from types import ModuleType
 
 import polars as pl
@@ -287,6 +288,58 @@ def test_mootdx_provider_adapts_native_surface(monkeypatch):
 
     all_realtime = provider.get_realtime()
     assert all_realtime[0]["symbol"] == "600519.SH"
+
+
+def test_mootdx_full_minute_batch_uses_current_day_and_canonical_rows(monkeypatch):
+    from app.plugins.mootdx import batch_scheduler
+
+    clients = []
+
+    class BatchClient(FakeMooTdx):
+        def __init__(self):
+            super().__init__()
+            self.closed = False
+            clients.append(self)
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(bridge, "tdx_client", lambda **_kwargs: BatchClient())
+    monkeypatch.setattr(
+        batch_scheduler,
+        "detect_resources",
+        lambda: batch_scheduler.ResourceProfile(
+            logical_cpus=1,
+            available_memory_bytes=256 * 1024 * 1024,
+            gpu_count=1,
+        ),
+    )
+    monkeypatch.setattr(mootdx_provider, "cn_today", lambda: date(2026, 8, 3))
+
+    frame = MooTdxProvider().get_intraday_batch(["600519.SH", "000001.SZ"])
+
+    assert frame.columns == [
+        "symbol", "datetime", "open", "high", "low", "close", "volume", "amount",
+    ]
+    assert frame["symbol"].n_unique() == 2
+    assert frame["datetime"].min() == datetime(2026, 8, 3, 9, 30)
+    assert frame["amount"].to_list() == [100000.0, 201000.0, 100000.0, 201000.0]
+    minute_calls = [
+        kwargs
+        for client in clients
+        for name, kwargs in client.calls
+        if name == "minutes"
+    ]
+    assert sorted(call["symbol"] for call in minute_calls) == ["000001", "600519"]
+    assert {call["date"] for call in minute_calls} == {"20260803"}
+    assert clients and all(client.closed for client in clients)
+
+
+def test_mootdx_manifest_and_provider_declare_full_minute():
+    manifest = mootdx_provider.__file__.replace("provider.py", "plugin.yaml")
+
+    assert "full_minute" in Path(manifest).read_text(encoding="utf-8")
+    assert "full_minute" in MooTdxProvider().config.datasets
 
 
 def test_mootdx_realtime_skips_codes_tdxpy_cannot_classify(monkeypatch):

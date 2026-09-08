@@ -1,11 +1,9 @@
 """自选股 API。"""
 from __future__ import annotations
 
+from collections.abc import Callable
 import logging
-import math
 import time
-from datetime import date
-from typing import Callable
 
 import anyio
 import polars as pl
@@ -14,10 +12,10 @@ from pydantic import BaseModel
 
 from app.db_safe import is_valid_ext_ident, quote_ident
 from app.services import watchlist
-from app.services.watchlist_performance import get_reference_prices
 from app.services.watchlist_csv import import_watchlist_codes, import_watchlist_csv
 from app.services.watchlist_ocr import import_watchlist_image
 from app.services.watchlist_ocr.provider import get_ocr_provider
+from app.services.watchlist_performance import get_reference_prices
 
 logger = logging.getLogger(__name__)
 
@@ -339,14 +337,31 @@ def remove_member(group_id: str, symbol: str, request: Request):
 
 
 @router.delete("/{symbol}")
-def remove_one(symbol: str, request: Request):
-    rows = watchlist.remove(symbol)
+def remove_one(
+    symbol: str,
+    request: Request,
+    confirm_open_position: bool = Query(default=False),
+):
+    normalized_symbol = symbol.strip().upper()
+    account = getattr(request.app.state, "portfolio_account", None)
+    if (
+        not confirm_open_position
+        and account is not None
+        and normalized_symbol in account.open_symbols()
+    ):
+        raise HTTPException(409, "该股票仍有未平仓批次, 请二次确认后再移出自选")
+    rows = watchlist.remove(normalized_symbol)
     return {"symbols": _with_names(rows, request)}
 
 
 @router.delete("")
-def clear_all():
+def clear_all(request: Request, confirm_open_positions: bool = Query(default=False)):
     """清空自选列表。"""
+    account = getattr(request.app.state, "portfolio_account", None)
+    if not confirm_open_positions and account is not None:
+        watchlist_symbols = {row["symbol"] for row in watchlist.list_symbols()}
+        if watchlist_symbols.intersection(account.open_symbols()):
+            raise HTTPException(409, "自选中仍有未平仓批次, 请二次确认后再清空")
     count = watchlist.clear()
     return {"removed": count}
 

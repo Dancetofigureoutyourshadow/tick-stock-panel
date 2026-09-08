@@ -115,3 +115,7 @@ reports/cursor_tickflow_pro_rate_limit_p0.bundle
 /.codegraph/
 /.corepack-cache/
 /.uv-cache-codex/
+/data/
+/.claude/
+/.uv-cache/
+/generated/

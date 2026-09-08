@@ -294,7 +294,7 @@ def save_rule(req: RuleModel, request: Request):
     existing = monitor_rules.load_one(_data_dir(request), rule["id"])
     # 批次派生规则由「持仓提醒」页托管, 监控中心只读 (启停/改/删均回持仓页)
     if existing and existing.get("lot_id"):
-        raise HTTPException(status_code=409, detail="该规则由「持仓提醒」页托管, 请在持仓提醒页修改")
+        raise HTTPException(status_code=409, detail="该规则由持仓账户的「旧批次」区域托管, 请在那里修改")
     if existing and existing.get("created_at"):
         rule["created_at"] = existing["created_at"]
     try:
@@ -354,7 +354,7 @@ def delete_rule(rule_id: str, request: Request):
     # 批次派生规则由「持仓提醒」页托管, 删除需在持仓页操作 (级联清理派生规则)
     existing = monitor_rules.load_one(_data_dir(request), rule_id)
     if existing and existing.get("lot_id"):
-        raise HTTPException(status_code=409, detail="该规则由「持仓提醒」页托管, 请在持仓提醒页删除批次")
+        raise HTTPException(status_code=409, detail="该规则由持仓账户的「旧批次」区域托管, 请在那里删除批次")
     deleted = monitor_rules.delete_one(_data_dir(request), rule_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="规则不存在")

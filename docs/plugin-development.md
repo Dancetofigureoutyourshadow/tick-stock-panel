@@ -361,3 +361,10 @@ Historical `minutes()` replies contain ordered `price/vol` points without timest
 or full OHLC. The adapter reconstructs Beijing trading-session timestamps, uses the
 price as OHLC for the project's minute-line contract, and estimates amount as
 `volume * 100 * price`.
+
+MooTDX also declares the independent `full_minute` capability. Its repair-round
+implementation fans the full-market symbol list out to a bounded, resource-aware
+heap queue: worker count is capped by logical CPUs, available memory and a hard
+limit of 16, while each worker owns one TDX TCP client. GPU inventory is diagnostic
+only because socket fetching and the existing Polars conversion path are CPU/I/O
+workloads. Failed symbols are isolated and retried once after all initial tasks.

@@ -2,9 +2,10 @@ import { useEffect, useMemo, useRef } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Download, Loader2, RefreshCw } from 'lucide-react'
 import { api, type MinuteKlineSession } from '@/lib/api'
-import { klineMinuteQueryOptions, klineMinuteRangeQueryOptions, minuteRefetchInterval } from '@/lib/kline'
+import { klineMinuteQueryOptions, klineMinuteRangeQueryOptions } from '@/lib/kline'
 import { toast } from '@/components/Toast'
 import { EChartsMultiDayIntraday } from '@/components/EChartsMultiDayIntraday'
+import type { IntradayChartMarker } from '@/components/EChartsIntraday'
 import { StockDepth5Panel } from '@/components/StockDepth5Panel'
 import { chinaToday, useFocusMarketStream } from '@/lib/useFocusMarketStream'
 
@@ -16,6 +17,7 @@ interface Props {
   showDepth5?: boolean
   onPriceDoubleClick?: (price: number, currentPrice: number) => void
   priceLines?: { value: number; label?: string; color?: string }[]
+  markers?: IntradayChartMarker[]
 }
 
 function errorMessage(error: unknown): string {
@@ -30,6 +32,7 @@ export function StockMultiDayIntradayChart({
   showDepth5 = false,
   onPriceDoubleClick,
   priceLines,
+  markers,
 }: Props) {
   const queryClient = useQueryClient()
   const focusStream = useFocusMarketStream({
@@ -196,6 +199,7 @@ export function StockMultiDayIntradayChart({
         height={chartHeight}
         onPriceDoubleClick={onPriceDoubleClick}
         priceLines={priceLines}
+        markers={markers}
       />
       {syncMinute.isError && (
         <div className="px-3 pt-1 text-center text-[11px] text-danger">{errorMessage(syncMinute.error)}</div>

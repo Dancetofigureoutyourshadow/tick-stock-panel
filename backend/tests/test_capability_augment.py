@@ -13,7 +13,7 @@ from app.tickflow.policy import _augment_custom_sources
 
 
 def _set_providers(monkeypatch, *, daily="tickflow", adj="tickflow",
-                   minute="tickflow", depth="tickflow", financial="tickflow") -> None:
+                   minute="tickflow", depth="tickflow", financial="tickflow",
                    full_minute="tickflow") -> None:
     """mock preferences 各数据集 provider getter。"""
     from app.services import preferences

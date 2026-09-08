@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import * as echarts from 'echarts'
 import type { ECharts, EChartsOption } from 'echarts'
 import type { MinuteKlineRow, MinuteKlineSession } from '@/lib/api'
+import type { IntradayChartMarker } from '@/components/EChartsIntraday'
 import { computeIntradayAverage, formatMinuteTime, FULL_DAY_TIMES, minuteBarDelta } from '@/lib/intraday-chart'
 import { useChartTheme } from '@/lib/theme'
 
@@ -20,6 +21,7 @@ interface Props {
   height?: number
   onPriceDoubleClick?: (price: number, currentPrice: number) => void
   priceLines?: { value: number; label?: string; color?: string }[]
+  markers?: IntradayChartMarker[]
 }
 
 interface InfoPoint {
@@ -39,6 +41,19 @@ function formatAmount(value: number | null | undefined): string {
 function priceColor(close: number, prevClose: number | null): string {
   if (prevClose == null || close === prevClose) return COLORS.flat
   return close > prevClose ? COLORS.up : COLORS.down
+}
+
+function nearestTradingTime(time: string): string {
+  const [hour, minute] = time.split(':').map(Number)
+  const target = Number.isFinite(hour) && Number.isFinite(minute) ? hour * 60 + minute : 15 * 60
+  return FULL_DAY_TIMES.reduce((nearest, candidate) => {
+    const [candidateHour, candidateMinute] = candidate.split(':').map(Number)
+    const [nearestHour, nearestMinute] = nearest.split(':').map(Number)
+    return Math.abs(candidateHour * 60 + candidateMinute - target)
+      < Math.abs(nearestHour * 60 + nearestMinute - target)
+      ? candidate
+      : nearest
+  }, FULL_DAY_TIMES[0])
 }
 
 function buildModel(sessions: MinuteKlineSession[]) {
@@ -142,6 +157,7 @@ export function EChartsMultiDayIntraday({
   height = 420,
   onPriceDoubleClick,
   priceLines = [],
+  markers = [],
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<ECharts | null>(null)
@@ -206,7 +222,10 @@ export function EChartsMultiDayIntraday({
     const monitoredPrices = priceLines
       .map(line => line.value)
       .filter(value => Number.isFinite(value) && value > 0)
-    const allPriceValues = [...model.priceValues, ...monitoredPrices]
+    const markerPrices = markers
+      .map(marker => marker.price)
+      .filter(value => Number.isFinite(value) && value > 0)
+    const allPriceValues = [...model.priceValues, ...monitoredPrices, ...markerPrices]
     const minPrice = allPriceValues.length > 0 ? Math.min(...allPriceValues) : 0
     const maxPrice = allPriceValues.length > 0 ? Math.max(...allPriceValues) : 1
     const padding = Math.max((maxPrice - minPrice) * 0.08, maxPrice * 0.002)
@@ -260,6 +279,29 @@ export function EChartsMultiDayIntraday({
         animation: false,
         data: markLineData,
       }
+    }
+    const visibleDates = new Set(model.dayRanges.map(item => item.session.date))
+    const markerData = markers
+      .filter(marker => visibleDates.has(marker.date) && Number.isFinite(marker.price) && marker.price > 0)
+      .map(marker => ({
+        name: marker.description ?? '',
+        value: marker.description ?? '',
+        coord: [`${marker.date} ${nearestTradingTime(marker.time)}`, marker.price],
+        symbol: 'circle',
+        symbolSize: 9,
+        symbolOffset: [0, 0],
+        itemStyle: {
+          color: marker.kind === 'buy' ? '#B91C1C' : '#15803D',
+          borderColor: '#FFFFFF',
+          borderWidth: 1.5,
+        },
+        label: { show: false },
+        tooltip: marker.description
+          ? { show: true, renderMode: 'richText', formatter: marker.description }
+          : undefined,
+      }))
+    if (priceSeries.length > 0 && markerData.length > 0) {
+      priceSeries[0].markPoint = { data: markerData, animation: false }
     }
     const averageSeries: any[] = model.dayRanges.map(({ start, session, averages }) => {
       const data = new Array(totalLength).fill(null) as (number | null)[]
@@ -385,7 +427,7 @@ export function EChartsMultiDayIntraday({
       ],
     }
     chart.setOption(option, true)
-  }, [height, model, priceLines, theme])
+  }, [height, markers, model, priceLines, theme])
 
   useEffect(() => () => {
     chartRef.current?.off('updateAxisPointer')

@@ -59,12 +59,12 @@ export function MinuteSyncConfig({ hasCap, onJobStart }: { hasCap: boolean; onJo
     },
   })
 
-  // 手动获取 (两个独立按钮, 各自指定天数, 不影响自动同步偏好)
-  const [fetchingMode, setFetchingMode] = useState<'' | '40d' | '1y'>('')
-  const handleFetch = (mode: '40d' | '1y') => {
+  // 手动获取 (三个独立按钮, 各自指定天数, 不影响自动同步偏好)
+  const [fetchingMode, setFetchingMode] = useState<'' | '1d' | '40d' | '1y'>('')
+  const handleFetch = (mode: '1d' | '40d' | '1y') => {
     if (!hasMinuteCap) return
-    // 单次获取 = 按「分段大小」拉一段 (向前扩展); 1年 = 拉365天按分段切多段
-    const fetchDays = mode === '40d' ? localSegment : 365
+    // 当天 = 1天; 单次获取 = 按「分段大小」拉一段; 1年 = 拉365天按分段切多段
+    const fetchDays = mode === '1d' ? 1 : mode === '40d' ? localSegment : 365
     setFetchingMode(mode)
     api.syncMinute(fetchDays, true).then((res) => {
       qc.invalidateQueries({ queryKey: QK.pipelineJobs })
@@ -158,7 +158,18 @@ export function MinuteSyncConfig({ hasCap, onJobStart }: { hasCap: boolean; onJo
           <span className="text-[11px] text-secondary font-medium">手动获取</span>
           <span className="text-[10px] text-muted">不受自动同步开关影响</span>
         </div>
-        <div className="grid grid-cols-2 gap-2">
+        <div className="grid grid-cols-3 gap-2">
+        <button
+          onClick={() => handleFetch('1d')}
+          disabled={!hasMinuteCap || fetchingMode !== ''}
+          className="inline-flex flex-col items-center justify-center gap-0.5 px-2 py-2 rounded-btn bg-accent/90 text-foreground text-xs font-medium hover:bg-accent disabled:opacity-40 transition-colors duration-150"
+        >
+          {fetchingMode === '1d' ? (
+            <><Loader2 className="h-3.5 w-3.5 animate-spin" /><span>获取中…</span></>
+          ) : (
+            <><Download className="h-3.5 w-3.5" /><span>获取当天</span></>
+          )}
+        </button>
         <button
           onClick={() => handleFetch('40d')}
           disabled={!hasMinuteCap || fetchingMode !== ''}

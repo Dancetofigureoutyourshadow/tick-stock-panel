@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Trash2, RefreshCw, Star, X, Search, LayoutGrid, List, Rows3, BarChart3, Settings2, Plus, Check, Filter, Eye, EyeOff, Minus, ChevronsUp, Clock, RotateCcw, FileUp, FolderOpen, FolderMinus, FolderPlus } from 'lucide-react'
-import { api, type KlineRow, type MinuteKlineRow, type WatchlistGroup, type WatchlistGroupColor } from '@/lib/api'
+import { api, ApiError, type KlineRow, type MinuteKlineRow, type PortfolioPosition, type WatchlistGroup, type WatchlistGroupColor } from '@/lib/api'
 import { fetchMinuteBatchIncremental } from '@/lib/minuteBatchIncremental'
 import { QK } from '@/lib/queryKeys'
 import { storage } from '@/lib/storage'
@@ -467,6 +467,41 @@ function RealtimeDot({ title = '实时监控中' }: { title?: string }) {
   )
 }
 
+interface PortfolioAggregate {
+  quantity: number
+  averageCost: number
+  unrealizedPnl: number
+  strategyNames: string[]
+  status: 'holding' | 'pending_sell' | 'no_exit_rules'
+  batches: PortfolioPosition[]
+}
+
+function PortfolioInline({ value, expanded, onToggle }: { value?: PortfolioAggregate; expanded: boolean; onToggle: () => void }) {
+  if (!value) return null
+  const statusLabel = value.status === 'pending_sell' ? '待卖出' : value.status === 'no_exit_rules' ? '无退出规则' : '持有中'
+  const statusClass = value.status === 'pending_sell'
+    ? 'border-warning/30 bg-warning/10 text-warning'
+    : value.status === 'no_exit_rules'
+      ? 'border-danger/30 bg-danger/10 text-danger'
+      : 'border-bull/30 bg-bull/10 text-bull'
+  return <div className="mt-1 text-[10px]" onClick={event => event.stopPropagation()}>
+    <div className="flex flex-wrap items-center gap-1">
+      <button type="button" onClick={onToggle} className="rounded border border-border bg-elevated/70 px-1.5 py-0.5 text-secondary hover:text-foreground">
+        持仓 {value.quantity}股 · 成本¥{moneyText(value.averageCost)} · <span className={priceColorClass(value.unrealizedPnl)}>{value.unrealizedPnl >= 0 ? '+' : ''}¥{moneyText(value.unrealizedPnl)}</span> · {expanded ? '收起' : `${value.batches.length}批`}
+      </button>
+      <span className={`rounded border px-1.5 py-0.5 ${statusClass}`}>{statusLabel}</span>
+      <span className="max-w-48 truncate text-muted" title={value.strategyNames.join('、')}>{value.strategyNames.join('、')}</span>
+    </div>
+    {expanded && <div className="mt-1 space-y-1 rounded border border-border/60 bg-base/80 p-1.5">
+      {value.batches.map(batch => <div key={batch.id} className="flex flex-wrap gap-x-2 text-muted"><span>{batch.buy_trade_date}</span><span>{batch.source_strategy_name}</span><span>{batch.remaining_qty}股</span><span>成本¥{batch.remaining_cost}</span><span className={priceColorClass(Number(batch.unrealized_pnl))}>{Number(batch.unrealized_pnl) >= 0 ? '+' : ''}¥{batch.unrealized_pnl}</span></div>)}
+    </div>}
+  </div>
+}
+
+function moneyText(value: number): string {
+  return value.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
 // ===== 卡片组件 =====
 
 // 共享的空 K 线数组常量 — 避免每次渲染传入新的 [] 破坏 StockCard 的 memo
@@ -530,6 +565,7 @@ const StockCard = React.memo(function StockCard({
   onToggleMember: (symbol: string, groupId: string, member: boolean) => void
   groupChangePending: boolean
 }) {
+  const [portfolioExpanded, setPortfolioExpanded] = useState(false)
   const board = boardTag(r.symbol)
   const price = r.rt_price ?? r.close
   const pct = r.rt_pct ?? r.change_pct
@@ -636,6 +672,8 @@ const StockCard = React.memo(function StockCard({
             至今 {fmtPct(addedGain)}
           </span>
         </div>
+
+        <PortfolioInline value={r._portfolio} expanded={portfolioExpanded} onToggle={() => setPortfolioExpanded(value => !value)} />
 
         {/* 第三行: 指标 */}
         <div className="flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-[10px] text-muted leading-relaxed">
@@ -864,6 +902,12 @@ export function Watchlist() {
     queryFn: api.watchlistPerformance,
     enabled: (list.data?.symbols.length ?? 0) > 0,
     staleTime: 5 * 60_000,
+  })
+
+  // 账户批次独立查询，不把会计计算塞回原行情/表现接口。
+  const portfolioPositions = useQuery({
+    queryKey: QK.portfolioPositions,
+    queryFn: () => api.portfolioPositions(),
   })
 
   const symbols = enriched.data?.rows?.map((r: any) => r.symbol) ?? []
@@ -1142,7 +1186,16 @@ export function Watchlist() {
   })
 
   const remove = useMutation({
-    mutationFn: (sym: string) => api.watchlistRemove(sym),
+    mutationFn: async (sym: string) => {
+      try {
+        return await api.watchlistRemove(sym)
+      } catch (error) {
+        if (!(error instanceof ApiError) || error.status !== 409) throw error
+        const confirmed = window.confirm('该股票仍有未平仓批次。确认仅移出普通自选？持仓账户和批次不会被删除。')
+        if (!confirmed) throw error
+        return api.watchlistRemove(sym, true)
+      }
+    },
     onSuccess: (_data, sym) => {
       // 1. 立即从 enriched 缓存中移除该股票，UI 即时更新
       qc.setQueryData(['watchlist-enriched', extColumnsParam], (old: any) => {
@@ -1170,7 +1223,16 @@ export function Watchlist() {
   })
 
   const clearAll = useMutation({
-    mutationFn: () => api.watchlistClear(),
+    mutationFn: async () => {
+      try {
+        return await api.watchlistClear()
+      } catch (error) {
+        if (!(error instanceof ApiError) || error.status !== 409) throw error
+        const confirmed = window.confirm('自选中仍有未平仓批次。确认清空普通自选？持仓账户和批次不会被删除。')
+        if (!confirmed) throw error
+        return api.watchlistClear(true)
+      }
+    },
     onSuccess: () => {
       setConfirmClear(false)
       // 立即清空 enriched 缓存
@@ -1258,18 +1320,45 @@ export function Watchlist() {
     () => new Map((performance.data?.rows ?? []).map(row => [row.symbol, row])),
     [performance.data?.rows],
   )
+  const portfolioBySymbol = useMemo(() => {
+    const groups = new Map<string, PortfolioPosition[]>()
+    for (const position of portfolioPositions.data?.positions ?? []) {
+      const batches = groups.get(position.symbol)
+      if (batches) batches.push(position)
+      else groups.set(position.symbol, [position])
+    }
+    const result = new Map<string, PortfolioAggregate>()
+    for (const [symbol, batches] of groups) {
+      const quantity = batches.reduce((sum, batch) => sum + batch.remaining_qty, 0)
+      const totalCost = batches.reduce((sum, batch) => sum + Number(batch.remaining_cost), 0)
+      const unrealizedPnl = batches.reduce((sum, batch) => sum + Number(batch.unrealized_pnl), 0)
+      result.set(symbol, {
+        quantity,
+        averageCost: quantity > 0 ? totalCost / quantity : 0,
+        unrealizedPnl,
+        strategyNames: Array.from(new Set(batches.map(batch => batch.source_strategy_name))),
+        status: batches.some(batch => batch.status === 'pending_sell')
+          ? 'pending_sell'
+          : batches.some(batch => !batch.has_exit_rules) ? 'no_exit_rules' : 'holding',
+        batches,
+      })
+    }
+    return result
+  }, [portfolioPositions.data?.positions])
   const rows = useMemo(
     () => (enriched.data?.rows ?? []).map((row: any) => {
       const item = performanceBySymbol.get(row.symbol)
-      if (!item) return row
+      const portfolio = portfolioBySymbol.get(row.symbol)
+      if (!item) return { ...row, _portfolio: portfolio }
       return {
         ...row,
         watchlist_added_at: item.added_at,
         watchlist_base_price: item.base_price,
         watchlist_base_time: item.base_time,
+        _portfolio: portfolio,
       }
     }),
-    [enriched.data?.rows, performanceBySymbol],
+    [enriched.data?.rows, performanceBySymbol, portfolioBySymbol],
   )
   const groupBySymbol = useMemo(
     () => new Map(listEntries.map(entry => [entry.symbol, entry.group_ids ?? []])),
@@ -1974,7 +2063,8 @@ export function Watchlist() {
                   const board = boardTag(r.symbol)
                   return (
                     <td className="px-1.5 py-1.5">
-                      <div className="flex items-center gap-1 w-full">
+                      <div className="w-full">
+                        <div className="flex items-center gap-1 w-full">
                         <button
                           type="button"
                           onClick={() => { setPreviewSymbol(r.symbol); setPreviewName(name ?? '') }}
@@ -2052,6 +2142,12 @@ export function Watchlist() {
                             </div>
                           )}
                         </div>
+                        </div>
+                        <PortfolioInline
+                          value={r._portfolio}
+                          expanded={expandedCells.has(`${r.symbol}::portfolio`)}
+                          onToggle={() => handleToggleExpand(`${r.symbol}::portfolio`)}
+                        />
                       </div>
                     </td>
                   )

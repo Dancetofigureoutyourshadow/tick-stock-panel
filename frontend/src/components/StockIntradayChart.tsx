@@ -4,7 +4,7 @@ import { Loader2 } from 'lucide-react'
 import { api, type MinuteKlineRow } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
 import { klineMinuteQueryOptions } from '@/lib/kline'
-import { EChartsIntraday, type DailyOhlc } from '@/components/EChartsIntraday'
+import { EChartsIntraday, type DailyOhlc, type IntradayChartMarker } from '@/components/EChartsIntraday'
 import { alignMinutePricesToDailyClose } from '@/lib/intraday-chart'
 
 interface Props {
@@ -18,6 +18,7 @@ interface Props {
   currentPrice?: number
   dailyOhlc?: DailyOhlc
   priceLines?: { value: number; label?: string; color?: string }[]
+  markers?: IntradayChartMarker[]
   /** 是否在分时信息栏展示交易日期；盲训场景可关闭。 */
   showDate?: boolean
   /** 将分钟价格换算到 dailyOhlc 的复权基准；历史训练浮窗使用。 */
@@ -41,6 +42,7 @@ export function StockIntradayChart({
   currentPrice,
   dailyOhlc,
   priceLines,
+  markers,
   showDate = true,
   alignToDailyClose = false,
   refetchIntervalMs,
@@ -164,6 +166,7 @@ export function StockIntradayChart({
           currentPrice={currentPrice}
           dailyOhlc={dailyOhlc}
           priceLines={priceLines}
+          markers={markers}
           averagePriceScale={minuteAlignment.priceScale}
         />
       )}

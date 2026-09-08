@@ -90,9 +90,10 @@ const _SOURCE_BADGE: Record<string, string> = {
   price: 'bg-emerald-400/10 text-emerald-400',
   market: 'bg-purple-500/10 text-purple-400',
   sector: 'bg-cyan-500/10 text-cyan-700 dark:text-cyan-300',
+  portfolio: 'bg-warning/10 text-warning',
 }
 const _SOURCE_LABEL: Record<string, string> = {
-  strategy: '策略', signal: '信号', price: '价格', market: '异动', sector: '板块',
+  strategy: '策略', signal: '信号', price: '价格', market: '异动', sector: '板块', portfolio: '持仓账户',
 }
 const _SEVERITY_BAR: Record<string, string> = {
   info: 'bg-accent/40', warn: 'bg-warning', critical: 'bg-danger',

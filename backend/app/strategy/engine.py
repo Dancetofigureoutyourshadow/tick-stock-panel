@@ -197,6 +197,7 @@ class StrategyDef:
     filter_history_fn: Callable[[pl.DataFrame, dict], pl.DataFrame] | None
     lookback_days: int
     source: str  # "builtin" | "custom" | "ai" | "composite"
+    take_profit: float | None = None
     required_features: frozenset[str] = field(default_factory=frozenset)
     file_path: Path | None = None
     execution_backend: str = "polars_expr"
@@ -577,6 +578,7 @@ class StrategyEngine:
             | frozenset(getattr(mod, "REQUIRED_FEATURES", []) or []),
             lookback_days=int(getattr(mod, "LOOKBACK_DAYS", meta.get("lookback_days", 1)) or 1),
             source=source,
+            take_profit=getattr(mod, "TAKE_PROFIT", None),
             file_path=path,
             execution_backend=execution_backend,
             matrix_strategy=matrix_strategy,

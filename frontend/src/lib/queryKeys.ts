@@ -27,6 +27,10 @@ export const QK = {
   watchlistQuotes:      ['watchlist-quotes'] as const,
   watchlistEnriched:    (ext?: string) => ['watchlist-enriched', ext] as const,
   watchlistPerformance: ['watchlist-performance'] as const,
+  portfolioSettings:     ['portfolio-settings'] as const,
+  portfolioSummary:      ['portfolio-summary'] as const,
+  portfolioPositions:    ['portfolio-positions'] as const,
+  portfolioTransactions: ['portfolio-transactions'] as const,
   // 异动边缘总览 (开启监控时才查询, 参数为 min_closeness/limit)
   abnormalOverview:     (minCloseness: number, limit: number) => ['abnormal-overview', minCloseness, limit] as const,
   // 盘中异动信号聚合 (异动监控「盘中」tab)

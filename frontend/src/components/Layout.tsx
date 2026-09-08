@@ -95,7 +95,7 @@ const nav = [
   { to: '/monitor', label: '监控中心', icon: RadioTower },
   { to: '/regime', label: '市场环境', icon: Gauge },
   { to: '/abnormal', label: '异动监控', icon: Siren },
-  { to: '/lots',       label: '持仓提醒', icon: Layers2 },
+  { to: '/lots',       label: '持仓账户', icon: Layers2 },
   { to: '/signals',    label: '信号库',   icon: Zap },
   { to: '/review',      label: '复盘',   icon: BookOpenCheck },
   { to: '/indices', label: '指数', icon: BarChart3 },

@@ -12,6 +12,7 @@ import { useFocusMarketStream } from '@/lib/useFocusMarketStream'
 import { financialMetricsQueryOptions, useFinancialMetrics } from '@/lib/useFinancials'
 import { useCapabilities } from '@/lib/useSharedQueries'
 import type { ChartMarker, ChartPriceLine, ChartRange } from '@/components/EChartsCandlestick'
+import type { IntradayChartMarker } from '@/components/EChartsIntraday'
 import {
   loadInfoFields,
   saveInfoFields,
@@ -29,6 +30,7 @@ interface Props {
   /** 外部传入的日期范围 */
   dateRange?: { start: string; end: string }
   markers?: ChartMarker[]
+  intradayMarkers?: IntradayChartMarker[]
   ranges?: ChartRange[]
   priceLines?: ChartPriceLine[]
   showLimitMarkers?: boolean
@@ -67,6 +69,7 @@ export function StockPanel({
   onSelectDate,
   dateRange: externalDateRange,
   markers,
+  intradayMarkers,
   ranges,
   priceLines,
   showLimitMarkers = true,
@@ -254,6 +257,7 @@ export function StockPanel({
                 currentPrice={rows[rows.length - 1]?.close}
                 dailyOhlc={selectedIdx >= 0 ? rows[selectedIdx] : undefined}
                 priceLines={priceLines}
+                markers={intradayMarkers}
                 refetchIntervalMs={refetchIntervalMs}
                 live={focusStream.streamEnabled || refetchIntervalMs != null}
                 disablePolling={focusStream.streamEnabled}

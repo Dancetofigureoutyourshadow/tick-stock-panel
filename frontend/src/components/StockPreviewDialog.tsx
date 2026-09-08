@@ -20,6 +20,8 @@ import { useDialogBackdrop } from '@/lib/useDialogBackdrop'
 import { storage } from '@/lib/storage'
 import { DEFAULT_INTRADAY_DAYS } from '@/lib/kline'
 import { ExtensionSlot } from '@/extensions/ExtensionSlot'
+import type { ChartMarker, ChartPriceLine } from '@/components/EChartsCandlestick'
+import type { IntradayChartMarker } from '@/components/EChartsIntraday'
 
 interface Props {
   symbol: string | null
@@ -37,6 +39,10 @@ interface Props {
   navList?: NavItem[]
   /** 切股回调: 收到目标 symbol/name, 由调用方更新预览状态 */
   onNavigate?: (symbol: string, name?: string) => void
+  /** Optional business overlays, such as portfolio B/S trades and average cost. */
+  markers?: ChartMarker[]
+  intradayMarkers?: IntradayChartMarker[]
+  priceLines?: ChartPriceLine[]
 }
 
 /** 切股导航列表项 */
@@ -109,7 +115,7 @@ function fmtAbnormalCalcTime(asofSec: number): string {
   return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
 }
 
-export function StockPreviewDialog({ symbol, name, onClose, triggerInfo, navList: navListSource, onNavigate }: Props) {
+export function StockPreviewDialog({ symbol, name, onClose, triggerInfo, navList: navListSource, onNavigate, markers, intradayMarkers, priceLines }: Props) {
   const [view, setView] = useState<PreviewView>('daily')
   const [intradayDays, setIntradayDays] = useState<number | null>(loadIntradayDays)
   const [dateRange, setDateRange] = useState(getDefaultRange)
@@ -148,6 +154,10 @@ export function StockPreviewDialog({ symbol, name, onClose, triggerInfo, navList
   const monitorPriceLines = useMemo(
     () => symbol ? buildMonitorPriceLines(monitorRules.data?.rules ?? [], symbol) : [],
     [monitorRules.data?.rules, symbol],
+  )
+  const chartPriceLines = useMemo(
+    () => [...monitorPriceLines, ...(priceLines ?? [])],
+    [monitorPriceLines, priceLines],
   )
   const inWatchlist = (watchlist.data?.symbols ?? []).some((s: any) => s.symbol === symbol)
 
@@ -610,7 +620,9 @@ export function StockPreviewDialog({ symbol, name, onClose, triggerInfo, navList
                   height={420}
                   showIntraday
                   dateRange={dateRange}
-                  priceLines={monitorPriceLines}
+                  markers={markers}
+                  intradayMarkers={intradayMarkers}
+                  priceLines={chartPriceLines}
                   onPriceDoubleClick={openPriceAlert}
                   refetchIntervalMs={intradayRefetchMs}
                   prefetchSymbols={prefetchSymbols}
@@ -632,7 +644,8 @@ export function StockPreviewDialog({ symbol, name, onClose, triggerInfo, navList
                   height={480}
                   refetchIntervalMs={intradayRefetchMs}
                   showDepth5
-                  priceLines={monitorPriceLines}
+                  priceLines={chartPriceLines}
+                  markers={intradayMarkers}
                   onPriceDoubleClick={openPriceAlert}
                 />
                 </>

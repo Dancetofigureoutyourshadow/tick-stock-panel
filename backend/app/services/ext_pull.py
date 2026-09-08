@@ -12,9 +12,11 @@ from typing import Any
 
 import httpx
 
+from app.market_time import cn_now, cn_today
 from app.services.ext_data import (
     ExtConfig,
     ExtConfigStore,
+    PullConfig,
     rows_to_parquet,
 )
 
@@ -42,14 +44,19 @@ def outbound_headers(user_headers: dict[str, str] | None = None) -> dict[str, st
 
 
 def _in_time_window(start: str | None, end: str | None) -> bool:
-    """检查当前本地时间是否在每日时间窗口内。
+    """检查当前北京时间是否在每日时间窗口内。
 
     start/end 为 "HH:MM" 格式。两者都为 None 时不限制(返回 True)。
     支持跨午夜窗口(如 22:00-02:00)。
+
+    用北京时间而不是本地时间: 这个窗口是照着 A 股交易时段设的, 而
+    market_time 模块开篇就写明「服务器/容器本地时区不可靠 (python:slim
+    镜像默认 UTC)」。UTC 容器里 9:30-15:00 的窗口实际落在北京 17:30-23:00,
+    每天都在收盘之后。
     """
     if not start or not end:
         return True
-    now = datetime.now().strftime("%H:%M")
+    now = cn_now().strftime("%H:%M")
     if start <= end:
         return start <= now < end
     # 跨午夜: 如 22:00-02:00
@@ -131,6 +138,37 @@ def _with_date_param(url: str, date_param: str | None, day: date) -> str:
     return f"{url}{sep}{date_param}={day.isoformat()}"
 
 
+def _apply_auth(config_id: str, auth: dict | None, url: str, headers: dict[str, str]) -> str:
+    """把 secrets_store 里的 API Key 注入出站请求。
+
+    鉴权三型与自定义行情源 AuthConfig 同口径: bearer → {header: "Bearer <key>"},
+    header → {header: <key>}, query → ?{param}=<key>。Key 只存 secrets.json,
+    不落 config.json; 配置了鉴权但未设置 Key 时 fail-closed 直接报错,
+    避免不带凭据请求被服务端记成无效调用。返回 (可能追加了参数的) url。
+    """
+    from urllib.parse import quote
+
+    from app.services.ext_data import get_ext_api_key
+
+    auth_type = str((auth or {}).get("type") or "none").lower()
+    if auth_type == "none":
+        return url
+    key = get_ext_api_key(config_id)
+    if not key:
+        raise ValueError(f"已配置 {auth_type} 鉴权但未设置 API Key, 请在拉取设置中填写")
+    if auth_type == "bearer":
+        headers[str(auth.get("header") or "Authorization")] = f"Bearer {key}"
+    elif auth_type == "header":
+        headers[str(auth.get("header") or "Authorization")] = key
+    elif auth_type == "query":
+        name = str(auth.get("param") or "token")
+        sep = "&" if "?" in url else "?"
+        url = f"{url}{sep}{name}={quote(key, safe='')}"
+    else:
+        raise ValueError(f"未知鉴权类型: {auth_type!r} (可选 none/bearer/header/query)")
+    return url
+
+
 def _assert_rows_date(rows: list[dict], day: date) -> None:
     """金融契约: 响应行的 date 字段 (若提供) 必须与请求日期一致。
 
@@ -152,6 +190,31 @@ def _assert_rows_date(rows: list[dict], day: date) -> None:
             )
 
 
+async def _request_json(pull: PullConfig, config_id: str, day: date | None = None) -> Any:
+    """发起一次拉取请求并返回解析后的 JSON。
+
+    正式拉取 (带日期参数) 与设置页"测试" (不带) 共用同一实现,
+    保证 UA 标识头与 API Key 鉴权注入只有一套口径。
+    """
+    url = _with_date_param(pull.url, pull.date_param, day) if day else pull.url
+    async with httpx.AsyncClient(timeout=30) as client:
+        headers = outbound_headers(pull.headers)
+        url = _apply_auth(config_id, pull.auth, url, headers)
+        kwargs: dict[str, Any] = {"headers": headers}
+
+        if pull.method.upper() == "POST" and pull.body:
+            kwargs["content"] = pull.body
+            if "content-type" not in {k.lower() for k in headers}:
+                kwargs["headers"]["Content-Type"] = "application/json"
+
+        resp = await client.request(pull.method.upper(), url, **kwargs)
+        resp.raise_for_status()
+        try:
+            return resp.json()
+        except Exception as e:
+            raise ValueError(f"响应不是有效 JSON: {e}") from e
+
+
 async def fetch_rows_for_date(config: ExtConfig, target_date: date) -> list[dict]:
     """按日期请求外部 API 并解析为行 (不写盘)。空数据返回 []。
 
@@ -162,24 +225,7 @@ async def fetch_rows_for_date(config: ExtConfig, target_date: date) -> list[dict
     if not pull or not pull.url:
         raise ValueError("拉取未配置或 URL 为空")
 
-    url = _with_date_param(pull.url, pull.date_param, target_date)
-    async with httpx.AsyncClient(timeout=30) as client:
-        headers = outbound_headers(pull.headers)
-        kwargs: dict[str, Any] = {"headers": headers}
-
-        if pull.method.upper() == "POST" and pull.body:
-            kwargs["content"] = pull.body
-            if "content-type" not in {k.lower() for k in headers}:
-                kwargs["headers"]["Content-Type"] = "application/json"
-
-        resp = await client.request(pull.method.upper(), url, **kwargs)
-        resp.raise_for_status()
-
-    # 解析 JSON
-    try:
-        data = resp.json()
-    except Exception as e:
-        raise ValueError(f"响应不是有效 JSON: {e}") from e
+    data = await _request_json(pull, config.id, day=target_date)
 
     # 提取行
     rows = _extract_rows(data, pull.response_path)
@@ -218,7 +264,8 @@ async def fetch_and_ingest(
     Returns:
         (rows_written, date_str)
     """
-    day = target_date or date.today()
+    # 同上: 落盘分区按北京日期, 否则 UTC 容器在北京时间 08:00 之前写的是前一天。
+    day = target_date or cn_today()
     rows = await fetch_rows_for_date(config, day)
     if not rows:
         raise ValueError("提取到的行数为 0")

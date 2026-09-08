@@ -817,7 +817,7 @@ def update_data_source_job_timeouts(req: DataSourceJobTimeoutPrefs) -> dict:
 
 @router.put("/preferences/minute-batch-compress")
 def update_minute_batch_compress(req: MinuteBatchCompressPrefs) -> dict:
-    """保存分时批量响应的 gzip 传输压缩开关。逐请求即时读取, 保存后立即生效。"""
+    """保存分时详情与批量响应的 gzip 传输压缩开关。逐请求即时读取, 保存后立即生效。"""
     from app.services import preferences
     preferences.save({"minute_batch_compress": req.minute_batch_compress})
     return {"minute_batch_compress": preferences.get_minute_batch_compress()}
@@ -825,7 +825,7 @@ def update_minute_batch_compress(req: MinuteBatchCompressPrefs) -> dict:
 
 @router.put("/preferences/daily-batch-compress")
 def update_daily_batch_compress(req: DailyBatchCompressPrefs) -> dict:
-    """保存日K批量响应的 gzip 传输压缩开关 (与分时独立)。逐请求即时读取。"""
+    """保存日K详情与批量响应的 gzip 传输压缩开关 (与分时独立)。逐请求即时读取。"""
     from app.services import preferences
     preferences.save({"daily_batch_compress": req.daily_batch_compress})
     return {"daily_batch_compress": preferences.get_daily_batch_compress()}
@@ -1493,7 +1493,7 @@ def update_quote_interval(req: QuoteIntervalIn, request: Request) -> dict:
     """更新行情轮询间隔。按档位自动 clamp。"""
     qs = getattr(request.app.state, "quote_service", None)
     if not qs:
-        return {"interval": req.interval, "min_interval": qs.get_min_interval(), "max_interval": 60.0}
+        return {"interval": req.interval, "min_interval": 6.0, "max_interval": 60.0}
     clamped = qs.set_interval(req.interval)
     return {
         "interval": clamped,

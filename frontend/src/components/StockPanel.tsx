@@ -21,6 +21,9 @@ import {
   type ColumnConfig,
 } from '@/lib/stock-info-fields'
 
+const LIVE_DEPTH_PANEL_HEIGHT = 182
+const LIVE_PANEL_GAP = 12
+
 interface Props {
   symbol: string
   height?: number
@@ -214,8 +217,8 @@ export function StockPanel({
       />
 
       {infoBarOnly ? null : (
-      <div className={`flex items-start gap-3 ${showDepth5 && focusStream.isCurrentDate ? 'min-w-max' : ''}`}>
-        <div className={showDepth5 && focusStream.isCurrentDate ? 'flex min-w-[1040px] shrink-0 items-start gap-3' : 'contents'}>
+      <div className="flex min-w-0 items-stretch gap-3">
+        <div className={showDepth5 && focusStream.isCurrentDate ? 'flex min-w-0 flex-1 items-start gap-3' : 'contents'}>
         <StockDailyKChart
           symbol={symbol}
           height={height}
@@ -262,7 +265,7 @@ export function StockPanel({
               />
             </div>
             {showDepth5 && focusStream.isCurrentDate && (
-              <div className="w-full shrink-0">
+              <div className="w-full shrink-0" style={{ height: LIVE_DEPTH_PANEL_HEIGHT }}>
                 <StockDepth5Panel
                   snapshot={focusStream.depth}
                   status={focusStream.depthStatus}
@@ -277,15 +280,15 @@ export function StockPanel({
         )}
         </div>
 
-        {showDepth5 && focusStream.isCurrentDate && focusStream.marketPhase !== 'closed' && (
+        {showDepth5 && focusStream.isCurrentDate && (
           <StockTransactionsPanel
             rows={focusStream.transactions}
             status={focusStream.transactionsStatus}
             error={focusStream.transactionsError}
             updatedAt={focusStream.transactionsUpdatedAt}
             prevClose={prevClose}
-            height={height}
-            className="w-[320px] shrink-0"
+            height={height + LIVE_PANEL_GAP + LIVE_DEPTH_PANEL_HEIGHT}
+            className="w-[clamp(260px,24vw,300px)] shrink-0"
           />
         )}
 

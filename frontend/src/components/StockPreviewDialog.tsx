@@ -329,7 +329,7 @@ export function StockPreviewDialog({ symbol, name, onClose, triggerInfo, navList
             transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
             className={cn(
               'relative rounded-card border border-border bg-base shadow-2xl overflow-hidden flex flex-col transition-all duration-200 ease-smooth',
-              maximized ? 'w-screen h-screen max-w-none max-h-none' : 'w-[92vw] max-w-[1200px] max-h-[95vh]',
+              maximized ? 'w-screen h-screen max-w-none max-h-none' : 'w-[96vw] max-w-[1440px] max-h-[95vh]',
             )}
           >
             {/* 顶栏 */}
@@ -619,6 +619,7 @@ export function StockPreviewDialog({ symbol, name, onClose, triggerInfo, navList
                   symbol={symbol}
                   height={420}
                   showIntraday
+                  showDepth5
                   dateRange={dateRange}
                   markers={markers}
                   intradayMarkers={intradayMarkers}

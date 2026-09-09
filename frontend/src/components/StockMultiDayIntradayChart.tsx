@@ -7,6 +7,7 @@ import { toast } from '@/components/Toast'
 import { EChartsMultiDayIntraday } from '@/components/EChartsMultiDayIntraday'
 import type { IntradayChartMarker } from '@/components/EChartsIntraday'
 import { StockDepth5Panel } from '@/components/StockDepth5Panel'
+import { StockTransactionsPanel } from '@/components/StockTransactionsPanel'
 import { chinaToday, useFocusMarketStream } from '@/lib/useFocusMarketStream'
 
 interface Props {
@@ -94,6 +95,7 @@ export function StockMultiDayIntradayChart({
   const isIndex = history.data?.asset_type === 'index' || latest.data?.asset_type === 'index'
   const missingDays = Math.max(0, days - sessions.length)
   const showCoverage = !history.isPlaceholderData && sessions.length > 0 && missingDays > 0 && !isIndex
+  const prevClose = latest.data?.prev_close ?? sessions.at(-1)?.prev_close ?? null
 
   // 自动补齐: 数据不足且非指数时, 自动触发同步
   // 用 ref 记录已触发的 symbol:days, 避免重复
@@ -205,6 +207,17 @@ export function StockMultiDayIntradayChart({
         <div className="px-3 pt-1 text-center text-[11px] text-danger">{errorMessage(syncMinute.error)}</div>
       )}
       </div>
+      {showDepth5 && focusStream.isCurrentDate && (
+        <StockTransactionsPanel
+          rows={focusStream.transactions}
+          status={focusStream.transactionsStatus}
+          error={focusStream.transactionsError}
+          updatedAt={focusStream.transactionsUpdatedAt}
+          prevClose={prevClose}
+          height={height}
+          className="w-[320px] shrink-0"
+        />
+      )}
       {showDepth5 && focusStream.isCurrentDate && (
         <div className="basis-full w-full shrink-0">
           <StockDepth5Panel

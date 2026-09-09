@@ -969,7 +969,7 @@ def _get_minute_range_impl(
     request: Request,
     symbol: str = Query(..., description="标的代码"),
     days: int = Query(10, ge=1, le=20, description="最近交易日数量"),
-):
+) -> dict:
     """读取单只标的最近 N 个已落库交易日的分钟 K。"""
     import polars as pl
 
@@ -989,21 +989,13 @@ def _get_minute_range_impl(
 
     # 指数分钟 K 不落本地仓库, 最新分时仍由 /api/index/minute 实时读取。
     if asset_type == "index":
-        return _gzip_payload(
-            request,
-            {**base_response, "sessions": [], "source": "none"},
-            pref_key="minute_batch_compress",
-        )
+        return {**base_response, "sessions": [], "source": "none"}
 
     end = cn_today()
     start = end - timedelta(days=days * 3 + 20)
     minute = repo.get_minute_range([symbol], start, end, asset_type=asset_type)
     if minute.is_empty() or "datetime" not in minute.columns:
-        return _gzip_payload(
-            request,
-            {**base_response, "sessions": [], "source": "none"},
-            pref_key="minute_batch_compress",
-        )
+        return {**base_response, "sessions": [], "source": "none"}
 
     minute = minute.with_columns(
         pl.col("datetime").dt.date().alias("_trade_date"),
@@ -1032,15 +1024,11 @@ def _get_minute_range_impl(
                 "rows": rows,
             })
 
-    return _gzip_payload(
-        request,
-        {
-            **base_response,
-            "sessions": sessions,
-            "source": "local" if sessions else "none",
-        },
-        pref_key="minute_batch_compress",
-    )
+    return {
+        **base_response,
+        "sessions": sessions,
+        "source": "local" if sessions else "none",
+    }
 
 
 @router.get("/minute-range")
@@ -1063,7 +1051,11 @@ def get_minute_range(
     result = _get_minute_range_impl(request, symbol, days)
     result["freq"] = freq
     if not result.get("sessions"):
-        return result
+        return _gzip_payload(
+            request,
+            result,
+            pref_key="minute_batch_compress",
+        )
 
     import polars as pl
 
@@ -1081,7 +1073,11 @@ def get_minute_range(
         sessions.append(session)
     result["sessions"] = sessions
     result["source"] = "local" if sessions else "none"
-    return result
+    return _gzip_payload(
+        request,
+        result,
+        pref_key="minute_batch_compress",
+    )
 
 
 @router.get("/minute")

@@ -142,6 +142,19 @@ def test_detail_kline_responses_use_configured_gzip(
     assert disabled.json() == plain.json()
 
 
+def test_minute_range_gzip_wraps_final_aggregated_payload():
+    response = _client(_DetailRepo()).get(
+        f"/api/kline/minute-range?symbol={_SYMBOL}&days=10&freq=5m",
+        headers={"Accept-Encoding": "gzip"},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-encoding"] == "gzip"
+    payload = response.json()
+    assert payload["freq"] == "5m"
+    assert len(payload["sessions"][0]["rows"]) == 30
+
+
 @pytest.mark.parametrize("live", [False, True])
 def test_free_tier_skips_tickflow_minute_fallback(monkeypatch, live):
     get_client = MagicMock(side_effect=AssertionError("must not call TickFlow"))

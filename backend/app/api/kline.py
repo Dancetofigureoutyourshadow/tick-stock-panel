@@ -840,12 +840,19 @@ def get_minute_batch(request: Request, body: dict):
     # 本地状态分类 (补拉已改为取到即落盘, 完整性判定随之收紧):
     # - fresh:  根数 >= 期望-2 (时间边界容差), 直接用本地。原 0.9 比例阈值会让
     #           持久化数据在 90% 处冻结尾巴, 必须按根数差判。
-    # - holes:  中间缺K (相邻间距非 1 分钟 / 非午休 91 分钟) → 全天重拉回填,
-    #           否则"最后一根+1min"的增量窗口永远不会回看中间的洞。
+    # - holes:  缺K → 全天重拉回填, 否则"最后一根+1min"的增量窗口永远不会
+    #           回看洞。含两种: 中间的洞 (相邻间距非 1 分钟 / 非午休 91 分钟)
+    #           与前部的洞 (首根显著晚于开盘 — 盘中重启/停机跨开盘的残留,
+    #           连续的尾部K会被增量锚定锁死, 同样必须全天重拉)。
     # - stale:  仅尾部落后 → 增量拉, 请求量从"每轮全天"降为"每轮一根"量级。
     _LUNCH_GAP_MIN = 91  # 11:30 → 13:01
+    # 前部洞基准: 开盘后 6 分钟 (容许无集合竞价K的数据源)。晚开/停牌复牌的票
+    # 也会命中 → 全天拉幂等, 至多多一次批量请求, 与中间洞同一代价模型。
+    day_open_floor = datetime(trade_date.year, trade_date.month, trade_date.day, 9, 36, 0)
 
     def _has_holes(sub: pl.DataFrame) -> bool:
+        if not sub.is_empty() and sub["datetime"][0] > day_open_floor:
+            return True
         gaps = sub["datetime"].diff().dt.total_minutes().drop_nulls()
         return gaps.filter((gaps != 1) & (gaps != _LUNCH_GAP_MIN)).len() > 0
 
@@ -874,14 +881,15 @@ def get_minute_batch(request: Request, body: dict):
         svc = getattr(request.app.state, "minute_refresh", None)
         full_minute_healthy = bool(svc is not None and svc.is_healthy())
     if full_minute_healthy:
-        # 股票缺口不补拉, 本地有多少给多少 (服务下一轮写入补全);
-        # ETF 不在 universe 内, 维持补拉
-        for sym in [*full_pull, *stale_last]:
+        # 纯尾部落后 (stale_last): 服务的增量轮下一轮就会补上, 股票不补拉省请求。
+        # 空洞 (full_pull: 空分区 / 中间洞 / 前部洞): 服务增量锚定本地最新时间,
+        # 永远不会回看洞 → 不压制, 由端点全天拉取并落盘修复。
+        # ETF 不在服务 universe 内, 两类均维持补拉。
+        for sym in stale_last:
             if sym not in etf_set:
                 sub = local_parts.get(sym)
                 if sub is not None and not sub.is_empty():
                     result[sym] = sub.to_dicts()
-        full_pull = [s for s in full_pull if s in etf_set]
         stale_last = {s: t for s, t in stale_last.items() if s in etf_set}
 
     # Step 2: 补拉并落盘 (取到即写, upsert 语义; 下一轮命中本地, 请求量骤降)。
@@ -1265,7 +1273,7 @@ async def sync_minute(request: Request):
     """
     import asyncio
 
-    from app.services.pipeline_jobs import JobCancelledError, job_store, release_run_slot, try_acquire_run_slot
+    from app.services.pipeline_jobs import JobCancelledError, job_store, release_run_slot, run_with_capacity, try_acquire_run_slot
     from app.api.data import invalidate_storage_cache
     from app.services.preferences import get_minute_sync_days
     from app.tickflow.capabilities import Cap
@@ -1302,7 +1310,6 @@ async def sync_minute(request: Request):
             job_store.progress(job_id, stage, pct, msg)
 
         try:
-            job_store.start(job_id)
             progress("sync_minute", 5, "解析标的池…")
             universe = sorted(set(get_pool("watchlist")) | set(get_pool("CN_Equity_A")))
             # 补充 instruments 全量标的，覆盖北交所、新股等
@@ -1335,7 +1342,7 @@ async def sync_minute(request: Request):
                     on_chunk_done=_on_chunk,
                 )
 
-            written = await loop.run_in_executor(_long_task_executor, _run)
+            written = await loop.run_in_executor(_long_task_executor, run_with_capacity, job_id, _run)
 
             # 刷新视图
             from app.jobs.daily_pipeline import _refresh_single_view
@@ -1586,7 +1593,7 @@ async def extend_history(request: Request):
             raise HTTPException(status_code=403, detail="需要 Pro+ 权限 (batch K-line)")
 
         from app.services.extend_history import run_extend_history
-        from app.services.pipeline_jobs import JobCancelledError, job_store, release_run_slot, try_acquire_run_slot
+        from app.services.pipeline_jobs import JobCancelledError, job_store, release_run_slot, run_with_capacity, try_acquire_run_slot
         from app.api.data import invalidate_storage_cache
 
         job_id, is_new = job_store.create()
@@ -1605,9 +1612,8 @@ async def extend_history(request: Request):
                                    stage_pct=stage_pct, skip_log=skip_log)
 
             try:
-                job_store.start(job_id)
                 result = await loop.run_in_executor(
-                    _long_task_executor,
+                    _long_task_executor, run_with_capacity, job_id,
                     lambda: run_extend_history(repo, capset, value, unit, on_progress=progress),
                 )
                 if "error" in result:
@@ -1668,7 +1674,7 @@ async def repair_daily(request: Request):
             raise HTTPException(status_code=403, detail="需要 Pro+ 权限 (batch K-line)")
 
         from app.services.repair_daily import run_repair_daily
-        from app.services.pipeline_jobs import JobCancelledError, job_store, release_run_slot, try_acquire_run_slot
+        from app.services.pipeline_jobs import JobCancelledError, job_store, release_run_slot, run_with_capacity, try_acquire_run_slot
         from app.api.data import invalidate_storage_cache
 
         job_id, is_new = job_store.create()
@@ -1695,8 +1701,7 @@ async def repair_daily(request: Request):
                 return run_repair_daily(repo, capset, start_date, on_progress=progress)
 
             try:
-                job_store.start(job_id)
-                result = await loop.run_in_executor(_long_task_executor, _run)
+                result = await loop.run_in_executor(_long_task_executor, run_with_capacity, job_id, _run)
                 if "error" in result:
                     job_store.fail(job_id, result["error"])
                 else:
@@ -1737,7 +1742,7 @@ async def rebuild_enriched(request: Request):
     try:
         repo = request.app.state.repo
 
-        from app.services.pipeline_jobs import JobCancelledError, job_store, release_run_slot, try_acquire_run_slot
+        from app.services.pipeline_jobs import JobCancelledError, job_store, release_run_slot, run_with_capacity, try_acquire_run_slot
         from app.api.data import invalidate_storage_cache
 
         job_id, is_new = job_store.create()
@@ -1756,7 +1761,6 @@ async def rebuild_enriched(request: Request):
                                    stage_pct=stage_pct, skip_log=skip_log)
 
             try:
-                job_store.start(job_id)
                 progress("rebuild_enriched", 10, "全量计算 enriched…")
                 from app.indicators.pipeline import run_pipeline
 
@@ -1767,7 +1771,7 @@ async def rebuild_enriched(request: Request):
                              stage_pct=int(100 * cur / tot), skip_log=True)
 
                 written = await loop.run_in_executor(
-                    _long_task_executor,
+                    _long_task_executor, run_with_capacity, job_id,
                     lambda: run_pipeline(on_batch_done=_batch_progress),
                 )
 

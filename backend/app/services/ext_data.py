@@ -293,7 +293,7 @@ class ExtConfigStore:
         except Exception:
             return None
 
-    def upsert(self, config: ExtConfig) -> None:
+    def upsert(self, config: ExtConfig, *, keep_strategy_cache: bool = False) -> None:
         config.updated_at = datetime.now().isoformat()
         cp = self._config_path(config.id)
         cp.parent.mkdir(parents=True, exist_ok=True)
@@ -301,8 +301,10 @@ class ExtConfigStore:
             json.dumps(config.to_dict(), ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
-        # 字段集/模式变化会改变扩展列集合: 失效扩展帧缓存与策略结果缓存
-        _invalidate_ext_derived(self._base.parent)
+        # 字段集/模式变化会改变扩展列集合: 失效扩展帧缓存与策略结果缓存。
+        # 定时拉取循环的 last_run/next_run 例行回写传 keep_strategy_cache=True,
+        # 否则每轮拉取后策略页缓存被状态回写清空 (数据写入链路已另行放行)。
+        _invalidate_ext_derived(self._base.parent, keep_strategy_cache=keep_strategy_cache)
 
     def delete(self, config_id: str) -> bool:
         import shutil
@@ -593,6 +595,8 @@ def write_ext_parquet(
     config: ExtConfig,
     data_dir: Path,
     snapshot_date: date | None = None,
+    *,
+    keep_strategy_cache: bool = False,
 ) -> int:
     """将 DataFrame 写入扩展数据 Parquet。
 
@@ -645,20 +649,21 @@ def write_ext_parquet(
     df.write_parquet(out_path)
     logger.info("扩展表写入: %s → %s (%d 行)", config.id, out_path, len(df))
     # 扩展列已接入 enriched 帧/因子注册表: 写入后必须失效相关缓存
-    _invalidate_ext_derived(data_dir)
+    _invalidate_ext_derived(data_dir, keep_strategy_cache=keep_strategy_cache)
     return len(df)
 
 
-def _invalidate_ext_derived(data_dir: Path) -> None:
+def _invalidate_ext_derived(data_dir: Path, *, keep_strategy_cache: bool = False) -> None:
     """扩展数据/配置变更 → 扩展帧缓存 + 因子同步状态 + 策略结果缓存。
 
     惰性导入避免与 ext_factors (反向惰性引用本模块) 构成模块级环。
     repo 内存 enriched 缓存由 API 层 repo.clear_cache() 补充清理。
+    keep_strategy_cache 语义见 ext_factors.invalidate_ext_caches。
     """
     try:
         from app.factors.ext_factors import invalidate_ext_caches
 
-        invalidate_ext_caches(data_dir)
+        invalidate_ext_caches(data_dir, keep_strategy_cache=keep_strategy_cache)
     except Exception as e:
         logger.warning("扩展数据缓存失效失败: %s", e)
 
@@ -736,6 +741,8 @@ def rows_to_parquet(
     config: ExtConfig,
     data_dir: Path,
     snapshot_date: date | None = None,
+    *,
+    keep_strategy_cache: bool = False,
 ) -> int:
     """将 JSON 行列表转为 DataFrame 写入 Parquet，复用 write_ext_parquet 的存储逻辑。
 
@@ -746,4 +753,7 @@ def rows_to_parquet(
     df = apply_config_mapping(df, config, data_dir)
     if "symbol" in df.columns:
         df = df.with_columns(pl.col("symbol").cast(pl.Utf8))
-    return write_ext_parquet(df, config, data_dir, snapshot_date=snapshot_date)
+    return write_ext_parquet(
+        df, config, data_dir, snapshot_date=snapshot_date,
+        keep_strategy_cache=keep_strategy_cache,
+    )

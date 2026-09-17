@@ -1994,7 +1994,8 @@ def compute_enriched_today(
     boll_sum = pl.col("_boll_partial_sum") + pl.col("close")
     boll_sq_sum = pl.col("_boll_partial_sq_sum") + pl.col("close") ** 2
     boll_ma = boll_sum / 20
-    boll_var = boll_sq_sum / 20 - boll_ma ** 2
+    # 样本方差 (ddof=1), 与全量 rolling_std(20) / 回测矩阵 ddof=1 同口径
+    boll_var = (boll_sq_sum - boll_sum ** 2 / 20) / 19
     boll_std = pl.when(boll_var > 0).then(boll_var.sqrt()).otherwise(0.0)
     df = df.with_columns([
         (boll_ma + 2 * boll_std).alias("boll_upper"),
@@ -2088,8 +2089,8 @@ def compute_enriched_today(
     today_ret = pl.col("close") / pl.col("prev_close") - 1
     total_sum = pl.col("_vol_19d_pct_sum").fill_null(0.0) + today_ret
     total_sq_sum = pl.col("_vol_19d_pct_sq_sum").fill_null(0.0) + today_ret ** 2
-    vol_mean = total_sum / 20
-    vol_var = total_sq_sum / 20 - vol_mean ** 2
+    # 样本方差 (ddof=1), 与全量 _daily_pct.rolling_std(20) / 回测矩阵 ddof=1 同口径
+    vol_var = (total_sq_sum - total_sum ** 2 / 20) / 19
     df = df.with_columns(
         pl.when(has_history_state & (vol_var > 0))
           .then(vol_var.sqrt() * (252 ** 0.5))

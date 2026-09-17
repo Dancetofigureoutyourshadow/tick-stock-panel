@@ -71,6 +71,22 @@ def enriched_dirname(asset_type: str) -> str:
     return "kline_etf_enriched" if asset_type == "etf" else "kline_daily_enriched"
 
 
+# 盘中递推状态的最长窗口 (交易日): MA60 部分和 tail(59)、60 日动量 tail(60)
+_LIVE_AGG_WINDOW_BARS = 60
+
+
+def _live_agg_window_start(dates: pl.Series, latest: date, calendar_start: date) -> date:
+    """盘中递推历史窗口起点: 自然日起点与「最近 60 个交易日」起点取较早者。
+
+    自然日 90 天通常含 62~65 个交易日, 但春节/国庆长假前后只有 57~59 个,
+    tail(59)/tail(60) 会取到残缺窗口 (与 get_enriched_history 按交易日计数同理)。
+    """
+    trading = dates.filter(dates <= latest).unique().sort()
+    if trading.len() >= _LIVE_AGG_WINDOW_BARS:
+        return min(calendar_start, trading[-_LIVE_AGG_WINDOW_BARS])
+    return calendar_start
+
+
 def _last_available_rows(df: pl.DataFrame, cutoff: date) -> pl.DataFrame:
     """从已按 symbol/date 排序的数据中取每只标的最后一条有效状态。"""
     if df.is_empty():
@@ -765,8 +781,9 @@ class KlineRepository:
                 needed = [c for c in base_cols if c in hist_all.columns]
                 step = time.perf_counter()
                 logger.info("live agg step start: slice history cache")
+                window_start = _live_agg_window_start(hist_all["date"], latest, start_60d)
                 df_hist = hist_all.select(needed).filter(
-                    (pl.col("date") >= start_60d) & (pl.col("date") <= latest)
+                    (pl.col("date") >= window_start) & (pl.col("date") <= latest)
                 ).sort(["symbol", "date"])
                 logger.info("live agg step done: slice history cache rows=%d (%.2fs)", len(df_hist), time.perf_counter() - step)
 
@@ -936,7 +953,9 @@ class KlineRepository:
                 pl.col("low").tail(8).min().alias("_kdj_8d_low"),
                 pl.col("high").tail(8).max().alias("_kdj_8d_high"),
 
-                pl.col("close").tail(59).len().alias("_window_len"),
+                # 窗口内实际 K 线根数 (≤ 窗口天数): compute_enriched_today 据此把
+                # 历史不足的窗口指标置空, 与全量 rolling(窗口满才出值) 同口径
+                pl.len().alias("_window_len"),
             ])
         )
 
@@ -963,11 +982,14 @@ class KlineRepository:
 
     def _build_live_agg_from_parquet(self, latest: date, start_60d: date) -> tuple[pl.DataFrame, pl.DataFrame]:
         """降级路径: 从 parquet 读取数据并计算指标 (当 _enriched_history_cache 不可用时)。"""
+        from datetime import timedelta
+
         from app.indicators.pipeline import compute_indicators
 
+        # 多读一段自然日, 再按交易日计数确定窗口起点 (长假前后 90 个自然日不足 60 个交易日)
         lf = (
             scan_enriched_parquet(self._enriched_glob)
-            .filter(pl.col("date") >= start_60d)
+            .filter(pl.col("date") >= start_60d - timedelta(days=60))
             .filter(pl.col("date") <= latest)
             .sort(["symbol", "date"])
         )
@@ -980,6 +1002,8 @@ class KlineRepository:
 
         if df_hist.is_empty():
             return df_hist, pl.DataFrame()
+        window_start = _live_agg_window_start(df_hist["date"], latest, start_60d)
+        df_hist = df_hist.filter(pl.col("date") >= window_start)
 
         df_with_indicators = compute_indicators(df_hist)
 

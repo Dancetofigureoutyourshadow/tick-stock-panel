@@ -2097,6 +2097,24 @@ def compute_enriched_today(
           .alias("annual_vol_20d"),
     )
 
+    # ---- 窗口不满置空 ----
+    # live_agg 的部分和 / 极值 / N 日前收盘用 tail(N) 取, 历史 K 线不足 N 根 (次新股) 时
+    # 取到的是残缺窗口; 全量 rolling_*(N) / shift(N) 窗口不满为空, 按窗口内实际根数同口径置空。
+    min_history_bars = {
+        "ma5": 4, "ma10": 9, "ma20": 19, "ma30": 29, "ma60": 59,
+        "vol_ma5": 4, "vol_ma10": 9, "vol_ratio_5d": 5,
+        "boll_upper": 19, "boll_lower": 19, "high_60d": 59, "low_60d": 59,
+        "momentum_3d": 3, "momentum_5d": 5, "momentum_10d": 10,
+        "momentum_20d": 20, "momentum_30d": 30, "momentum_60d": 60,
+        "annual_vol_20d": 20,
+    }
+    if "_window_len" in df.columns:
+        df = df.with_columns([
+            pl.when(pl.col("_window_len") >= need).then(pl.col(column)).otherwise(None).alias(column)
+            for column, need in min_history_bars.items()
+            if column in df.columns
+        ])
+
     # ---- 信号 (需要昨天的指标值判断交叉) ----
     if not prev_enriched.is_empty():
         sig_prev = prev_enriched.select(

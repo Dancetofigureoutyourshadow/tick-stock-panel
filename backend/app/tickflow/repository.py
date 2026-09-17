@@ -917,8 +917,9 @@ class KlineRepository:
                 pl.col("close").tail(19).sum().alias("_boll_partial_sum"),
                 (pl.col("close").tail(19) ** 2).sum().alias("_boll_partial_sq_sum"),
 
-                pl.col("high").tail(59).max().alias("_high_59d"),
-                pl.col("low").tail(59).min().alias("_low_59d"),
+                # 60 日极值为收盘价口径 (与 compute_indicators / 回测矩阵 high_60d 一致)
+                pl.col("close").tail(59).max().alias("_high_59d"),
+                pl.col("close").tail(59).min().alias("_low_59d"),
 
                 # 异动偏离 deviate_3d 用 (与 5d/10d/30d 同语义: 尾部第 N 个收盘)
                 pl.col("close").tail(3).first().alias("_close_3d_ago"),

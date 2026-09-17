@@ -2056,14 +2056,14 @@ def compute_enriched_today(
         ((pl.col("volume") * time_factor) / vol_ma5_prev).alias("vol_ratio_5d"),
     ])
 
-    # ---- 极值 60 日 ----
+    # ---- 极值 60 日 (收盘价口径, 与全量 close.rolling_max/min(60) 一致) ----
     df = df.with_columns([
         pl.when(has_history_state)
-          .then(pl.max_horizontal(pl.col("_high_59d"), pl.col("high")))
+          .then(pl.max_horizontal(pl.col("_high_59d"), pl.col("close")))
           .otherwise(None)
           .alias("high_60d"),
         pl.when(has_history_state)
-          .then(pl.min_horizontal(pl.col("_low_59d"), pl.col("low")))
+          .then(pl.min_horizontal(pl.col("_low_59d"), pl.col("close")))
           .otherwise(None)
           .alias("low_60d"),
     ])

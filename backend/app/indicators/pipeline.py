@@ -721,7 +721,8 @@ def compute_limit_signals(
         instrument_needs.add("name")
     if "turnover_rate" in want:
         instrument_needs.add("float_shares")
-    if need_up:
+    if need_price_limits:
+        # limit_up 哨兵值 (>= 10000) 同时标记跌停侧「无涨跌停限制」, 只算跌停信号时也要带上
         instrument_needs.add("limit_up")
     if need_down:
         instrument_needs.add("limit_down")
@@ -828,7 +829,16 @@ def compute_limit_signals(
         ).then(pl.col("limit_down")).otherwise(pl.col("_theoretical_limit_down"))
     else:
         effective_limit_down = pl.col("_theoretical_limit_down")
-    effective_exprs: list[pl.Expr] = []
+    # 维表 limit_up 为哨兵值 = 当日无涨跌停限制 (注册制新股上市前 5 日), 与实时路径
+    # _compute_limit_signals_today 同口径: 涨停/跌停/炸板/翘板一律不成立, 不回退理论价
+    no_price_limit = pl.lit(False)
+    if "limit_up" in df.columns:
+        no_price_limit = (
+            authoritative_date
+            & pl.col("limit_up").is_not_null()
+            & (pl.col("limit_up") >= _SENTINEL)
+        )
+    effective_exprs: list[pl.Expr] = [no_price_limit.fill_null(False).alias("_no_price_limit")]
     if need_up:
         effective_exprs.append(effective_limit_up.alias("_effective_limit_up"))
     if need_down:
@@ -838,7 +848,8 @@ def compute_limit_signals(
     # ── signal_limit_up ──
     if need_up:
         df = df.with_columns(
-        pl.when(
+        pl.when(pl.col("_no_price_limit")).then(False)
+        .when(
             pl.col("_prev_raw_close").is_not_null()
             & (pl.col("_prev_raw_close") > 0)
             & (pl.col("raw_close") > 0)
@@ -874,7 +885,8 @@ def compute_limit_signals(
     # ── signal_limit_down ──
     if need_down:
         df = df.with_columns(
-        pl.when(
+        pl.when(pl.col("_no_price_limit")).then(False)
+        .when(
             pl.col("_prev_raw_close").is_not_null()
             & (pl.col("_prev_raw_close") > 0)
             & (pl.col("raw_close") > 0)
@@ -911,7 +923,8 @@ def compute_limit_signals(
     # 条件: 当日最低价曾触及跌停价 + 最终没有跌停 + 收阳
     if "signal_limit_down_recovery" in want:
         df = df.with_columns(
-        pl.when(
+        pl.when(pl.col("_no_price_limit")).then(False)
+        .when(
             pl.col("_prev_raw_close").is_not_null()
             & (pl.col("_prev_raw_close") > 0)
             & (pl.col("raw_low") > 0)
@@ -927,7 +940,8 @@ def compute_limit_signals(
     # 条件: 最高价曾触及涨停价 + 最终没有封住涨停
     if "signal_broken_limit_up" in want:
         df = df.with_columns(
-        pl.when(
+        pl.when(pl.col("_no_price_limit")).then(False)
+        .when(
             pl.col("_prev_raw_close").is_not_null()
             & (pl.col("_prev_raw_close") > 0)
             & (pl.col("raw_high") > 0)
@@ -941,7 +955,7 @@ def compute_limit_signals(
     # 清理临时列 + JOIN 引入的 instruments 列 (不存入 enriched)
     cleanup = ["_prev_raw_close", "_limit_pct",
                "_theoretical_limit_up", "_theoretical_limit_down",
-               "_effective_limit_up", "_effective_limit_down",
+               "_effective_limit_up", "_effective_limit_down", "_no_price_limit",
                "_grp_up", "_grp_down", "_instrument_as_of"]
     if "_is_st" in df.columns:
         cleanup.append("_is_st")

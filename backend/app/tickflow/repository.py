@@ -767,6 +767,8 @@ class KlineRepository:
         started = time.perf_counter()
         logger.info("live agg build start: latest=%s", latest)
         start_60d = latest - timedelta(days=90)  # 日历90天 ≈ 60个交易日
+        # EMA12/26、RSI 递推状态的暖机来源; None = 与窗口切片 df_hist 同源 (降级路径)
+        ewm_history: pl.DataFrame | None = None
 
         # 优先使用已有的历史缓存 (避免重复 scan_parquet + compute_indicators)
         if self._enriched_history_cache is not None and not self._enriched_history_cache.is_empty():
@@ -801,6 +803,9 @@ class KlineRepository:
                     hist_all.select("date", *existing_state), latest,
                 )
                 agg_a = state_source.select(existing_state)
+                # ema5~ema60 / macd_dea 等状态取自完整历史缓存; _ema12/_ema26 与 RSI 也必须
+                # 同源暖机, 只用 90 天窗口递推会与 macd_dea、盘后全量口径不一致
+                ewm_history = hist_all.select("symbol", "date", "close")
             else:
                 df_hist = pl.DataFrame()
                 agg_a = pl.DataFrame()
@@ -820,11 +825,13 @@ class KlineRepository:
             logger.info("live agg build skipped: empty state (%.2fs)", time.perf_counter() - started)
             return
 
+        ewm_source = df_hist if ewm_history is None else ewm_history
+
         # 单独计算 _ema12 / _ema26 (compute_indicators 内部会 drop 掉)
         step = time.perf_counter()
         logger.info("live agg step start: ema state")
         df_ema = _last_available_rows(
-            df_hist.sort(["symbol", "date"]).with_columns([
+            ewm_source.sort(["symbol", "date"]).with_columns([
                 pl.col("close").ewm_mean(alpha=_ema_alpha(12), adjust=False).over("symbol").alias("_ema12"),
                 pl.col("close").ewm_mean(alpha=_ema_alpha(26), adjust=False).over("symbol").alias("_ema26"),
             ]).select("symbol", "date", "_ema12", "_ema26"),
@@ -837,7 +844,7 @@ class KlineRepository:
         # 单独计算 RSI 状态列 (compute_indicators 内部会 drop 掉)
         step = time.perf_counter()
         logger.info("live agg step start: rsi state")
-        df_rsi_base = df_hist.sort(["symbol", "date"]).with_columns(
+        df_rsi_base = ewm_source.sort(["symbol", "date"]).with_columns(
             pl.col("close").diff().over("symbol").alias("_daily_delta")
         )
         gain = pl.when(pl.col("_daily_delta") > 0).then(pl.col("_daily_delta")).otherwise(0.0)

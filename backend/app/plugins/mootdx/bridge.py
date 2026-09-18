@@ -10,8 +10,9 @@ from typing import Any, Literal
 from app.market_time import cn_today
 
 _TDX_SERVERS = [
-    # Quote-capable nodes verified against this provider first. The remaining
-    # nodes stay available to historical-data validation as fallbacks.
+    # Keep a node verified for quote, daily, and minute responses first. Quote
+    # validation intentionally probes only a short prefix of this list.
+    ("59.36.5.11", 7709),
     ("180.153.18.170", 7709),
     ("180.153.18.172", 80),
     ("115.238.90.165", 7709),
@@ -20,7 +21,6 @@ _TDX_SERVERS = [
     ("218.75.126.9", 7709),
     ("60.12.136.250", 7709),
     ("202.108.253.139", 80),
-    ("59.36.5.11", 7709),
     ("117.34.114.13", 7709),
     ("119.97.185.59", 7709),
     ("124.70.133.119", 7709),
@@ -46,6 +46,16 @@ def availability() -> tuple[bool, str]:
         from mootdx.quotes import Quotes  # noqa: F401
     except Exception as exc:
         return False, f"mootdx 导入失败: {exc}"
+    # Import success only proves that the wrapper is installed.  TDX nodes can
+    # still accept TCP connections while returning an empty/short response.
+    # Reuse the same quote validation as the realtime provider so the plugin
+    # status does not advertise a source that cannot actually serve data.
+    try:
+        client = tdx_client(timeout=3, validation="quote")
+    except Exception as exc:
+        return False, f"通达信行情不可用: {exc}"
+    with suppress(Exception):
+        client.close()
     return True, "ok (mootdx)"
 
 

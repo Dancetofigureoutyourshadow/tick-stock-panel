@@ -4,7 +4,7 @@ import { fmtPct } from '@/lib/format'
 import * as echarts from 'echarts'
 import type { ECharts, EChartsOption } from 'echarts'
 import { getKlineLimitColor } from '@/lib/kline-colors'
-import { chartInspectionId } from '@/lib/chan-inspection'
+import { chartInspectionId } from '@/lib/chart-inspection'
 import { formatPriceAxisLabel } from '@/lib/chart-axis'
 
 export interface OHLC {
@@ -108,6 +108,8 @@ export interface ChartStructureLine {
 export interface ChartPriceLine {
   value: number
   label?: string
+  /** 在左侧价格轴显示数值, 而非图内说明文字。 */
+  axisLabel?: boolean
   color?: string
   start?: string
   end?: string
@@ -788,13 +790,14 @@ function buildOption(
         opacity: 0.92,
       }
       const label = {
-        show: !!line.label,
-        formatter: line.label ?? '',
-        position: 'insideEndTop' as const,
+        show: !!line.label || !!line.axisLabel,
+        formatter: line.axisLabel ? line.value.toFixed(2) : line.label ?? '',
+        position: line.axisLabel ? 'start' as const : 'insideEndTop' as const,
+        distance: line.axisLabel ? 8 : 5,
         color: line.color ?? CT().text,
         backgroundColor: CT().tooltipBg,
         borderRadius: 4,
-        padding: [2, 6],
+        padding: line.axisLabel ? [2, 0] : [2, 6],
         fontSize: 10,
         fontFamily: 'JetBrains Mono, monospace',
       }
@@ -1036,6 +1039,9 @@ export function EChartsCandlestick({
   // --- 全部用 ref，避免高频交互触发 React 重渲染 ---
   const infoIdxRef = useRef<number>(data.length - 1)
   const compactRef = useRef(false)
+  // 图表的缩放监听器长期保留, 标记更新必须使用本次渲染的日期索引和数据。
+  const updateCompactPresentationRef = useRef<() => void>(() => {})
+  updateCompactPresentationRef.current = updateCompactPresentation
   const userZoomRef = useRef<{ start: number; end: number } | null>(null)
   // 竖虚线(crosshair)是否可见: 控制信息栏「至今」字段的显隐。鼠标移出图表区即 false。
   const hoverActiveRef = useRef(false)
@@ -1299,7 +1305,7 @@ export function EChartsCandlestick({
       const newCompact = visibleCount > COMPACT_THRESHOLD
       if (newCompact !== compactRef.current) {
         compactRef.current = newCompact
-        updateCompactPresentation()
+        updateCompactPresentationRef.current()
       }
     })
 

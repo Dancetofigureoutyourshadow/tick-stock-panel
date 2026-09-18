@@ -14,6 +14,8 @@ DAILY_STORAGE_SCHEMA: dict[str, pl.DataType] = {
     "close": pl.Float64,
     "volume": pl.Float64,
     "amount": pl.Float64,
+    "prev_close": pl.Float64,
+    "change_pct": pl.Float64,
     "quote_ts": pl.Int64,
 }
 
@@ -26,6 +28,8 @@ ENRICHED_STORAGE_SCHEMA: dict[str, pl.DataType] = {
     "close": pl.Float64,
     "volume": pl.Float64,
     "amount": pl.Float64,
+    "prev_close": pl.Float64,
+    "change_pct": pl.Float64,
     "raw_close": pl.Float64,
     "raw_high": pl.Float64,
     "raw_low": pl.Float64,

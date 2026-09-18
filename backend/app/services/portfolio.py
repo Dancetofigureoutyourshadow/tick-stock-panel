@@ -45,6 +45,14 @@ def _money(cents: int) -> str:
     return f"{(Decimal(cents) / 100).quantize(_CENT):.2f}"
 
 
+def _proportional_cents(total_cents: int, quantity: int, total_quantity: int) -> int:
+    return int(
+        (Decimal(total_cents) * Decimal(quantity) / Decimal(total_quantity)).quantize(
+            Decimal("1"), rounding=ROUND_HALF_UP
+        )
+    )
+
+
 def _decimal_text(value: Decimal) -> str:
     text = format(value, "f")
     return text.rstrip("0").rstrip(".") if "." in text else text
@@ -161,6 +169,15 @@ class PortfolioAccount:
                     trade_date TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
+
+                UPDATE positions
+                   SET remaining_cost_cents = cost_basis_cents - COALESCE((
+                       SELECT SUM(cash_delta_cents)
+                         FROM trades
+                        WHERE trades.position_id = positions.id
+                          AND trades.side = 'sell'
+                   ), 0)
+                 WHERE remaining_qty > 0;
                 """
             )
 
@@ -603,18 +620,28 @@ class PortfolioAccount:
             )
             proceeds_cents = gross_cents - commission_cents - stamp_tax_cents
             old_cost_cents = int(position["remaining_cost_cents"])
-            allocated_cost_cents = (
-                old_cost_cents
-                if quantity == remaining_qty
-                else int(
-                    (
-                        Decimal(old_cost_cents) * Decimal(quantity) / Decimal(remaining_qty)
-                    ).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+            original_cost_cents = int(position["cost_basis_cents"])
+            bought_qty = int(position["bought_qty"])
+            next_qty = remaining_qty - quantity
+            sold_qty = bought_qty - remaining_qty
+            basis_sold_before_cents = _proportional_cents(
+                original_cost_cents, sold_qty, bought_qty
+            )
+            basis_sold_after_cents = (
+                original_cost_cents
+                if next_qty == 0
+                else _proportional_cents(
+                    original_cost_cents, sold_qty + quantity, bought_qty
                 )
             )
+            allocated_cost_cents = basis_sold_after_cents - basis_sold_before_cents
             realized_cents = proceeds_cents - allocated_cost_cents
-            next_qty = remaining_qty - quantity
-            next_cost_cents = old_cost_cents - allocated_cost_cents
+            # Remaining cost is the capital still tied up in the position. A
+            # partial sale releases its net proceeds, so a profitable sale
+            # lowers the cost line while a losing sale raises it.
+            next_cost_cents = (
+                0 if next_qty == 0 else old_cost_cents - proceeds_cents
+            )
             next_status = "closed" if next_qty == 0 else position["status"]
             connection.execute(
                 """UPDATE positions
@@ -995,11 +1022,15 @@ class PortfolioAccount:
         for row in rows:
             position = self._position(row["id"])
             quantity = int(position["remaining_qty"])
-            cost_cents = _to_cents(position["remaining_cost"])
+            bought_qty = int(position["bought_qty"])
+            original_cost_cents = _to_cents(position["cost_basis"])
+            remaining_basis_cents = original_cost_cents - _proportional_cents(
+                original_cost_cents, bought_qty - quantity, bought_qty
+            )
             current = prices.get(position["symbol"])
             current_price = None if current is None else _decimal(current)
             market_cents = (
-                cost_cents
+                remaining_basis_cents
                 if current_price is None
                 else _to_cents(current_price * quantity)
             )
@@ -1012,7 +1043,7 @@ class PortfolioAccount:
                         None if current_price is None else _decimal_text(current_price)
                     ),
                     "market_value": _money(market_cents),
-                    "unrealized_pnl": _money(market_cents - cost_cents),
+                    "unrealized_pnl": _money(market_cents - remaining_basis_cents),
                 }
             )
             result.append(position)
@@ -1069,7 +1100,8 @@ class PortfolioAccount:
                 ).fetchone()[0]
             )
             positions = connection.execute(
-                """SELECT symbol, remaining_qty, remaining_cost_cents
+                """SELECT symbol, bought_qty, remaining_qty,
+                          cost_basis_cents, remaining_cost_cents
                    FROM positions WHERE remaining_qty > 0"""
             ).fetchall()
         cash = int(state["cash_cents"])
@@ -1077,13 +1109,18 @@ class PortfolioAccount:
         market_value = 0
         remaining_cost = 0
         for position in positions:
-            cost = int(position["remaining_cost_cents"])
+            bought_qty = int(position["bought_qty"])
+            remaining_qty = int(position["remaining_qty"])
+            original_cost = int(position["cost_basis_cents"])
+            cost = original_cost - _proportional_cents(
+                original_cost, bought_qty - remaining_qty, bought_qty
+            )
             remaining_cost += cost
             price = prices.get(position["symbol"])
             market_value += (
                 cost
                 if price is None
-                else _to_cents(_decimal(price) * int(position["remaining_qty"]))
+                else _to_cents(_decimal(price) * remaining_qty)
             )
         unrealized = market_value - remaining_cost
         return {

@@ -8,7 +8,7 @@ import { api, ApiError, type KlineRow, type MinuteKlineRow, type PortfolioPositi
 import { fetchMinuteBatchIncremental } from '@/lib/minuteBatchIncremental'
 import { QK } from '@/lib/queryKeys'
 import { storage } from '@/lib/storage'
-import { fmtPrice, fmtPct, fmtBigNum, priceColorClass, formatExtNumber } from '@/lib/format'
+import { fmtPrice, fmtPct, fmtBigNum, fmtSignedPrice, priceColorClass, formatExtNumber } from '@/lib/format'
 import { cn } from '@/lib/cn'
 import { computeGroupPcts, loadGroupStatsConfig, type GroupStatsConfigPatch } from '@/lib/watchlistGroupStats'
 import { PageHeader } from '@/components/PageHeader'
@@ -2159,6 +2159,11 @@ export function Watchlist() {
                 }
                 if (key === 'pct') {
                   return <td className={`${numCls} ${priceColorClass(pct)}`}>{fmtPct(pct)}</td>
+                }
+                if (key === 'change_amount') {
+                  const changeAmount = r.rt_change_amount ?? r.change_amount
+                  const amount = changeAmount == null ? null : Number(changeAmount)
+                  return <td className={`${numCls} ${priceColorClass(amount)}`}>{fmtSignedPrice(amount)}</td>
                 }
                 if (key === 'watchlist_gain') {
                   const gain = watchlistGain(r)

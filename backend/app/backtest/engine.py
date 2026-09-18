@@ -861,6 +861,9 @@ class BacktestEngine:
         sell_cost_pct = config.sell_cost_pct()
         trades: list[TradeRecord] = []
         execution_stats = {
+            "buy_signal_candidates": int(matrix.entry.sum()),
+            "buy_pre_slot_candidates": 0,
+            "buy_filled": 0,
             "buy_invalid_price": 0,
             "buy_suspended": 0,
             "buy_limit_up": 0,
@@ -1096,6 +1099,7 @@ class BacktestEngine:
             if not future_times:
                 _count("sell_no_future")
                 continue
+            _count("buy_pre_slot_candidates")
             entry_price = _refill(time_id, asset_id, "buy", float(entry_prices[time_id, asset_id]))
             entry_date = matrix.timestamp_labels[time_id][:10]
             pos = {
@@ -1117,6 +1121,7 @@ class BacktestEngine:
                 "pending_exit_next_open": False,
                 "blocked_exit_days": 0,
             }
+            _count("buy_filled")
             closed = False
             for future in future_times:
                 pos["hold_days"] += 1
@@ -1305,6 +1310,9 @@ class BacktestEngine:
         score_max = getattr(config, "score_max", None)
         trades: list[TradeRecord] = []
         execution_stats: dict[str, int] = {
+            "buy_signal_candidates": int(ent.sum()),
+            "buy_pre_slot_candidates": 0,
+            "buy_filled": 0,
             "buy_invalid_price": 0,
             "buy_suspended": 0,
             "buy_limit_up": 0,
@@ -1499,6 +1507,7 @@ class BacktestEngine:
             if start_pos >= len(rows):
                 _count("sell_no_future")
                 continue
+            _count("buy_pre_slot_candidates")
 
             entry_price = _refill_price(entry_idx, "buy", float(entry_prices[entry_idx]))
             pos = {
@@ -1516,6 +1525,7 @@ class BacktestEngine:
                 "pending_exit_signal_date": None,
                 "blocked_exit_days": 0,
             }
+            _count("buy_filled")
             hi = float(high_prices[entry_idx])
             if _valid_price(hi):
                 pos["max_high"] = max(float(pos["max_high"]), hi)
@@ -1738,11 +1748,19 @@ class BacktestEngine:
         progress_cb: "Callable[[dict], None] | None" = None,
         cancel_event: "threading.Event | None" = None,
         options: SimulationOptions | None = None,
+        regime_scale: np.ndarray | None = None,
     ) -> SimResult:
         """Run the production Python matcher on a prebuilt MarketMatrix."""
         if not matrix.entry.any():
             return self._empty_result()
-        return self._simulate_portfolio_matrix(matrix, config, progress_cb, cancel_event, options)
+        return self._simulate_portfolio_matrix(
+            matrix,
+            config,
+            progress_cb,
+            cancel_event,
+            options,
+            regime_scale,
+        )
 
     def _simulate_portfolio_matrix(
         self,
@@ -1751,9 +1769,20 @@ class BacktestEngine:
         progress_cb: "Callable[[dict], None] | None",
         cancel_event: "threading.Event | None",
         options: SimulationOptions | None = None,
+        regime_scale: np.ndarray | None = None,
     ) -> SimResult:
         options = options or SimulationOptions()
         time_count, asset_count = matrix.shape
+        if regime_scale is not None:
+            regime_scale = np.asarray(regime_scale, dtype=np.float64)
+            if regime_scale.ndim != 1 or len(regime_scale) != time_count:
+                raise ValueError(
+                    f"regime_scale 长度必须等于市场矩阵时间轴长度 {time_count}"
+                )
+            if not np.isfinite(regime_scale).all() or (
+                (regime_scale < 0) | (regime_scale > 1)
+            ).any():
+                raise ValueError("regime_scale 包含非法值, 必须是 0~1 的有限数值")
         entry_prices = self._resolve_entry_prices(matrix, config)
         exit_prices = matrix.open if config.exit_fill == "open_t+1" else matrix.close
         buy_cost_pct = config.buy_cost_pct()
@@ -1770,6 +1799,9 @@ class BacktestEngine:
         equity_values: list[float] = []
         exposure_values: list[float] = []
         execution_stats = {
+            "buy_signal_candidates": int(matrix.entry.sum()),
+            "buy_pre_slot_candidates": 0,
+            "buy_filled": 0,
             "buy_invalid_price": 0,
             "buy_suspended": 0,
             "buy_limit_up": 0,
@@ -1984,6 +2016,10 @@ class BacktestEngine:
 
         for time_id, date_label in enumerate(matrix.timestamp_labels):
             date_text = date_label[:10]
+            current_regime_scale = (
+                1.0 if regime_scale is None else float(regime_scale[time_id])
+            )
+            current_exposure_pct = max_exposure_pct * current_regime_scale
             if time_id % 20 == 0:
                 if cancel_event is not None and cancel_event.is_set():
                     logger.info("回测被用户取消 (第 %d/%d 天)", time_id, time_count)
@@ -2061,6 +2097,40 @@ class BacktestEngine:
                 if reason:
                     _try_sell(time_id, asset_id, reason, signal_date, sold_today)
 
+            # A lower regime allocation is an account-level exposure ceiling.
+            # Reduce the weakest entries first until the remaining marked
+            # value fits; failed sells become normal pending exits and are not
+            # replaced by new positions on the same day.
+            if current_regime_scale < 1.0 and positions:
+                while positions:
+                    market_value = _market_value()
+                    equity = cash + market_value
+                    exposure_limit = equity * current_exposure_pct
+                    if market_value <= exposure_limit + 1e-6:
+                        break
+                    ranked = sorted(
+                        positions,
+                        key=lambda asset: (
+                            float(positions[asset]["entry_score"]),
+                            int(asset),
+                        ),
+                    )
+                    reduced = False
+                    for asset_id in ranked:
+                        if positions[asset_id].get("pending_exit_reason"):
+                            continue
+                        if _try_sell(
+                            time_id,
+                            asset_id,
+                            "regime_reduce",
+                            date_text,
+                            sold_today,
+                        ):
+                            reduced = True
+                            break
+                    if not reduced:
+                        break
+
             if time_id < time_count - 1 and max_positions > 0:
                 candidates: list[tuple[int, float]] = []
                 for asset_id in np.flatnonzero(matrix.entry[time_id]):
@@ -2083,16 +2153,18 @@ class BacktestEngine:
                         continue
                     candidates.append((asset, score))
                 candidates.sort(key=lambda item: item[1], reverse=True)
+                execution_stats["buy_pre_slot_candidates"] += len(candidates)
                 slots = max_positions - len(positions)
                 if slots <= 0:
                     execution_stats["buy_no_slot"] += len(candidates)
                 elif candidates:
+                    execution_stats["buy_no_slot"] += max(len(candidates) - slots, 0)
                     selected = candidates[:slots]
                     market_value_before = _market_value()
                     equity_before = cash + market_value_before
-                    target_value = equity_before * max_exposure_pct / max_positions
-                    exposure_capacity = equity_before * max_exposure_pct - market_value_before
-                    if equity_before <= 0 or exposure_capacity <= 0 or max_exposure_pct <= 0:
+                    target_value = equity_before * current_exposure_pct / max_positions
+                    exposure_capacity = equity_before * current_exposure_pct - market_value_before
+                    if equity_before <= 0 or exposure_capacity <= 0 or current_exposure_pct <= 0:
                         execution_stats["buy_exposure"] += len(selected)
                     else:
                         weights = np.repeat(1 / len(selected), len(selected))
@@ -2107,7 +2179,7 @@ class BacktestEngine:
                                 break
                             market_value = _market_value()
                             equity = cash + market_value
-                            capacity = equity * max_exposure_pct - market_value
+                            capacity = equity * current_exposure_pct - market_value
                             allocation = min(total_budget * float(weight), target_value, cash, capacity)
                             if allocation <= 0:
                                 _count("buy_exposure")
@@ -2149,6 +2221,7 @@ class BacktestEngine:
                                 "pending_exit_next_open": False,
                                 "blocked_exit_days": 0,
                             }
+                            _count("buy_filled")
 
             for asset_id, pos in positions.items():
                 high_price = float(matrix.high[time_id, asset_id])
@@ -2359,6 +2432,9 @@ class BacktestEngine:
         equity_curve: list[dict] = []
         drawdown_curve: list[dict] = []
         execution_stats: dict[str, int] = {
+            "buy_signal_candidates": int(ent.sum()),
+            "buy_pre_slot_candidates": 0,
+            "buy_filled": 0,
             "buy_invalid_price": 0,
             "buy_suspended": 0,
             "buy_limit_up": 0,
@@ -2625,12 +2701,14 @@ class BacktestEngine:
             if not candidates:
                 return
             candidates.sort(key=lambda x: x[2], reverse=True)
+            execution_stats["buy_pre_slot_candidates"] += len(candidates)
 
             slots = max_positions - len(positions)
             if slots <= 0:
                 execution_stats["buy_no_slot"] += len(candidates)
                 return
 
+            execution_stats["buy_no_slot"] += max(len(candidates) - slots, 0)
             selected = candidates[:slots]
             market_value_before = _market_value()
             account_equity_before_buy = cash + market_value_before
@@ -2693,6 +2771,7 @@ class BacktestEngine:
                     "pending_exit_signal_date": None,
                     "blocked_exit_days": 0,
                 }
+                _count("buy_filled")
 
         for d_idx, d_str in enumerate(all_dates):
             if d_idx % 20 == 0:

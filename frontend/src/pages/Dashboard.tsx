@@ -284,19 +284,24 @@ function BreadthBar({ data }: { data: OverviewMarket['breadth'] }) {
 
 function DistributionBars({ rows }: { rows: OverviewMarket['distribution'] }) {
   const maxCount = Math.max(...rows.map(r => r.count), 1)
+  const centerIndex = Math.floor(rows.length / 2)
+  const hasCenter = rows.length % 2 === 1
   return (
-    <div className="grid h-24 grid-cols-8 items-end gap-1 pt-1">
+    <div className="relative grid h-32 grid-cols-11 items-end gap-1 pt-1">
+      <div className="pointer-events-none absolute inset-x-0 bottom-5 border-b border-border/70" />
       {rows.map((r, i) => {
-        const positive = i >= 4
+        const center = hasCenter && i === centerIndex
+        const positive = hasCenter ? i > centerIndex : i >= centerIndex
+        const tone = center ? 'text-muted' : positive ? 'text-bull' : 'text-bear'
         return (
-          <div key={r.label} className="flex h-full min-w-0 flex-col items-center justify-end gap-0.5">
-            <div className="font-mono text-[9px] text-muted">{r.count || ''}</div>
+          <div key={`${r.label}-${i}`} className="relative z-[1] flex h-full min-w-0 flex-col items-center justify-end gap-0.5">
+            <div className={`font-mono text-[10px] font-semibold tabular-nums ${tone}`}>{r.count || ''}</div>
             <div
-              className={`w-2 rounded-full ${positive ? 'bg-gradient-to-t from-bull/45 to-bull/90' : 'bg-gradient-to-t from-bear/45 to-bear/90'}`}
-              style={{ height: `${Math.max(4, r.count / maxCount * 86)}%` }}
+              className={`w-full max-w-[1.7rem] rounded-t-[3px] ${center ? 'bg-muted/55' : positive ? 'bg-bull/85' : 'bg-bear/85'}`}
+              style={{ height: `${Math.max(3, r.count / maxCount * 78)}%` }}
               title={`${r.label}: ${r.count}只`}
             />
-            <div className="truncate text-[9px] text-muted">{r.label}</div>
+            <div className={`truncate text-[10px] ${tone}`}>{r.label}</div>
           </div>
         )
       })}

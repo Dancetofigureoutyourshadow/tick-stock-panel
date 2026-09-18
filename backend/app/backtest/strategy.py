@@ -572,6 +572,9 @@ class StrategyBacktestConfig:
     # 市场环境过滤: {"states": ["strong",...], "min_score": 60}。
     # 强制 T-1: regime[T-1] 决定 entry[T](防未来函数)。None=不过滤。
     regime_filter: dict | None = None
+    # 市场环境仓位档位: {"strong": 1.0, "lean_weak": 0.5, "weak": 0.0}。
+    # None 表示使用策略 META 中的默认档位；{} 显式关闭档位缩放。
+    regime_position_pct: dict | None = None
 
     def __post_init__(self) -> None:
         if self.entry_fill is None:
@@ -747,6 +750,7 @@ class StrategyBacktestService:
             config.minute_fill,
             json.dumps(config.overrides or {}, sort_keys=True, ensure_ascii=False, default=str),
             json.dumps(config.regime_filter or {}, sort_keys=True, ensure_ascii=False, default=str),
+            json.dumps(config.regime_position_pct, sort_keys=True, ensure_ascii=False, default=str),
         )
 
     def _resolve_composite_feature_plan(
@@ -1183,6 +1187,7 @@ class StrategyBacktestService:
         matrix_data_cache_hit = False
         matrix_data_cache_status = "none"
         matrix_data_cache_timing_ms: Mapping[str, float] = {}
+        regime_scale: np.ndarray | None = None
 
         # 加载 warmup + 正式区间。矩阵策略的 warmup 由协议解析，不再依赖策略名称。
         warmup_days = max(120, int(max(feature_plan.warmup_bars, 1) * 1.6))
@@ -1622,6 +1627,22 @@ class StrategyBacktestService:
             timing_ms["matrix_build"] = round((time.perf_counter() - t_matrix) * 1000, 1)
             del panel, sim_panel, sim_entry_mask, sim_exit_mask
 
+        regime_ladder = (
+            config.regime_position_pct
+            if config.regime_position_pct is not None
+            else s.meta.get("regime_position_pct")
+        )
+        if config.mode == "full" and regime_ladder:
+            return _err("市场环境仓位档位仅支持 position 模式；full 模式是独立候选统计")
+        try:
+            regime_scale = self._build_regime_scale(
+                market_matrix.timestamp_labels,
+                regime_ladder,
+                getattr(getattr(self.engine.repo, "store", None), "data_dir", None),
+            )
+        except ValueError as e:
+            return _err(str(e))
+
         t_sim = time.perf_counter()
 
         # 撮合 — 两条生产路径共享同一只读 MarketMatrix。
@@ -1635,13 +1656,23 @@ class StrategyBacktestService:
                 result_policy.simulation_options(),
             )
         else:
-            result = self.engine.simulate_market_matrix(
-                market_matrix,
-                matcher_config,
-                progress_cb,
-                cancel_event,
-                result_policy.simulation_options(),
-            )
+            if regime_scale is None:
+                result = self.engine.simulate_market_matrix(
+                    market_matrix,
+                    matcher_config,
+                    progress_cb,
+                    cancel_event,
+                    result_policy.simulation_options(),
+                )
+            else:
+                result = self.engine.simulate_market_matrix(
+                    market_matrix,
+                    matcher_config,
+                    progress_cb,
+                    cancel_event,
+                    result_policy.simulation_options(),
+                    regime_scale=regime_scale,
+                )
         timing_ms["simulate"] = round((time.perf_counter() - t_sim) * 1000, 1)
         timing_ms["statistics"] = float(result.stats.pop("statistics_ms", 0.0))
 
@@ -1696,6 +1727,11 @@ class StrategyBacktestService:
             "full_horizon_days": full_horizon_days,
             "score_min": score_min,
             "score_max": score_max,
+            "regime_position_pct": (
+                config.regime_position_pct
+                if config.regime_position_pct is not None
+                else s.meta.get("regime_position_pct")
+            ),
             "source": s.source,
             "execution_backend": s.execution_backend,
             **(
@@ -2239,6 +2275,35 @@ class StrategyBacktestService:
             required_end=required_end,
         )
 
+    @staticmethod
+    def _build_regime_scale(
+        timestamp_labels: tuple[str, ...],
+        regime_position_pct: dict | None,
+        data_dir: Path | None,
+    ) -> np.ndarray | None:
+        """Build a T-1 exposure ladder for portfolio-level risk control."""
+        if regime_position_pct is None or not regime_position_pct:
+            return None
+        if data_dir is None:
+            raise ValueError("市场环境仓位档位不可用: 未找到环境数据目录")
+        from app.backtest.regime_alignment import build_regime_scale_series
+        from app.services import regime_builder
+
+        regime_df = regime_builder.load_regime_history(data_dir)
+        regime_by_date = {
+            row["date"]: {
+                "state": row.get("state", ""),
+                "score": row.get("score", 0),
+            }
+            for row in regime_df.iter_rows(named=True)
+            if row.get("date") is not None
+        }
+        return build_regime_scale_series(
+            timestamp_labels,
+            regime_position_pct,
+            regime_by_date,
+        )
+
     def _build_candidate_filter_mask(
         self,
         panel: pl.DataFrame,
@@ -2521,6 +2586,7 @@ class StrategyBacktestService:
             "holding_days": c.holding_days,
             "minute_fill": c.minute_fill,
             "regime_filter": c.regime_filter,
+            "regime_position_pct": c.regime_position_pct,
         }
 
     @staticmethod

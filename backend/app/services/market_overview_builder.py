@@ -53,6 +53,32 @@ def _json_safe(value: Any) -> Any:
     return value
 
 
+def _merge_live_change_pct(df: pl.DataFrame, quote_service, *, enabled: bool) -> pl.DataFrame:
+    """用最新实时快照补齐冷启动分区里缺失的涨跌幅。
+
+    新股首日可能没有上一根本地 K 线；行情源仍会给出交易所前收盘/涨跌幅。
+    仅对缺失值合并，且历史复盘(``enabled=False``)绝不混入当前行情。
+    """
+    if not enabled or quote_service is None or df.is_empty() or "symbol" not in df.columns:
+        return df
+    try:
+        live = quote_service.get_quotes_compat()
+    except Exception:  # noqa: BLE001
+        return df
+    if live is None or live.is_empty() or "symbol" not in live.columns or "change_pct" not in live.columns:
+        return df
+    live = live.select([c for c in ["symbol", "prev_close", "change_pct"] if c in live.columns]).unique(
+        subset=["symbol"], keep="last"
+    )
+    if "change_pct" not in df.columns:
+        return df.join(live, on="symbol", how="left")
+    joined = df.join(live.rename({c: f"_live_{c}" for c in live.columns if c != "symbol"}), on="symbol", how="left")
+    joined = joined.with_columns(
+        pl.coalesce([pl.col("change_pct"), pl.col("_live_change_pct")]).alias("change_pct")
+    ).drop([c for c in ["_live_prev_close", "_live_change_pct"] if c in joined.columns])
+    return joined
+
+
 def _board(symbol: str) -> str:
     if symbol.endswith(".BJ"):
         return "北交所"
@@ -334,29 +360,40 @@ def _top_rows(rows: list[dict], key: str, descending: bool, limit: int = 8) -> l
 
 
 def _pct_band_rows(values: list[float]) -> list[dict]:
-    bands = [
-        ("<-5%", None, -0.05),
-        ("-5~-3%", -0.05, -0.03),
-        ("-3~-1%", -0.03, -0.01),
-        ("-1~0%", -0.01, 0),
-        ("0~1%", 0, 0.01),
-        ("1~3%", 0.01, 0.03),
-        ("3~5%", 0.03, 0.05),
-        (">5%", 0.05, None),
-    ]
+    labels = [">10%", "10~7", "7~5", "5~3", "3~0", "0", "0~3", "3~5", "5~7", "7~10", ">10%"]
     total = len(values) or 1
-    out = []
-    for label, low, high in bands:
-        count = 0
-        for v in values:
-            if low is None and v < high:
-                count += 1
-            elif high is None and v >= low:
-                count += 1
-            elif low is not None and high is not None and low <= v < high:
-                count += 1
-        out.append({"label": label, "count": count, "pct": count / total * 100})
-    return out
+    counts = [0] * len(labels)
+    for raw in values:
+        # 按行情软件展示的两位小数分桶。区间按涨跌幅绝对值右闭：
+        # +3.00% 属于 0~3，-3.00% 属于 3~0，+10.00% 属于 7~10。
+        v = round(raw * 100, 2) / 100
+        if v < -0.10:
+            idx = 0
+        elif v < -0.07:
+            idx = 1
+        elif v < -0.05:
+            idx = 2
+        elif v < -0.03:
+            idx = 3
+        elif v < 0:
+            idx = 4
+        elif v == 0:
+            idx = 5
+        elif v <= 0.03:
+            idx = 6
+        elif v <= 0.05:
+            idx = 7
+        elif v <= 0.07:
+            idx = 8
+        elif v <= 0.10:
+            idx = 9
+        else:
+            idx = 10
+        counts[idx] += 1
+    return [
+        {"label": label, "count": count, "pct": count / total * 100}
+        for label, count in zip(labels, counts)
+    ]
 
 
 # ================================================================
@@ -408,6 +445,8 @@ def build_market_overview(
         }
 
     df = svc._load_enriched_for_date(as_of)
+    # 最新请求在盘后可能读取持久化分区；实时缓存可补回新股首日等缺失涨跌幅。
+    df = _merge_live_change_pct(df, quote_service, enabled=not explicit_as_of)
     if df.is_empty():
         rows: list[dict] = []
     else:

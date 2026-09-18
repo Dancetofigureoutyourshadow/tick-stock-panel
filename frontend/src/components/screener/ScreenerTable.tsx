@@ -8,7 +8,7 @@
 import { useState, type CSSProperties, type ReactNode } from 'react'
 import { Check, Plus, Eye, EyeOff, RefreshCw, ListCollapse, ListTree, ShoppingCart } from 'lucide-react'
 import type { KlineRow, MinuteKlineRow } from '@/lib/api'
-import { fmtPrice, formatExtNumber } from '@/lib/format'
+import { fmtPct, fmtPrice, fmtSignedPrice, formatExtNumber, priceColorClass } from '@/lib/format'
 import type { ColumnConfig } from '@/lib/screener-columns'
 import { getSignals, signalCls } from '@/lib/stock-table'
 import { boardTag, renderBuiltinDataCell } from '@/components/stock-table/primitives'
@@ -360,6 +360,30 @@ export function ScreenerTable({
           </td>
         )
       }
+      case 'selected_price':
+        return (
+          <td key={col.id} className="px-3 py-2 text-right num tabular-nums text-secondary">
+            {fmtPrice(r.close)}
+          </td>
+        )
+      case 'price':
+        return (
+          <td key={col.id} className="px-3 py-2 text-right num tabular-nums text-secondary">
+            {fmtPrice(r.current_price)}
+          </td>
+        )
+      case 'pct':
+        return (
+          <td key={col.id} className={`px-3 py-2 text-right num tabular-nums font-medium ${priceColorClass(r.selected_to_current_pct)}`}>
+            {fmtPct(r.selected_to_current_pct)}
+          </td>
+        )
+      case 'change_amount':
+        return (
+          <td key={col.id} className={`px-3 py-2 text-right num tabular-nums ${priceColorClass(r.selected_to_current_amount)}`}>
+            {fmtSignedPrice(r.selected_to_current_amount)}
+          </td>
+        )
       case 'candle': {
         const candleRows = klineData[r.symbol] ?? []
         // 锁定列宽与行高：minWidth=maxWidth 防止 kline 加载前后整列宽度跳动（闪烁）

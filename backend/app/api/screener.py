@@ -45,6 +45,13 @@ class PresetRequest(BaseModel):
     timeframe: str = "1d"
 
 
+class CurrentPricesRequest(BaseModel):
+    """请求策略结果标的的当前最新价。"""
+
+    symbols: list[str]
+    asset_type: str = "stock"
+
+
 def _safe(result_dict: dict) -> dict:
     """sanitize for JSON(NaN / Inf → None)."""
     rows = result_dict.get("rows", [])
@@ -239,18 +246,18 @@ def _update_cache_strategy(data_dir, as_of: str, strategy_id: str, safe_data: di
     """单跑后更新缓存中该策略的结果，保持缓存与最新计算一致。"""
     from app.services import strategy_cache
     cached = strategy_cache.read_cache(data_dir)
-    if cached and cached.get("as_of") == as_of:
-        results = cached.get("results", {})
-        results[strategy_id] = {
-            "total": safe_data.get("total", 0),
-            "as_of": as_of,
-            "rows": safe_data.get("rows", []),
-        }
-        if safe_data.get("warnings"):
-            # 数据不足提示 (#303) 随缓存下发 (get_cached 原样读出),
-            # 单跑刷新不得冲掉 run_all 写入的提示
-            results[strategy_id]["warnings"] = safe_data["warnings"]
-        strategy_cache.write_cache(data_dir, as_of, results)
+    # 同日缓存保留其他策略; 缓存不存在或跨日时由 write_cache 建立/切换到新日期。
+    results = dict(cached.get("results") or {}) if cached and cached.get("as_of") == as_of else {}
+    results[strategy_id] = {
+        "total": safe_data.get("total", 0),
+        "as_of": as_of,
+        "rows": safe_data.get("rows", []),
+    }
+    if safe_data.get("warnings"):
+        # 数据不足提示 (#303) 随缓存下发 (get_cached 原样读出),
+        # 单跑刷新不得冲掉 run_all 写入的提示
+        results[strategy_id]["warnings"] = safe_data["warnings"]
+    strategy_cache.write_cache(data_dir, as_of, results)
 
 
 @router.get("/strategies")
@@ -501,6 +508,52 @@ def get_cached_result(
         "today_ever_rows": ever_rows,
         "strategy_ids_by_symbol": strategy_ids_by_symbol,
         "updated_at": cached.get("updated_at"),
+    }
+
+
+@router.post("/current-prices")
+def get_current_prices(request: Request, body: CurrentPricesRequest):
+    """返回指定标的当前最新价，供策略页计算「选中日 → 至今」表现。
+
+    基准价仍来自策略结果选中日期的 close；这里仅读取最新 enriched 快照，
+    不修改策略结果缓存，避免把实时价格混入历史选股结果。
+    """
+    symbols = list(dict.fromkeys(
+        str(symbol).strip().upper()
+        for symbol in body.symbols
+        if str(symbol).strip()
+    ))
+    if not symbols:
+        return {"as_of": None, "rows": []}
+    if body.asset_type not in {"stock", "etf"}:
+        raise HTTPException(status_code=400, detail="asset_type 仅支持 stock 或 etf")
+
+    import polars as pl
+
+    repo = request.app.state.repo
+    current, as_of = repo.get_enriched_latest_asset(body.asset_type, refresh=False)
+    if current.is_empty() or "symbol" not in current.columns or "close" not in current.columns:
+        return {"as_of": str(as_of) if as_of else None, "rows": []}
+
+    rows = (
+        current
+        .filter(pl.col("symbol").is_in(symbols))
+        .select(["symbol", "close"])
+        .to_dicts()
+    )
+    return {
+        "as_of": str(as_of) if as_of else None,
+        "rows": [
+            {
+                "symbol": str(row["symbol"]),
+                "current_price": (
+                    float(row["close"])
+                    if isinstance(row.get("close"), (int, float)) and math.isfinite(float(row["close"]))
+                    else None
+                ),
+            }
+            for row in rows
+        ],
     }
 
 

@@ -32,7 +32,11 @@ from app.enriched_generation import (
     bump_enriched_generation,
     get_enriched_generation,
 )
-from app.market_time import cn_today
+from app.market_time import (
+    cn_today,
+    is_after_official_daily_cutoff,
+    should_use_live_market_snapshot,
+)
 from app.parquet import scan_enriched_parquet
 from app.polars_guard import guarded_collect
 
@@ -551,7 +555,7 @@ class KlineRepository:
     def _refresh_enriched_impl(self) -> None:
         """从 parquet 加载 enriched 最新日到内存 + 构建聚合表。
 
-        enriched parquet 仅存 14 列基础数据。启动时读入历史数据并即时计算完整指标，
+        enriched parquet 仅存基础数据。启动时读入历史数据并即时计算完整指标，
         将结果缓存在内存中供各服务使用。
 
         优化: 扩大历史读取范围, 同时缓存完整历史 (含指标), 供 filter_history 策略直接复用。
@@ -572,7 +576,7 @@ class KlineRepository:
                 logger.info("enriched refresh skipped: no latest date (%.2fs)", time.perf_counter() - started)
                 return
 
-            # Step 1: 直接读最新日期的分区文件 (仅 14 列)
+            # Step 1: 直接读最新日期的基础数据分区文件
             enriched_dir = self.store.data_dir / "kline_daily_enriched"
             ds = latest.isoformat() if hasattr(latest, "isoformat") else str(latest)
             target_parquet = enriched_dir / f"date={ds}" / "part.parquet"
@@ -589,7 +593,7 @@ class KlineRepository:
                 logger.info("enriched refresh skipped: latest parquet empty (%.2fs)", time.perf_counter() - started)
                 return
 
-            # Step 2: 读近 300 天 14 列数据 → compute → filter(latest) → 缓存
+            # Step 2: 读近 300 天基础数据 → compute → filter(latest) → 缓存
             # 300 日历天 ≈ 210 交易日, 覆盖 filter_history 最大 lookback(90) + warmup(60)
             try:
                 from datetime import timedelta
@@ -668,9 +672,9 @@ class KlineRepository:
             except EnrichedGenerationUnavailableError:
                 raise
             except Exception as e:  # noqa: BLE001
-                logger.warning("enriched 即时计算失败, 使用原始 14 列缓存: %s", e)
+                logger.warning("enriched 即时计算失败, 使用原始基础数据缓存: %s", e)
 
-            # 降级: 直接使用 14 列数据 + 构建 live_agg
+            # 降级: 直接使用基础数据 + 构建 live_agg
             self._enriched_cache = df_latest
             self._enriched_cache_date = latest
             step = time.perf_counter()
@@ -1194,7 +1198,11 @@ class KlineRepository:
         # 按交易日计数裁剪: 从数据里实际存在的交易日序列取最后 lookback_days 个交易日。
         # 不能用 timedelta(days=N) (自然日), 否则周末/节假日会让窗口只有 ~N×5/7 个交易日,
         # 导致 filter_history 策略的滚动窗口/行号差(_gap)漏算, 与回测结果不一致。
-        trading_dates = cache["date"].unique().sort()
+        # 先锚定到目标交易日, 再按交易日倒推窗口。
+        # 不能直接从全量缓存的最新日期倒推: 当缓存已经包含 target_date
+        # 之后的新交易日时, 历史回选会少拿一个或多个前置交易日, 导致同一
+        # 交易日当天筛选与次日回选结果不一致。
+        trading_dates = cache.filter(pl.col("date") <= target_date)["date"].unique().sort()
         if len(trading_dates) > lookback_days:
             lookback_start = trading_dates[-(lookback_days + 1)]
         else:
@@ -1407,7 +1415,7 @@ class KlineRepository:
         end: date,
         columns: list[str] | None = None,
     ) -> pl.DataFrame:
-        """单股日K查询 — 从14列parquet读取后即时计算指标。"""
+        """单股日K查询 — 从基础存储列 parquet 读取后即时计算指标。"""
         from datetime import timedelta
 
         # 快路径: 请求的列全是 parquet 直接存储的列 (如迷你蜡烛图只要 OHLCV) →
@@ -1418,7 +1426,11 @@ class KlineRepository:
             df = self._scan_daily_symbol(symbol, start, end, columns)
             if not df.is_empty() and all(c in df.columns for c in columns):
                 cached, cache_date = self.get_enriched_latest()
-                if cached is not None and not cached.is_empty() and cache_date:
+                if (
+                    cached is not None
+                    and not cached.is_empty()
+                    and should_use_live_market_snapshot(cache_date)
+                ):
                     if start <= cache_date <= end:
                         cached_part = self._filter_cached(cached, symbol, columns)
                         if not cached_part.is_empty():
@@ -1436,6 +1448,10 @@ class KlineRepository:
         # 由下方 get_enriched_latest 覆盖逻辑补齐; 覆盖不足时回退单股计算路径。
         df = pl.DataFrame()
         hist = self._enriched_history_cache
+        # 盘后定版后不能再从进程级历史缓存裁剪当天行：它可能仍是实时聚合的
+        # 旧快照。当天范围强制 scan 已由官方日K重建的 parquet。
+        if is_after_official_daily_cutoff() and start <= cn_today() <= end:
+            hist = None
         cached_generation = getattr(self, "_enriched_history_generation", None)
         if hist is not None and cached_generation is not None:
             try:
@@ -1457,14 +1473,19 @@ class KlineRepository:
                     & (pl.col("date") <= end)
                 )
         if df.is_empty():
-            # 扫描14列 parquet
+            # 扫描基础存储列 parquet
             df = self._scan_daily_symbol(symbol, warmup_start, end, None)
             if not df.is_empty():
                 df = self._compute_enriched_range(df)
 
         # 尝试用缓存数据覆盖最新日 (盘中更准确)
         cached, cache_date = self.get_enriched_latest()
-        if not df.is_empty() and cached is not None and not cached.is_empty() and cache_date:
+        if (
+            not df.is_empty()
+            and cached is not None
+            and not cached.is_empty()
+            and should_use_live_market_snapshot(cache_date)
+        ):
             if start <= cache_date <= end:
                 cached_part = self._filter_cached(cached, symbol, None)
                 if not cached_part.is_empty():
@@ -1494,7 +1515,11 @@ class KlineRepository:
             columns and {"signal_limit_up", "signal_limit_down"}.intersection(columns)
         )
         cached, cache_date = self.get_enriched_latest()
-        if cached is not None and not cached.is_empty() and cache_date:
+        if (
+            cached is not None
+            and not cached.is_empty()
+            and should_use_live_market_snapshot(cache_date)
+        ):
             if start >= cache_date:
                 return self._filter_cached_batch(cached, symbols, columns)
 
@@ -1524,8 +1549,13 @@ class KlineRepository:
                 ])
 
         # Live quotes reach the in-memory enriched cache before parquet persistence.
-        # Keep batch daily K consistent with get_daily by replacing the cached date.
-        if cached is not None and not cached.is_empty() and cache_date:
+        # Keep batch daily K consistent with get_daily: only the intraday snapshot may
+        # replace parquet. After the official-daily cutoff, parquet is authoritative.
+        if (
+            cached is not None
+            and not cached.is_empty()
+            and should_use_live_market_snapshot(cache_date)
+        ):
             if start <= cache_date <= end:
                 cached_part = self._filter_cached_batch(cached, symbols, scan_columns)
                 if not cached_part.is_empty():
@@ -1807,7 +1837,7 @@ class KlineRepository:
     # ================================================================
 
     def _compute_enriched_range(self, df: pl.DataFrame) -> pl.DataFrame:
-        """对14列enriched数据即时计算完整指标+信号。输入应含足够预热行数。"""
+        """对基础存储列 enriched 数据即时计算完整指标+信号。输入应含足够预热行数。"""
         from app.indicators.pipeline import compute_indicators, compute_signals, compute_limit_signals, filter_halt_days
         if df.is_empty() or df.height < 2:
             return df
@@ -2115,7 +2145,7 @@ class KlineRepository:
         self._write_daily_partition(df, "kline_daily")
 
     def append_enriched(self, df: pl.DataFrame) -> None:
-        """按日分区写入 enriched 数据 (merge-upsert)。磁盘仅写入 14 列存储列。"""
+        """按日分区写入 enriched 数据 (merge-upsert)。磁盘仅写入基础存储列。"""
         if df.is_empty():
             return
         from app.indicators.pipeline import ENRICHED_STORAGE_COLS
@@ -2515,7 +2545,7 @@ class KlineRepository:
     def flush_live_enriched(self, df: pl.DataFrame) -> None:
         """覆写当天 kline_daily_enriched 分区 (实时 enriched 落盘, 非merge)。
 
-        内存缓存保留完整指标列供各服务使用，磁盘仅写入 14 列存储列。
+        内存缓存保留完整指标列供各服务使用，磁盘仅写入基础存储列。
         """
         self.flush_live_enriched_asset("stock", df)
 

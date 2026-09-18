@@ -10,6 +10,9 @@ from __future__ import annotations
 import contextlib
 import logging
 import math
+import shutil
+import time as _time
+import uuid
 from collections.abc import Callable
 from datetime import date, datetime, time, timedelta
 
@@ -45,6 +48,7 @@ def _atomic_write_parquet(df: pl.DataFrame, out) -> None:
 # 标准列(无论 SDK 返回什么形状,我们把它规范成这套)
 CANONICAL_DAILY_COLS = [
     "symbol", "date", "open", "high", "low", "close", "volume", "amount",
+    "prev_close", "change_pct",
 ]
 
 
@@ -75,7 +79,7 @@ def _normalize_daily(df_in, default_symbol: str | None = None) -> pl.DataFrame:
     if "date" in df.columns and df.schema["date"] != pl.Date:
         df = df.with_columns(pl.col("date").cast(pl.Date, strict=False))
 
-    for col in ("open", "high", "low", "close"):
+    for col in ("open", "high", "low", "close", "prev_close", "change_pct"):
         if col in df.columns:
             df = df.with_columns(pl.col(col).cast(pl.Float64, strict=False))
     for col in ("volume", "amount"):
@@ -382,7 +386,7 @@ def _sweep_stale_daily_staging(staging_base, max_age_s: int = 24 * 60 * 60) -> N
     """清理崩溃遗留的旧同步目录,不碰仍可能活跃的新目录。"""
     if not staging_base.exists():
         return
-    cutoff = time.time() - max_age_s
+    cutoff = _time.time() - max_age_s
     for run_dir in staging_base.iterdir():
         try:
             if run_dir.is_dir() and run_dir.stat().st_mtime < cutoff:
@@ -423,6 +427,8 @@ def sync_daily_by_quotes(repo: KlineRepository) -> int:
             "close": q.get("last_price"),
             "volume": q.get("volume"),
             "amount": q.get("amount"),
+            "prev_close": q.get("prev_close"),
+            "change_pct": ext.get("change_pct"),
             # 快照时刻标记: data_integrity 靠 quote_ts 区分盘中快照与盘后权威历史,
             # 缺失会让盘中覆写的分区在停机后被当成完整历史, 永远不进修复。
             "quote_ts": q.get("timestamp"),
@@ -1449,7 +1455,7 @@ def fetch_minute_single(
     trade_date: date,
     asset_type: AssetType = "stock",
     *,
-    capset: CapabilitySet,
+    capset: CapabilitySet | None = None,
 ) -> pl.DataFrame:
     """实时拉取单股单日分钟 K(不写入本地)。
 
@@ -1472,6 +1478,9 @@ def fetch_minute_single(
         # 见 sync_minute_batch 同分支注释: df 在此必非 None。
         return df if df is not None else pl.DataFrame()
 
+    if capset is None:
+        from app.tickflow.policy import detect_capabilities
+        capset = detect_capabilities()
     if not capset.has(Cap.KLINE_MINUTE_BY_SYMBOL):
         return pl.DataFrame()
 
@@ -1835,106 +1844,3 @@ def sync_and_persist_minute(
 
     logger.info("minute K synced: %d rows (%d symbols)", written, len(symbols))
     return written
-
-
-def sync_and_persist_minute_range_for_chan(
-    symbol: str,
-    repo: KlineRepository,
-    capset: CapabilitySet | None,
-    start_date: date,
-    end_date: date,
-) -> dict[str, object]:
-    """按缠论训练区间同步一只股票的分钟 K, 并复用现有分区写入规则。
-
-    与全市场分钟同步不同, 这个入口只服务缠论训练的单只股票和明确区间。
-    provider 必须来自设置中的 ``minute_data_provider``; 自定义 provider 出错时
-    不回退到 TickFlow, 避免训练记录混入未配置的数据源。
-    """
-    if start_date > end_date:
-        raise ValueError("minute range start_date must not be after end_date")
-    if repo.resolve_asset_type(symbol) != "stock":
-        return {"source": preferences.get_minute_data_provider(), "written": 0, "error": "only stock minute data is supported"}
-
-    provider_name = preferences.get_minute_data_provider()
-    provider, should_fallback, resolve_error = _resolve_minute_provider(provider_name)
-    if provider_name == "tickflow" and capset is not None and not capset.has(Cap.KLINE_MINUTE_BATCH):
-        return {"source": provider_name, "written": 0, "error": "minute batch capability is unavailable"}
-    if provider_name != "tickflow" and should_fallback:
-        return {"source": provider_name, "written": 0, "error": resolve_error or "configured minute provider is unavailable"}
-
-    start_time = datetime.combine(start_date, time(9, 25), tzinfo=CN_TZ)
-    end_time = datetime.combine(end_date, time(15, 5), tzinfo=CN_TZ)
-    minute_dir = repo.store.data_dir / "kline_minute"
-    written_box = [0]
-
-    def persist(frame: pl.DataFrame) -> None:
-        normalized = _normalize_minute(frame, default_symbol=symbol)
-        if normalized.is_empty():
-            return
-        required = {"symbol", "datetime", "open", "high", "low", "close"}
-        missing = required.difference(normalized.columns)
-        if missing:
-            raise ValueError(f"minute provider response missing columns: {sorted(missing)}")
-        scoped = normalized.filter(
-            (pl.col("symbol").cast(pl.Utf8).str.to_uppercase() == symbol.upper())
-            & pl.col("datetime").is_not_null()
-            & (pl.col("datetime").dt.date() >= start_date)
-            & (pl.col("datetime").dt.date() <= end_date)
-        )
-        if scoped.is_empty():
-            return
-        with repo._write_lock:
-            written_box[0] += _write_minute_partition(scoped, minute_dir)
-
-    sync_error: str | None = None
-    try:
-        if provider_name == "tickflow":
-            limits = resolve_limit(
-                capset,
-                Cap.KLINE_MINUTE_BATCH,
-                default_batch=1,
-                default_rpm=30,
-                default_rpm_when_unset=False,
-            )
-            sync_minute_batch(
-                [symbol],
-                start_time=start_time,
-                end_time=end_time,
-                batch_size=limits.batch,
-                rpm=limits.rpm,
-                segment_trading_days=preferences.get_minute_sync_segment_days(),
-                on_segment=persist,
-                asset_type="stock",
-            )
-        else:
-            assert provider is not None
-            frame = provider.get_minute(
-                [symbol],
-                start_time=start_time,
-                end_time=end_time,
-                asset_type="stock",
-                freq="1m",
-            )
-            persist(frame)
-    except Exception as exc:
-        logger.warning("chan minute sync failed for %s [%s, %s] from %s: %s", symbol, start_date, end_date, provider_name, exc)
-        sync_error = str(exc)
-
-    refresh_error: str | None = None
-    if written_box[0] > 0:
-        try:
-            data_dir = repo.store.data_dir.as_posix()
-            with repo._write_lock:
-                repo.db.execute(
-                    f"""CREATE OR REPLACE VIEW kline_minute AS
-                        SELECT * FROM read_parquet('{data_dir}/kline_minute/**/*.parquet', union_by_name=true)"""
-                )
-        except Exception as exc:
-            logger.warning("refresh kline_minute view failed after chan sync: %s", exc)
-            refresh_error = f"refresh kline_minute view failed: {exc}"
-    errors = [value for value in (sync_error, refresh_error) if value]
-    return {
-        "source": provider_name,
-        "written": written_box[0],
-        "error": "; ".join(errors) if errors else None,
-    }

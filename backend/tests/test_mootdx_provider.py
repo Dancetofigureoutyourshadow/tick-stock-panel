@@ -259,6 +259,66 @@ def test_tdx_client_quote_validation_has_bounded_server_attempts(monkeypatch):
     assert attempted == servers[:bridge._QUOTE_SERVER_ATTEMPTS]
 
 
+def test_tdx_client_quote_validation_starts_with_verified_server(monkeypatch):
+    class QuoteClient:
+        def quotes(self, **_kwargs):
+            return pl.DataFrame([{"symbol": "600519", "price": 100.0}])
+
+        def close(self):
+            pass
+
+    attempted = []
+    client = QuoteClient()
+    quotes_module = ModuleType("mootdx.quotes")
+
+    class Quotes:
+        @staticmethod
+        def factory(*_args, **kwargs):
+            attempted.append(kwargs["server"])
+            return client
+
+    quotes_module.Quotes = Quotes
+    mootdx_module = ModuleType("mootdx")
+    mootdx_module.quotes = quotes_module
+    monkeypatch.setitem(sys.modules, "mootdx", mootdx_module)
+    monkeypatch.setitem(sys.modules, "mootdx.quotes", quotes_module)
+    monkeypatch.setattr(bridge, "_probe", lambda *_args, **_kwargs: True)
+
+    assert bridge.tdx_client(timeout=3, validation="quote") is client
+    assert attempted == [bridge._TDX_SERVERS[0]]
+    assert attempted[0] == ("59.36.5.11", 7709)
+
+
+def test_mootdx_availability_requires_live_quote(monkeypatch):
+    class FakeClient:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    client = FakeClient()
+    monkeypatch.setattr(bridge.importlib.util, "find_spec", lambda _name: object())
+    monkeypatch.setattr(bridge, "tdx_client", lambda **_kwargs: client)
+
+    assert bridge.availability() == (True, "ok (mootdx)")
+    assert client.closed is True
+
+
+def test_mootdx_availability_reports_empty_live_source(monkeypatch):
+    monkeypatch.setattr(bridge.importlib.util, "find_spec", lambda _name: object())
+    monkeypatch.setattr(
+        bridge,
+        "tdx_client",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("all nodes empty")),
+    )
+
+    ok, reason = bridge.availability()
+
+    assert ok is False
+    assert reason == "通达信行情不可用: all nodes empty"
+
+
 def test_mootdx_provider_adapts_native_surface(monkeypatch):
     client = FakeMooTdx()
     monkeypatch.setattr(bridge, "tdx_client", lambda **_kwargs: client)
@@ -333,6 +393,36 @@ def test_mootdx_full_minute_batch_uses_current_day_and_canonical_rows(monkeypatc
     assert sorted(call["symbol"] for call in minute_calls) == ["000001", "600519"]
     assert {call["date"] for call in minute_calls} == {"20260803"}
     assert clients and all(client.closed for client in clients)
+
+
+def test_mootdx_minute_skips_bj_without_discarding_supported_rows(monkeypatch):
+    client = FakeMooTdx()
+    monkeypatch.setattr(bridge, "tdx_client", lambda **_kwargs: client)
+
+    frame = MooTdxProvider().get_minute(
+        ["600519.SH", "920000.BJ", "000001.SZ"],
+        datetime(2026, 8, 3, 9, 30),
+        datetime(2026, 8, 3, 9, 31),
+    )
+
+    assert frame["symbol"].unique().sort().to_list() == ["000001.SZ", "600519.SH"]
+    minute_calls = [
+        kwargs["symbol"] for name, kwargs in client.calls if name == "minutes"
+    ]
+    assert minute_calls == ["600519", "000001"]
+
+
+def test_mootdx_explicit_realtime_skips_bj_without_failing_batch(monkeypatch):
+    client = FakeMooTdx()
+    monkeypatch.setattr(bridge, "tdx_client", lambda **_kwargs: client)
+
+    rows = MooTdxProvider().get_realtime(
+        symbols=["600519.SH", "920000.BJ", "000001.SZ"],
+    )
+
+    assert [row["symbol"] for row in rows] == ["600519.SH"]
+    quote_calls = [kwargs["symbol"] for name, kwargs in client.calls if name == "quotes"]
+    assert quote_calls == [["600519", "000001"]]
 
 
 def test_mootdx_manifest_and_provider_declare_full_minute():

@@ -5,6 +5,11 @@ export function fmtPrice(v: number | null | undefined, digits = 2): string {
   return v.toFixed(digits)
 }
 
+export function fmtSignedPrice(v: number | null | undefined, digits = 2): string {
+  if (v == null || Number.isNaN(v)) return '—'
+  return `${v > 0 ? '+' : ''}${fmtPrice(v, digits)}`
+}
+
 export function fmtPct(v: number | null | undefined, digits = 2): string {
   if (v == null || Number.isNaN(v)) return '—'
   const sign = v > 0 ? '+' : ''

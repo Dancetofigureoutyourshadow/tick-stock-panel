@@ -276,64 +276,23 @@ export interface KlineRow {
   [key: string]: any
 }
 
+export interface KlineDailyResponse {
+  symbol: string
+  name?: string
+  stock_info?: { name?: string; total_shares?: number; float_shares?: number; ext?: Record<string, unknown> }
+  rows: KlineRow[]
+  source?: string
+}
+
+export interface KlineDailyLatestResponse {
+  symbol: string
+  row: KlineRow | null
+  source: 'live' | 'none'
+}
+
 export type DailyKlinePeriod = 'day' | 'week' | 'month'
 
-export interface ChanSignalEvidence {
-  rule: string
-  stroke_count: number
-  strokes: Array<{ start_date: string; end_date: string; direction: 'up' | 'down'; high: number; low: number }>
-  center?: { zg: number; zd: number; gg: number; dd: number }
-  indicators: Record<string, number>
-  checks: Array<{ label: string; left: string | number; operator: string; right: string | number; passed: boolean }>
-}
-
-export interface ChanStructure {
-  engine?: string
-  algorithm_source?: string
-  signal_profile?: Record<string, string>
-  signal_profile_id?: string
-  indicator_cache?: { cached_bars: number; macd?: Record<string, number | null>; sma?: Record<string, number | null>; rsi?: Record<string, number | null>; kdj?: Record<string, number | null> }
-  signal_catalog?: Array<{ class: string; name: string; version: string; parameters: Record<string, unknown>; minimum_bars: number; dependencies: string[]; description: string; key: string }>
-  event_profile?: Array<{ id: string; name: string; signals_all: string[]; signals_any: string[]; signals_not: string[] }>
-  events?: Array<{ date: string; event_id: string; name: string; matched_signals: string[]; teaching_only: boolean }>
-  segments_source?: string
-  level?: string
-  fractals: { date: string; type: 'top' | 'bottom'; price: number; source_index?: number; confirmed_at?: number }[]
-  strokes: { start_date: string; end_date: string; direction: 'up' | 'down'; start_price: number; end_price: number; start_index?: number; end_index?: number; confirmed_at?: number }[]
-  segments: {
-    start_date: string
-    end_date: string
-    direction: 'up' | 'down'
-    start_price: number
-    end_price: number
-    low?: number
-    high?: number
-    low_date?: string
-    high_date?: string
-    display_start_date?: string
-    display_start_price?: number
-    display_end_date?: string
-    display_end_price?: number
-    start_index?: number
-    end_index?: number
-    confirmed_at?: number
-    termination_reason?: string
-  }[]
-  centers: { start_date: string; end_date: string; formation_start_date?: string; formation_end_date?: string; high: number; low: number; start_index?: number; end_index?: number; formation_start_index?: number; formation_end_index?: number; confirmed_at?: number; extension_confirmed_at?: number; range_low?: number; range_high?: number; stroke_start?: number; stroke_end?: number; segment_start?: number; segment_end?: number; basis?: 'stroke' | string; kind?: 'initial' | 'extension' | 'expansion' | 'new' | string }[]
-  points: { date: string; type: 'buy' | 'sell'; class: 'first' | 'second' | 'third'; price: number; status: 'confirmed'; signal_name?: string; signal_key?: string; signal_version?: string; signal_parameters?: Record<string, unknown>; signal_dependencies?: string[]; signal_evidence?: ChanSignalEvidence | null; reason?: string; source_index?: number; confirmed_at?: number; structure_index?: number; level?: string }[]
-  summary: { fractals: number; strokes: number; segments: number; centers: number; confirmed_points?: number }
-  lower_level?: ChanStructure | null
-  minute_derived_daily?: ChanStructure | null
-  multi_level_source?: 'same_1m_stream' | string | null
-}
-
-export interface ChanTrainingAnalysis {
-  analysis_mode: 'daily_recursive' | string
-  daily_quality?: ChanKlineQuality | null
-  data_warnings: string[]
-}
-
-export interface ChanKlineQuality {
+export interface BlindKlineQuality {
   valid: boolean
   row_count: number
   error_count: number
@@ -341,13 +300,13 @@ export interface ChanKlineQuality {
   issues: Array<{ code: string; severity: 'error' | 'warning'; count: number; samples: string[] }>
 }
 
-export interface ChanTrainingDiagnostics {
-  training_id: string
-  structure: Partial<ChanStructure> & { replay?: Array<{ date: string; source_index: number; fractals: number; strokes: number; last_stroke_end?: number; added_signals: string[]; revealed?: number; summary?: Record<string, number> }> }
-  data_quality: { daily?: ChanKlineQuality | null }
+export interface BlindTrainingAnalysis {
+  analysis_mode: 'blind_test'
+  daily_quality?: BlindKlineQuality | null
+  data_warnings: string[]
 }
 
-export interface ChanTrainingAction {
+export interface BlindTrainingAction {
   side: 'buy' | 'sell'
   trigger: 'user' | 'auto_liquidation'
   percentage: number
@@ -364,14 +323,9 @@ export interface ChanTrainingAction {
   cash_after: number
   position_after: number
   pnl_amount: number | null
-  chan_context?: {
-    signals: ChanStructure['points']
-    matched_events: NonNullable<ChanStructure['events']>
-    event_profile: NonNullable<ChanStructure['event_profile']>
-  }
 }
 
-export interface ChanTrainingReport {
+export interface BlindTrainingReport {
   id: string
   training_id: string
   symbol: string
@@ -380,13 +334,13 @@ export interface ChanTrainingReport {
   created_at: string
 }
 
-export interface ChanTrainingStartRequest {
+export interface BlindTrainingStartRequest {
   commission_pct?: number
   stamp_tax_pct?: number
   slippage_bps?: number
 }
 
-export interface ChanTrainingSession {
+export interface BlindTrainingSession {
   id: string
   status: 'active' | 'finished'
   symbol: string
@@ -400,15 +354,14 @@ export interface ChanTrainingSession {
   return_pct: number
   max_drawdown_pct: number
   cost_model: { commission_pct: number; stamp_tax_pct: number; slippage_bps: number }
-  analysis: ChanTrainingAnalysis
-  actions: ChanTrainingAction[]
+  analysis: BlindTrainingAnalysis
+  actions: BlindTrainingAction[]
   rows: KlineRow[]
-  chan: ChanStructure
   replayed_from?: string | null
 }
 
-export interface ChanTrainingPlan {
-  schema: 'chan-training-plan'
+export interface BlindTrainingPlan {
+  schema: 'blind-training-plan'
   symbol: string
   name: string
   seed: number
@@ -419,11 +372,11 @@ export interface ChanTrainingPlan {
   remaining_rows: KlineRow[]
   row_digest: string
   initial_capital: number
-  cost_model: ChanTrainingSession['cost_model']
+  cost_model: BlindTrainingSession['cost_model']
 }
 
-export interface ChanTrainingDataVersion {
-  schema: 'chan-training-data'
+export interface BlindTrainingDataVersion {
+  schema: 'blind-training-data'
   training_rows_sha256: string
   visible_rows_sha256: string
   training_row_count: number
@@ -433,15 +386,9 @@ export interface ChanTrainingDataVersion {
   visible_last_bar_at: string | null
 }
 
-export interface ChanTrainingRecord {
+export interface BlindTrainingRecord {
   id?: string
   training_id: string
-  chan_algorithm_source?: string | null
-  chan_engine?: string | null
-  chan_signal_profile?: Record<string, string>
-  chan_signal_profile_id?: string
-  chan_event_profile?: ChanStructure['event_profile']
-  chan_segments_source?: string | null
   status: 'finished'
   symbol: string
   name: string
@@ -449,23 +396,21 @@ export interface ChanTrainingRecord {
   start_date: string
   end_date: string
   bars: KlineRow[]
-  actions: ChanTrainingAction[]
-  structure_snapshots?: { revealed: number; date: string; structure: ChanStructure }[]
-  current_structure: ChanStructure
+  actions: BlindTrainingAction[]
   equity_curve: { date: string; value: number }[]
   summary: { final_equity: number; total_return_pct: number; realized_pnl: number; max_drawdown_pct: number; trade_count: number; sell_count: number; win_rate_pct: number }
   cost_model: { commission_pct: number; stamp_tax_pct: number; slippage_bps: number }
-  analysis?: ChanTrainingAnalysis
-  data_version?: ChanTrainingDataVersion
-  training_plan?: ChanTrainingPlan
+  analysis?: BlindTrainingAnalysis
+  data_version?: BlindTrainingDataVersion
+  training_plan?: BlindTrainingPlan
   replayed_from?: string | null
   created_at: string
   finished_at: string
-  ai_reports?: ChanTrainingReport[]
+  ai_reports?: BlindTrainingReport[]
 }
 
-export type ChanTrainingRecordSummary = Pick<
-  ChanTrainingRecord,
+export type BlindTrainingRecordSummary = Pick<
+  BlindTrainingRecord,
   'id' | 'training_id' | 'status' | 'symbol' | 'name' | 'seed'
   | 'start_date' | 'end_date' | 'summary' | 'cost_model' | 'analysis' | 'created_at' | 'finished_at'
 >
@@ -613,6 +558,16 @@ export interface ScreenerCachedResult {
   today_ever_rows: Record<string, any> | null
   strategy_ids_by_symbol: Record<string, string[]>
   updated_at: number | null
+}
+
+export interface ScreenerCurrentPriceRow {
+  symbol: string
+  current_price: number | null
+}
+
+export interface ScreenerCurrentPrices {
+  as_of: string | null
+  rows: ScreenerCurrentPriceRow[]
 }
 
 export interface MarketSnapshotRow {
@@ -1230,6 +1185,10 @@ export interface PortfolioPosition {
   cost_basis: string
   remaining_cost: string
   current_price: string | null
+  prev_close?: string | null
+  change_pct?: number | null
+  change_amount?: string | null
+  price_source?: 'realtime' | 'latest_close' | 'missing'
   market_value: string
   unrealized_pnl: string
   source_strategy_id: string
@@ -2649,60 +2608,52 @@ export const api = {
     request<CapabilitiesResponse>('/api/capabilities/redetect', { method: 'POST' }),
 
   klineDaily: (symbol: string, days = 120, dateRange?: { start: string; end: string }, extColumns?: string, period: DailyKlinePeriod = 'day') =>
-    request<{
-      symbol: string
-      name?: string
-      stock_info?: { name?: string; total_shares?: number; float_shares?: number; ext?: Record<string, unknown> }
-      rows: KlineRow[]
-      source?: string
-    }>(
+    request<KlineDailyResponse>(
       (dateRange
         ? `/api/kline/daily?symbol=${encodeURIComponent(symbol)}&start_date=${dateRange.start}&end_date=${dateRange.end}`
         : `/api/kline/daily?symbol=${encodeURIComponent(symbol)}&days=${days}`)
       + (extColumns ? `&ext_columns=${encodeURIComponent(extColumns)}` : '')
       + `&period=${encodeURIComponent(period)}`,
     ),
-  chanTrainingStart: (costs?: ChanTrainingStartRequest) =>
-    request<{ session: ChanTrainingSession }>('/api/chan-training/sessions', {
+  klineDailyLatest: (symbol: string) =>
+    request<KlineDailyLatestResponse>(`/api/kline/daily/latest?symbol=${encodeURIComponent(symbol)}`),
+  blindTrainingStart: (costs?: BlindTrainingStartRequest) =>
+    request<{ session: BlindTrainingSession }>('/api/blind-training/sessions', {
       method: 'POST', body: JSON.stringify(costs ?? {}),
     }),
-  chanTrainingSession: (sessionId: string) =>
-    request<{ session: ChanTrainingSession }>(`/api/chan-training/sessions/${encodeURIComponent(sessionId)}`),
-  chanTrainingDiscard: (sessionId: string) =>
-    request<{ removed: boolean }>(`/api/chan-training/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' }),
-  chanTrainingSessionDiagnostics: (sessionId: string) =>
-    request<ChanTrainingDiagnostics>(`/api/chan-training/sessions/${encodeURIComponent(sessionId)}/diagnostics`),
-  chanTrainingNext: (sessionId: string) =>
-    request<{ session: ChanTrainingSession }>(`/api/chan-training/sessions/${encodeURIComponent(sessionId)}/next`, { method: 'POST' }),
-  chanTrainingAction: (sessionId: string, side: 'buy' | 'sell', percentage: number) =>
-    request<{ action: ChanTrainingAction; session: ChanTrainingSession }>(
-      `/api/chan-training/sessions/${encodeURIComponent(sessionId)}/action`,
+  blindTrainingSession: (sessionId: string) =>
+    request<{ session: BlindTrainingSession }>(`/api/blind-training/sessions/${encodeURIComponent(sessionId)}`),
+  blindTrainingDiscard: (sessionId: string) =>
+    request<{ removed: boolean }>(`/api/blind-training/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' }),
+  blindTrainingNext: (sessionId: string) =>
+    request<{ session: BlindTrainingSession }>(`/api/blind-training/sessions/${encodeURIComponent(sessionId)}/next`, { method: 'POST' }),
+  blindTrainingAction: (sessionId: string, side: 'buy' | 'sell', percentage: number) =>
+    request<{ action: BlindTrainingAction; session: BlindTrainingSession }>(
+      `/api/blind-training/sessions/${encodeURIComponent(sessionId)}/action`,
       { method: 'POST', body: JSON.stringify({ side, percentage }) },
     ),
-  chanTrainingFinish: (sessionId: string) =>
-    request<{ session: ChanTrainingSession; record: ChanTrainingRecord }>(
-      `/api/chan-training/sessions/${encodeURIComponent(sessionId)}/finish`, { method: 'POST' },
+  blindTrainingFinish: (sessionId: string) =>
+    request<{ session: BlindTrainingSession; record: BlindTrainingRecord }>(
+      `/api/blind-training/sessions/${encodeURIComponent(sessionId)}/finish`, { method: 'POST' },
     ),
-  chanTrainingRecords: () =>
-    request<{ records: ChanTrainingRecordSummary[] }>('/api/chan-training/records'),
-  chanTrainingRecord: (trainingId: string) =>
-    request<{ record: ChanTrainingRecord }>(`/api/chan-training/records/${encodeURIComponent(trainingId)}`),
-  chanTrainingReplay: (trainingId: string) =>
-    request<{ session: ChanTrainingSession }>(
-      `/api/chan-training/records/${encodeURIComponent(trainingId)}/replay`,
+  blindTrainingRecords: () =>
+    request<{ records: BlindTrainingRecordSummary[] }>('/api/blind-training/records'),
+  blindTrainingRecord: (trainingId: string) =>
+    request<{ record: BlindTrainingRecord }>(`/api/blind-training/records/${encodeURIComponent(trainingId)}`),
+  blindTrainingReplay: (trainingId: string) =>
+    request<{ session: BlindTrainingSession }>(
+      `/api/blind-training/records/${encodeURIComponent(trainingId)}/replay`,
       { method: 'POST' },
     ),
-  chanTrainingRecordDiagnostics: (trainingId: string) =>
-    request<ChanTrainingDiagnostics>(`/api/chan-training/records/${encodeURIComponent(trainingId)}/diagnostics`),
-  chanTrainingDeleteRecord: (trainingId: string) =>
-    request<{ removed: boolean }>(`/api/chan-training/records/${encodeURIComponent(trainingId)}`, { method: 'DELETE' }),
-  async *chanTrainingAnalyze(trainingId: string): AsyncGenerator<{
+  blindTrainingDeleteRecord: (trainingId: string) =>
+    request<{ removed: boolean }>(`/api/blind-training/records/${encodeURIComponent(trainingId)}`, { method: 'DELETE' }),
+  async *blindTrainingAnalyze(trainingId: string): AsyncGenerator<{
     type: 'meta' | 'delta' | 'done' | 'error'
     content?: string
-    report?: ChanTrainingReport
+    report?: BlindTrainingReport
     message?: string
   }> {
-    const res = await fetch(`/api/chan-training/records/${encodeURIComponent(trainingId)}/analyze`, {
+    const res = await fetch(`/api/blind-training/records/${encodeURIComponent(trainingId)}/analyze`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
     })
     if (!res.ok) {
@@ -3010,6 +2961,11 @@ export const api = {
         ? `/api/screener/cached?ext_columns=${encodeURIComponent(extColumns)}`
         : '/api/screener/cached',
     ),
+  screenerCurrentPrices: (symbols: string[], assetType: 'stock' | 'etf' = 'stock') =>
+    request<ScreenerCurrentPrices>('/api/screener/current-prices', {
+      method: 'POST',
+      body: JSON.stringify({ symbols, asset_type: assetType }),
+    }),
   marketSnapshot: () =>
     request<{ as_of: string | null; rows: MarketSnapshotRow[] }>('/api/screener/market-snapshot'),
   overviewMarket: (asOf?: string) => request<OverviewMarket>(`/api/overview/market${asOf ? `?as_of=${asOf}` : ''}`),

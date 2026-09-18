@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import * as echarts from 'echarts'
 import type { ECharts, EChartsOption } from 'echarts'
 import type { MinuteKlineRow, PriceLimitInfo } from '@/lib/api'
+import type { ChartPriceLine } from '@/components/EChartsCandlestick'
 import { computeIntradayAverage, formatMinuteTime, FULL_DAY_TIMES, minuteBarDelta } from '@/lib/intraday-chart'
 import { useChartTheme, type ChartTheme } from '@/lib/theme'
 
@@ -41,7 +42,7 @@ interface Props {
   onPriceDoubleClick?: (price: number, currentPrice: number) => void
   currentPrice?: number
   dailyOhlc?: DailyOhlc
-  priceLines?: { value: number; label?: string; color?: string }[]
+  priceLines?: ChartPriceLine[]
   markers?: IntradayChartMarker[]
   showLimitLines?: boolean
   showAvgLine?: boolean
@@ -139,6 +140,7 @@ function buildOption(data: MinuteKlineRow[], prevClose: number | undefined, avgP
   }
 
   const markLineData: any[] = []
+  const priceMarkLineData: any[] = []
   if (prevClose != null) {
     markLineData.push({
       yAxis: prevClose,
@@ -170,17 +172,18 @@ function buildOption(data: MinuteKlineRow[], prevClose: number | undefined, avgP
     }))
   for (const line of priceLines) {
     if (!Number.isFinite(line.value) || line.value <= 0) continue
-    markLineData.push({
+    priceMarkLineData.push({
       yAxis: line.value,
       lineStyle: { color: line.color ?? ct.text, type: 'dashed', width: 1, opacity: 0.92 },
       label: {
-        show: !!line.label,
-        formatter: line.label ?? '',
-        position: 'insideEndTop',
+        show: !!line.label || !!line.axisLabel,
+        formatter: line.axisLabel ? line.value.toFixed(2) : line.label ?? '',
+        position: line.axisLabel ? 'start' : 'insideEndTop',
+        distance: line.axisLabel ? 8 : 5,
         color: line.color ?? ct.text,
         backgroundColor: ct.tooltipBg,
         borderRadius: 4,
-        padding: [2, 6],
+        padding: line.axisLabel ? [2, 0] : [2, 6],
         fontSize: 10,
         fontFamily: 'JetBrains Mono, monospace',
       },
@@ -201,19 +204,13 @@ function buildOption(data: MinuteKlineRow[], prevClose: number | undefined, avgP
       }
     }
 
-    const monitoredDiff = priceLines.reduce((largest, line) => (
-      Number.isFinite(line.value) && line.value > 0
-        ? Math.max(largest, Math.abs(line.value - prevClose))
-        : largest
-    ), 0) * 1.05
-
     if (showLimitLines && yMode === 'limit') {
       const { limitUp, limitDown } = getLimitPrices(prevClose, priceLimit)
       const limitDiffUp = limitUp - prevClose
       const limitDiffDown = prevClose - limitDown
       const limitDiff = Math.max(limitDiffUp, limitDiffDown)
       // 涨跌停模式: Y 轴按实际涨跌停价
-      maxDiff = Math.max(limitDiff, monitoredDiff)
+      maxDiff = limitDiff
       yMin = prevClose - maxDiff
       yMax = prevClose + maxDiff
       // 加 markLine 标注涨停价和跌停价 (仅虚线, 不显示文字)
@@ -244,11 +241,18 @@ function buildOption(data: MinuteKlineRow[], prevClose: number | undefined, avgP
       // 至少保证一个可视范围 (防止数据平时 maxDiff=0)。指数不使用涨跌停范围，最小范围要更紧，否则低波动指数会被压成横线。
       const minDiff = showLimitLines ? prevClose * 0.01 : prevClose * 0.001
       if (maxDiff < minDiff) maxDiff = minDiff
-      maxDiff = Math.max(maxDiff, monitoredDiff)
       yMin = prevClose - maxDiff
       yMax = prevClose + maxDiff
     }
   }
+
+  // 价格标线只作为叠加信息, 不参与扩大坐标范围。
+  // 超出正常可视范围时不添加标线和标签, 避免成本价把走势压扁。
+  markLineData.push(
+    ...priceMarkLineData.filter(line => (
+      yMin == null || yMax == null || (line.yAxis >= yMin && line.yAxis <= yMax)
+    )),
+  )
 
   // x 轴标签: 9:30, 10:30, 11:30/13:00, 14:00, 15:00
   // 11:30(idx 120) 和 13:00(idx 121) 相邻会重叠, 合并为一个标签

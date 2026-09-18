@@ -313,7 +313,17 @@ async def _application_lifespan(app: FastAPI):
         if not matrix_prewarm_owner.schedule(_prewarm):
             logger.info("matrix cache prewarm already running or shutting down, skip")
 
-    repo._on_refresh_done = _schedule_matrix_cache_prewarm  # noqa: SLF001
+    def _on_market_data_refresh_done() -> None:
+        # refresh_cache 已原子替换 repository 快照；进程级筛选 TTL 若不清空，
+        # 管道后最多 120 秒仍会返回旧连板/策略窗口。随后广播低频事件让前端
+        # 失效日线派生查询，不复用 quotes_updated 以免受实时行情开关限制。
+        from app.services.screener import ScreenerService
+
+        ScreenerService.clear_history_cache()
+        qs.notify_market_data_updated()
+        _schedule_matrix_cache_prewarm()
+
+    repo._on_refresh_done = _on_market_data_refresh_done  # noqa: SLF001
     if repo.enriched_ready:
         _schedule_matrix_cache_prewarm()
 

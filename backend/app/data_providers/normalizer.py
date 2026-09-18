@@ -5,7 +5,10 @@ import polars as pl
 
 from app.indicators.pipeline import filter_halt_days
 
-DAILY_COLS = ["symbol", "date", "open", "high", "low", "close", "volume", "amount", "quote_ts"]
+DAILY_COLS = [
+    "symbol", "date", "open", "high", "low", "close", "volume", "amount",
+    "prev_close", "change_pct", "quote_ts",
+]
 ADJ_FACTOR_COLS = ["symbol", "trade_date", "ex_factor"]
 INSTRUMENT_COLS = ["symbol", "name", "code", "exchange", "asset_type", "source"]
 
@@ -51,7 +54,7 @@ def normalize_daily(data, default_symbol: str | None = None, source: str = "tick
     # quote_ts: 毫秒级行情时间戳, 用于盘后校验/量比折算。保留为 Int64, 缺失则置 null。
     if "quote_ts" in df.columns:
         df = df.with_columns(pl.col("quote_ts").cast(pl.Int64, strict=False))
-    for col in ("open", "high", "low", "close", "volume", "amount"):
+    for col in ("open", "high", "low", "close", "volume", "amount", "prev_close", "change_pct"):
         if col in df.columns:
             df = df.with_columns(pl.col(col).cast(pl.Float64, strict=False))
     df = filter_halt_days(df)

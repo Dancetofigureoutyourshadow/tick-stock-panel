@@ -1,7 +1,7 @@
 """Screener 服务(§6.3)。
 
 性能优化:
-  - enriched parquet 仅存 14 列基础数据, 指标和信号即时计算
+  - enriched parquet 仅存基础数据, 指标和信号即时计算
   - preset 策略: 从内存缓存或即时计算获取完整指标, ~10-50ms
   - custom SQL: DuckDB (用户传 SQL WHERE 字符串), ~10-50ms
 """
@@ -16,6 +16,11 @@ from pathlib import Path
 import polars as pl
 
 from app.parquet import scan_enriched_parquet
+from app.market_time import (
+    cn_today,
+    is_after_official_daily_cutoff,
+    should_use_live_market_snapshot,
+)
 from app.tickflow.repository import KlineRepository
 
 logger = logging.getLogger(__name__)
@@ -79,12 +84,17 @@ class ScreenerService:
     def _load_enriched_for_date(self, target_date: date) -> pl.DataFrame:
         """从 enriched parquet 读取指定日期的基础数据并即时计算完整指标+信号。
 
-        enriched parquet 仅存 14 列。读取后需要即时计算 ma/ema/macd/kdj/rsi/boll/momentum/signal 等列。
+        enriched parquet 仅存基础行情列。读取后需要即时计算 ma/ema/macd/kdj/rsi/boll/momentum/signal 等列。
         对于最新日, 优先使用内存缓存 (已包含完整指标)。
         """
         # 优先使用 repo 最新日缓存
         cache, cache_date = self.repo.get_enriched_latest_asset(self.asset_type)
-        if cache is not None and not cache.is_empty() and cache_date == target_date:
+        if (
+            cache is not None
+            and not cache.is_empty()
+            and cache_date == target_date
+            and should_use_live_market_snapshot(cache_date)
+        ):
             df = cache
             # JOIN instruments
             df_i = self.repo.get_instruments_asset(self.asset_type)
@@ -94,8 +104,13 @@ class ScreenerService:
                     df = df.join(df_i.select(inst_cols), on="symbol", how="left")
             return df
 
+        # 盘后定版的最新日必须读持久化分区，不能再命中包含盘中快照的历史缓存。
+        force_persisted_latest = (
+            target_date == cn_today() and is_after_official_daily_cutoff()
+        )
+
         # 尝试从 repo 级预计算历史缓存中提取目标日期 (仅 stock: 该缓存为股票专用)
-        if self.asset_type == "stock":
+        if self.asset_type == "stock" and not force_persisted_latest:
             cached_hist = self.repo.get_enriched_history(target_date, 1)
             if cached_hist is not None and not cached_hist.is_empty() and "date" in cached_hist.columns:
                 df = cached_hist.filter(pl.col("date") == target_date)
@@ -109,7 +124,7 @@ class ScreenerService:
                             df = df.join(df_i.select(inst_cols), on="symbol", how="left")
                     return df
 
-        # 历史日期: 从 parquet 读取 14 列, 即时计算指标 (慢路径)
+        # 历史日期: 从 parquet 读取基础数据, 即时计算指标 (慢路径)
         enriched_dir = self.repo.store.data_dir / self._enriched_dirname
         ds = target_date.isoformat()
         target_parquet = enriched_dir / f"date={ds}" / "part.parquet"
@@ -194,7 +209,7 @@ class ScreenerService:
         return days[:limit]
 
     def _compute_enriched_full(self, df_target: pl.DataFrame, target_date: date) -> pl.DataFrame:
-        """从 14 列基础数据即时计算完整 enriched (含全部指标和信号)。
+        """从基础数据即时计算完整 enriched (含全部指标和信号)。
 
         读取历史数据作为指标计算的 warmup, 计算完成后只返回目标日期的行。
         """
@@ -210,7 +225,7 @@ class ScreenerService:
         # turnover_rate 是 enriched 存储列, 必须随行透传: 否则即时计算后该列
         # 丢失, 自定义 SQL 用它做条件会 Binder Error 被吞成空结果 (#187)
         read_cols = ["symbol", "date", "open", "high", "low", "close", "volume",
-                     "amount", "raw_close", "raw_high", "raw_low", "turnover_rate"]
+                     "amount", "prev_close", "change_pct", "raw_close", "raw_high", "raw_low", "turnover_rate"]
 
         try:
             lf = (
@@ -302,7 +317,7 @@ class ScreenerService:
         enriched_dir = self.repo.store.data_dir / self._enriched_dirname
         # 同 _compute_enriched_full: turnover_rate 存储列随行透传 (#187)
         read_cols = ["symbol", "date", "open", "high", "low", "close", "volume",
-                     "amount", "raw_close", "raw_high", "raw_low", "turnover_rate"]
+                     "amount", "prev_close", "change_pct", "raw_close", "raw_high", "raw_low", "turnover_rate"]
 
         try:
             lf = (
@@ -339,12 +354,17 @@ class ScreenerService:
         # 按交易日计数: 从数据里实际存在的交易日序列取最后 lookback_days 个交易日,
         # 不能用 timedelta(days=N) (自然日), 否则周末/节假日会让窗口偏少, 与回测不一致。
         if "date" in df_full.columns:
-            trading_dates = df_full["date"].unique().sort()
+            # df_full 通常已按 target_date 截断; 这里仍显式锚定目标日,
+            # 避免未来日期进入窗口后改变历史回选的起点。
+            trading_dates = df_full.filter(pl.col("date") <= target_date)["date"].unique().sort()
             if len(trading_dates) > lookback_days:
                 lookback_start = trading_dates[-(lookback_days + 1)]
             else:
                 lookback_start = trading_dates[0]
-            df_full = df_full.filter(pl.col("date") >= lookback_start)
+            df_full = df_full.filter(
+                (pl.col("date") >= lookback_start)
+                & (pl.col("date") <= target_date)
+            )
 
         df_full = df_full.sort(["symbol", "date"])
 
@@ -371,7 +391,7 @@ class ScreenerService:
         """自定义 SQL 条件选股。
 
         先通过 Polars 即时计算完整指标, 再用 DuckDB 做 SQL WHERE 过滤。
-        kline_enriched DuckDB 视图只有 14 列, 不能直接用于指标过滤。
+        kline_enriched DuckDB 视图只有基础存储列, 不能直接用于指标过滤。
         """
         t0 = time.perf_counter()
 

@@ -27,9 +27,9 @@ export const BUILTIN_COLUMNS: ColumnConfig[] = [
   { id: 'builtin:symbol', source: { type: 'builtin', key: 'symbol' }, label: '代码/名称', visible: true, pinned: true, align: 'left' },
   // 价格
   { id: 'builtin:price', source: { type: 'builtin', key: 'price' }, label: '现价', visible: true, align: 'center' },
-  { id: 'builtin:pct', source: { type: 'builtin', key: 'pct' }, label: '涨跌幅', visible: true, align: 'center' },
+  { id: 'builtin:pct', source: { type: 'builtin', key: 'pct' }, label: '今日涨跌幅', visible: true, align: 'center' },
   { id: 'builtin:watchlist_gain', source: { type: 'builtin', key: 'watchlist_gain' }, label: '自选至今', visible: true, align: 'center' },
-  { id: 'builtin:change_amount', source: { type: 'builtin', key: 'change_amount' }, label: '涨跌额', visible: false, align: 'center' },
+  { id: 'builtin:change_amount', source: { type: 'builtin', key: 'change_amount' }, label: '今日涨跌额', visible: true, align: 'center' },
   { id: 'builtin:amplitude', source: { type: 'builtin', key: 'amplitude' }, label: '振幅', visible: false, align: 'center' },
   // 成交
   { id: 'builtin:turnover', source: { type: 'builtin', key: 'turnover' }, label: '换手率', visible: true, align: 'center' },

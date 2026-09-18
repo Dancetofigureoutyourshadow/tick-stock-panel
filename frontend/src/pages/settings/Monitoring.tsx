@@ -18,6 +18,7 @@ import { useUpdateQuoteInterval, useToggleRealtimeQuotes } from '@/lib/useShared
 import { api, type EmailSmtpConfig } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
 import { useCardFlash, cardFlashCls } from '@/lib/useCardFlash'
+import { isFrontendDatasetDisabled } from '@/lib/capability-labels'
 import { toast } from '@/components/Toast'
 import { DepthConfigContent } from '@/components/data/DepthConfigCard'
 
@@ -71,7 +72,10 @@ export function SettingsMonitoringPanel({ highlight }: { highlight?: string } = 
   const hasDepth = !!caps?.capabilities?.['depth5.batch']
   // 全量分钟 = intraday.universe 能力 (TickFlow Expert 专有): 标的池单请求拉全市场当日分钟,
   // 修复轮的 intraday.batch 与其同档, 见后端 minute_refresh 服务
-  const hasFullMinuteCap = !!caps?.capabilities?.['intraday.universe']
+  const fullMinuteProvider = prefs?.full_minute_data_provider || 'tickflow'
+  const hasFullMinuteCap =
+    !!caps?.capabilities?.['intraday.universe']
+    && !isFrontendDatasetDisabled(fullMinuteProvider, 'full_minute')
   const rs = refreshStatus.data
   // 新建监控规则时默认勾选的推送渠道 (全局默认值数组, 单条规则可独立修改)
   const webhookDefaultChannels = prefs?.webhook_default_channels ?? []

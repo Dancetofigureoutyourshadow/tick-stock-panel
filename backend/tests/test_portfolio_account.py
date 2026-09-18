@@ -1,6 +1,7 @@
 """本地策略账户: 通过公开服务接口验证账本与成交行为。"""
 from __future__ import annotations
 
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
 
@@ -281,7 +282,11 @@ def test_sell_enforces_t_plus_one_and_handles_partial_then_full_sale(tmp_path) -
     assert partial["trade"]["stamp_tax"] == "2.40"
     assert partial["trade"]["realized_pnl"] == "788.80"
     assert partial["position"]["remaining_qty"] == 600
+    assert partial["position"]["remaining_cost"] == "5217.20"
     assert partial["position"]["status"] == "pending_sell"
+    marked = account.positions({"600519.SH": "12"}, as_of="2026-09-08")[0]
+    assert marked["unrealized_pnl"] == "1194.00"
+    assert account.summary({"600519.SH": "12"})["total_pnl"] == "1982.80"
 
     removed: list[str] = []
     closed = account.sell(
@@ -304,6 +309,107 @@ def test_sell_enforces_t_plus_one_and_handles_partial_then_full_sale(tmp_path) -
         "unrealized_pnl": "0.00",
         "total_pnl": "1372.90",
     }
+
+
+def test_partial_loss_sale_increases_remaining_funding_cost(tmp_path) -> None:
+    account = PortfolioAccount(tmp_path)
+    account.record_cash("deposit", "20000")
+    account.update_settings({"max_positions": 1, "max_total_position": "1"})
+    bought = account.buy(
+        symbol="600001.SH",
+        name="test",
+        price="10",
+        quantity=1000,
+        strategy_snapshot={"strategy_id": "s1"},
+        trade_date="2026-09-07",
+    )
+
+    sold = account.sell(
+        bought["position"]["id"],
+        price="8",
+        quantity=400,
+        trade_date="2026-09-08",
+    )
+
+    # Default buy cost is 10003.00; the 400-share sale returns 3197.44 after
+    # fees, leaving 6805.56 of capital tied to the remaining 600 shares.
+    assert sold["position"]["remaining_cost"] == "6805.56"
+    assert sold["trade"]["realized_pnl"] == "-803.76"
+    marked = account.positions({"600001.SH": "8"}, as_of="2026-09-08")[0]
+    assert marked["unrealized_pnl"] == "-1201.80"
+    assert account.summary({"600001.SH": "8"})["total_pnl"] == "-2005.56"
+
+
+def test_multiple_partial_sales_preserve_cost_basis_rounding(tmp_path) -> None:
+    account = PortfolioAccount(tmp_path)
+    account.record_cash("deposit", "20000")
+    account.update_settings(
+        {
+            "max_positions": 1,
+            "max_total_position": "1",
+            "commission_rate": "0",
+            "stamp_tax_rate": "0",
+        }
+    )
+    bought = account.buy(
+        symbol="600001.SH",
+        name="test",
+        price="10.01",
+        quantity=1000,
+        strategy_snapshot={"strategy_id": "s1"},
+        trade_date="2026-09-07",
+    )
+    position_id = bought["position"]["id"]
+
+    first = account.sell(
+        position_id, price="12", quantity=333, trade_date="2026-09-08"
+    )
+    second = account.sell(
+        position_id, price="8", quantity=333, trade_date="2026-09-09"
+    )
+    closed = account.sell(
+        position_id, price="10", quantity=334, trade_date="2026-09-10"
+    )
+
+    assert first["position"]["remaining_cost"] == "6014.00"
+    assert second["position"]["remaining_cost"] == "3350.00"
+    assert closed["position"]["remaining_cost"] == "0.00"
+    assert closed["position"]["realized_pnl"] == "-10.00"
+    assert closed["trade"]["realized_pnl"] == "-3.34"
+
+
+def test_reinitializing_account_repairs_legacy_partial_sale_cost(tmp_path) -> None:
+    account = PortfolioAccount(tmp_path)
+    account.record_cash("deposit", "20000")
+    account.update_settings({"max_positions": 1, "max_total_position": "1"})
+    bought = account.buy(
+        symbol="600001.SH",
+        name="test",
+        price="10",
+        quantity=1000,
+        strategy_snapshot={"strategy_id": "s1"},
+        trade_date="2026-09-07",
+    )
+    sold = account.sell(
+        bought["position"]["id"],
+        price="8",
+        quantity=400,
+        trade_date="2026-09-08",
+    )
+    assert sold["position"]["remaining_cost"] == "6805.56"
+
+    # Simulate the pre-fix persisted cost and verify account startup repairs it.
+    with sqlite3.connect(account.path) as connection:
+        connection.execute(
+            "UPDATE positions SET remaining_cost_cents = 600180 WHERE id = ?",
+            (bought["position"]["id"],),
+        )
+
+    repaired = PortfolioAccount(tmp_path).get_position(bought["position"]["id"])
+    assert repaired["remaining_cost"] == "6805.56"
+    assert PortfolioAccount(tmp_path).get_position(bought["position"]["id"])[
+        "remaining_cost"
+    ] == "6805.56"
 
 
 def test_t_plus_one_uses_local_trading_days_when_available(tmp_path) -> None:

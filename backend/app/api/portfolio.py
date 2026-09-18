@@ -84,14 +84,58 @@ def _finite_positive(value: Any) -> Decimal | None:
     return result if result.is_finite() and result > 0 else None
 
 
-def _resolve_prices(
+def _finite_decimal(value: Any) -> Decimal | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        result = Decimal(str(value))
+    except Exception:
+        return None
+    return result if result.is_finite() else None
+
+
+def _decimal_text(value: Decimal | None) -> str | None:
+    if value is None:
+        return None
+    text = format(value, "f")
+    return text.rstrip("0").rstrip(".") if "." in text else text
+
+
+def _normalise_quote(
+    row: dict[str, Any],
+    price: Decimal,
+    price_source: str,
+) -> dict[str, Any]:
+    """把行情行转换成持仓展示所需的统一口径。"""
+    prev_close = _finite_positive(row.get("prev_close"))
+    change_amount = _finite_decimal(row.get("change_amount"))
+    change_pct = _finite_decimal(row.get("change_pct"))
+    if prev_close is not None:
+        if change_amount is None:
+            change_amount = price - prev_close
+        if change_pct is None:
+            change_pct = change_amount / prev_close
+    else:
+        # 没有昨收时禁止仅凭当前价伪造“今日”涨跌。
+        change_amount = None
+        change_pct = None
+    return {
+        "prev_close": _decimal_text(prev_close),
+        "change_amount": _decimal_text(change_amount),
+        "change_pct": float(change_pct) if change_pct is not None else None,
+        "price_source": price_source,
+    }
+
+
+def _resolve_quotes(
     request: Request,
     symbols: list[str],
-) -> tuple[dict[str, Decimal], dict[str, str]]:
-    """实时最新价优先, 缺失时降级到最新日线不复权收盘价。"""
+) -> tuple[dict[str, Decimal], dict[str, str], dict[str, dict[str, Any]]]:
+    """解析持仓估值价格, 并保留同一行情快照的今日涨跌字段。"""
     wanted = {symbol.strip().upper() for symbol in symbols if symbol.strip()}
     prices: dict[str, Decimal] = {}
     sources: dict[str, str] = {}
+    quotes: dict[str, dict[str, Any]] = {}
     quote_service = getattr(request.app.state, "quote_service", None)
     if quote_service is not None and wanted:
         try:
@@ -105,8 +149,10 @@ def _resolve_prices(
                     if price is not None:
                         prices[symbol] = price
                         sources[symbol] = "realtime"
+                        quotes[symbol] = _normalise_quote(row, price, "realtime")
         except Exception:
             pass
+
     missing = wanted - prices.keys()
     if missing:
         try:
@@ -116,13 +162,23 @@ def _resolve_prices(
                     symbol = str(row.get("symbol") or "").upper()
                     if symbol not in missing:
                         continue
-                    # 账户成交与市值必须使用不复权价; 旧 schema 缺 raw_close 才回退 close。
+                    # 账户成交与市值使用不复权价; 旧 schema 缺 raw_close 才回退 close。
                     price = _finite_positive(row.get("raw_close") or row.get("close"))
                     if price is not None:
                         prices[symbol] = price
                         sources[symbol] = "latest_close"
+                        quotes[symbol] = _normalise_quote(row, price, "latest_close")
         except Exception:
             pass
+    return prices, sources, quotes
+
+
+def _resolve_prices(
+    request: Request,
+    symbols: list[str],
+) -> tuple[dict[str, Decimal], dict[str, str]]:
+    """实时最新价优先, 缺失时降级到最新日线不复权收盘价。"""
+    prices, sources, _ = _resolve_quotes(request, symbols)
     return prices, sources
 
 
@@ -217,14 +273,23 @@ def get_positions(
     include_closed: bool = Query(default=False),
 ):
     account = _account(request)
-    prices, _ = _resolve_prices(request, account.open_symbols())
+    prices, _, quotes = _resolve_quotes(request, account.open_symbols())
     try:
+        positions = account.positions(
+            prices,
+            as_of=as_of,
+            include_closed=include_closed,
+        )
+        for position in positions:
+            quote = quotes.get(position["symbol"])
+            position.update(quote or {
+                "prev_close": None,
+                "change_pct": None,
+                "change_amount": None,
+                "price_source": "missing",
+            })
         return {
-            "positions": account.positions(
-                prices,
-                as_of=as_of,
-                include_closed=include_closed,
-            )
+            "positions": positions,
         }
     except PortfolioError as exc:
         raise _http_error(exc) from exc

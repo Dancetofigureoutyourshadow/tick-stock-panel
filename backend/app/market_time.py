@@ -16,6 +16,8 @@ _MORNING_START = dt_time(9, 30)
 _MORNING_END = dt_time(11, 30)
 _AFTERNOON_START = dt_time(13, 0)
 _AFTERNOON_END = dt_time(15, 0)
+# 盘后固定价交易至 15:30。此后实时快照不再是日K权威数据，必须读取盘后重建的分区。
+_OFFICIAL_DAILY_READY = dt_time(15, 30)
 
 
 def cn_now() -> datetime:
@@ -26,6 +28,25 @@ def cn_now() -> datetime:
 def cn_today() -> date:
     """当前北京日期。"""
     return datetime.now(CN_TZ).date()
+
+
+def is_after_official_daily_cutoff(now: datetime | None = None) -> bool:
+    """是否已到应以盘后官方日K替代实时快照的北京时间边界。"""
+    now = now or cn_now()
+    return now.weekday() < 5 and now.time() >= _OFFICIAL_DAILY_READY
+
+
+def should_use_live_market_snapshot(
+    snapshot_date: date | None,
+    now: datetime | None = None,
+) -> bool:
+    """仅在当日收盘定版前允许实时缓存覆盖持久化日K。"""
+    now = now or cn_now()
+    return bool(
+        snapshot_date == now.date()
+        and now.weekday() < 5
+        and now.time() < _OFFICIAL_DAILY_READY
+    )
 
 
 def in_continuous_session(now: datetime | None = None) -> bool:

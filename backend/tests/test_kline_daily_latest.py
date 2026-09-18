@@ -7,7 +7,9 @@ import polars as pl
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+import app.api.kline as kline_api
 from app.api.kline import router
+from app.market_time import CN_TZ
 
 
 class _FakeQuoteService:
@@ -71,8 +73,9 @@ def _live_frame() -> pl.DataFrame:
     })
 
 
-def test_daily_latest_returns_only_current_memory_row() -> None:
+def test_daily_latest_returns_only_current_memory_row(monkeypatch) -> None:
     client, repo = _client(_live_frame(), date.today())
+    monkeypatch.setattr(kline_api, "should_use_live_market_snapshot", lambda _date: True)
 
     response = client.get("/api/kline/daily/latest", params={"symbol": "600000.SH"})
 
@@ -109,6 +112,20 @@ def test_daily_latest_returns_none_for_stale_cache() -> None:
     }
 
 
+def test_daily_latest_does_not_expose_live_cache_after_close(monkeypatch) -> None:
+    client, _ = _client(_live_frame(), date.today())
+    monkeypatch.setattr(kline_api, "should_use_live_market_snapshot", lambda _date: False)
+
+    response = client.get("/api/kline/daily/latest", params={"symbol": "600000.SH"})
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "symbol": "600000.SH",
+        "row": None,
+        "source": "none",
+    }
+
+
 def test_daily_latest_returns_none_when_symbol_is_missing() -> None:
     client, _ = _client(_live_frame(), date.today())
 
@@ -122,7 +139,7 @@ def test_daily_latest_returns_none_when_symbol_is_missing() -> None:
     }
 
 
-def test_daily_latest_uses_etf_enriched_cache() -> None:
+def test_daily_latest_uses_etf_enriched_cache(monkeypatch) -> None:
     etf = _live_frame().with_columns(pl.lit("510300.SH").alias("symbol"))
     client, repo = _client(
         pl.DataFrame(),
@@ -130,6 +147,7 @@ def test_daily_latest_uses_etf_enriched_cache() -> None:
         asset_type="etf",
         latest_asset=(etf, date.today()),
     )
+    monkeypatch.setattr(kline_api, "should_use_live_market_snapshot", lambda _date: True)
 
     response = client.get("/api/kline/daily/latest", params={"symbol": "510300.SH"})
 

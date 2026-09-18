@@ -37,8 +37,8 @@ def test_json_report_store_uses_atomic_replace_and_reads_saved_record(
         def exists(self) -> bool:
             return self.name in storage
 
-    path = MemoryPath("chan_training_records.json")
-    store = JsonReportStore(path.name, 10, "ctr")
+    path = MemoryPath("blind_training_records.json")
+    store = JsonReportStore(path.name, 10, "btr")
     monkeypatch.setattr(store, "_path", lambda: path)
     replacements: list[tuple[str, str]] = []
 
@@ -50,7 +50,7 @@ def test_json_report_store_uses_atomic_replace_and_reads_saved_record(
 
     saved = store.save_report({"training_id": "training-1", "created_at": "2026-08-28T12:00:00"})
 
-    assert replacements == [("chan_training_records.json.tmp", "chan_training_records.json")]
-    assert "chan_training_records.json.tmp" not in storage
-    assert json.loads(storage["chan_training_records.json"])[0]["id"] == saved["id"]
+    assert replacements == [("blind_training_records.json.tmp", "blind_training_records.json")]
+    assert "blind_training_records.json.tmp" not in storage
+    assert json.loads(storage["blind_training_records.json"])[0]["id"] == saved["id"]
     assert store.list_reports() == [saved]

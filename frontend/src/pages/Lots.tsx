@@ -5,7 +5,7 @@ import { ArrowDownToLine, ArrowUpFromLine, ArrowUpRight, CalendarClock, Pencil, 
 import { api, type Lot, type PortfolioPosition, type PortfolioSettings, type PortfolioTrade } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
 import { cn } from '@/lib/cn'
-import { fmtPct, fmtPrice, priceColorClass } from '@/lib/format'
+import { fmtPct, fmtPrice, fmtSignedPrice, priceColorClass } from '@/lib/format'
 import { PageHeader } from '@/components/PageHeader'
 import { Modal } from '@/components/Modal'
 import { DatePicker } from '@/components/DatePicker'
@@ -96,7 +96,7 @@ function PositionTable({
         <div className="overflow-x-auto rounded-xl border border-border bg-surface/40">
           <table className="w-full text-left text-xs">
             <thead><tr className="border-b border-border/60 bg-surface/60 text-[10px] text-muted">
-              <th className="px-4 py-2 font-medium">标的 / 策略</th><th className="px-2 py-2 text-right font-medium">数量</th><th className="px-2 py-2 text-right font-medium">可卖</th><th className="px-2 py-2 text-right font-medium">成本</th><th className="px-2 py-2 text-right font-medium">现价</th><th className="px-2 py-2 text-right font-medium">市值</th><th className="px-2 py-2 text-right font-medium">未实现盈亏</th><th className="px-3 py-2" />
+              <th className="px-4 py-2 font-medium">标的 / 策略</th><th className="px-2 py-2 text-right font-medium">数量</th><th className="px-2 py-2 text-right font-medium">可卖</th><th className="px-2 py-2 text-right font-medium">成本</th><th className="px-2 py-2 text-right font-medium">现价</th><th className="px-2 py-2 text-right font-medium">今日涨跌幅</th><th className="px-2 py-2 text-right font-medium">今日涨跌额</th><th className="px-2 py-2 text-right font-medium">市值</th><th className="px-2 py-2 text-right font-medium">未实现盈亏</th><th className="px-3 py-2" />
             </tr></thead>
             <tbody>{rows.map(position => {
               const pnl = Number(position.unrealized_pnl)
@@ -106,6 +106,8 @@ function PositionTable({
                 <td className="px-2 py-2.5 text-right font-mono text-secondary">{position.available_qty}</td>
                 <td className="px-2 py-2.5 text-right font-mono">¥{position.remaining_cost}</td>
                 <td className="px-2 py-2.5 text-right font-mono text-secondary">{position.current_price ? `¥${position.current_price}` : '—'}</td>
+                <td className={cn('px-2 py-2.5 text-right font-mono', priceColorClass(position.change_pct))}>{fmtPct(position.change_pct)}</td>
+                <td className={cn('px-2 py-2.5 text-right font-mono', priceColorClass(position.change_amount == null ? null : Number(position.change_amount)))}>{fmtSignedPrice(position.change_amount == null ? null : Number(position.change_amount))}</td>
                 <td className="px-2 py-2.5 text-right font-mono">¥{position.market_value}</td>
                 <td className={cn('px-2 py-2.5 text-right font-mono', priceColorClass(pnl))}>{pnl >= 0 ? '+' : ''}¥{position.unrealized_pnl}</td>
                 <td className="px-3 py-2.5"><div className="flex justify-end gap-1">
@@ -183,7 +185,7 @@ export function Lots() {
     )
     const averageCost = quantity > 0 ? remainingCost / quantity : 0
     const priceLines: ChartPriceLine[] = averageCost > 0
-      ? [{ value: averageCost, label: `持仓成本 ${averageCost.toFixed(2)}`, color: '#F59E0B' }]
+      ? [{ value: averageCost, label: '持仓成本', axisLabel: true, color: '#F59E0B' }]
       : []
     return {
       name: symbolPositions[0]?.name ?? '',

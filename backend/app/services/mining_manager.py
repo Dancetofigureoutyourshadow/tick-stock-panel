@@ -112,14 +112,22 @@ class MiningJobManager:
 
             cancel_event = self._cancel_events.get(run_id)
             if cancel_event is None:
-                cancelled = self._store.transition_status(run_id, "cancelled")
-                self._store.append_event(run_id, "cancelled", {"status": "cancelled"})
+                cancelled = self._store.transition_status_with_event(
+                    run_id,
+                    "cancelled",
+                    "cancelled",
+                    {"status": "cancelled"},
+                )
                 return cancelled
 
             cancel_event.set()
             if manifest["status"] != "cancelling":
-                manifest = self._store.transition_status(run_id, "cancelling")
-                self._store.append_event(run_id, "cancelling", {"status": "cancelling"})
+                manifest = self._store.transition_status_with_event(
+                    run_id,
+                    "cancelling",
+                    "cancelling",
+                    {"status": "cancelling"},
+                )
             return manifest
 
     def shutdown(self) -> None:
@@ -203,8 +211,12 @@ class MiningJobManager:
             if cancel_event.is_set():
                 self._finish_cancelled_locked(run_id)
                 return False
-            self._store.transition_status(run_id, "running")
-            self._store.append_event(run_id, "running", {"status": "running"})
+            self._store.transition_status_with_event(
+                run_id,
+                "running",
+                "running",
+                {"status": "running"},
+            )
             return True
 
     def _record_progress(
@@ -235,8 +247,12 @@ class MiningJobManager:
                 self._finish_cancelled_locked(run_id)
                 return
             self._store.write_summary(run_id, result)
-            self._store.transition_status(run_id, status)
-            self._store.append_event(run_id, status, {"status": status})
+            self._store.transition_status_with_event(
+                run_id,
+                status,
+                status,
+                {"status": status},
+            )
 
     def _finish_cancelled(self, run_id: str) -> None:
         with self._lock:
@@ -246,8 +262,12 @@ class MiningJobManager:
         manifest = self._store.get(run_id)
         if manifest is None or manifest["status"] in TERMINAL_RUN_STATUSES:
             return
-        self._store.transition_status(run_id, "cancelled")
-        self._store.append_event(run_id, "cancelled", {"status": "cancelled"})
+        self._store.transition_status_with_event(
+            run_id,
+            "cancelled",
+            "cancelled",
+            {"status": "cancelled"},
+        )
 
     def _finish_failed(self, run_id: str, exc: Exception) -> None:
         message = str(exc)[:2000]
@@ -255,9 +275,10 @@ class MiningJobManager:
             manifest = self._store.get(run_id)
             if manifest is None or manifest["status"] in TERMINAL_RUN_STATUSES:
                 return
-            self._store.transition_status(run_id, "failed", error=message)
-            self._store.append_event(
+            self._store.transition_status_with_event(
                 run_id,
+                "failed",
                 "error",
                 {"status": "failed", "message": message},
+                error=message,
             )

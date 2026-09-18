@@ -62,14 +62,15 @@ export function getSortValue(r: any, col: ColumnConfig): any {
   const key = col.source.key
   switch (key) {
     case 'symbol':        return r.symbol
-    case 'price':         return r.rt_price ?? r.close
-    case 'pct':           return r.rt_pct ?? r.change_pct
+    case 'selected_price': return r.close
+    case 'price':         return r.current_price ?? r.rt_price ?? r.close
+    case 'pct':           return r.selected_to_current_pct ?? r.rt_pct ?? r.change_pct
     case 'watchlist_gain': {
       const current = r.rt_price ?? r.close
       const base = r.watchlist_base_price
       return typeof current === 'number' && typeof base === 'number' && base > 0 ? current / base - 1 : null
     }
-    case 'change_amount': return r.change_amount
+    case 'change_amount': return r.selected_to_current_amount ?? r.change_amount
     case 'amplitude':     return r.amplitude
     case 'turnover':      return r.turnover_rate
     case 'amount':        return r.rt_amount ?? r.amount

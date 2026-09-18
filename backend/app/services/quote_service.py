@@ -93,6 +93,7 @@ class QuoteSubscriber:
         self._max_alerts = max_alerts
         self._max_reviews = max_reviews
         self._quote_updated = False
+        self._market_data_updated = False
         self._strategy_results_updated = False
         self._depth_updated = False
         self._alerts: list[dict] = []
@@ -108,12 +109,14 @@ class QuoteSubscriber:
         with self._lock:
             out = {
                 "quote_updated": self._quote_updated,
+                "market_data_updated": self._market_data_updated,
                 "strategy_results_updated": self._strategy_results_updated,
                 "depth_updated": self._depth_updated,
                 "alerts": self._alerts,
                 "reviews": self._reviews,
             }
             self._quote_updated = False
+            self._market_data_updated = False
             self._strategy_results_updated = False
             self._depth_updated = False
             self._alerts = []
@@ -141,6 +144,7 @@ class QuoteSubscriber:
             self._alerts = []
             if (
                 not self._quote_updated
+                and not self._market_data_updated
                 and not self._strategy_results_updated
                 and not self._depth_updated
                 and not self._reviews
@@ -150,6 +154,11 @@ class QuoteSubscriber:
     def notify_quote(self) -> None:
         with self._lock:
             self._quote_updated = True
+            self._event.set()
+
+    def notify_market_data(self) -> None:
+        with self._lock:
+            self._market_data_updated = True
             self._event.set()
 
     def notify_strategy_results(self) -> None:
@@ -428,6 +437,14 @@ class QuoteService:
         """策略监控完成实时结果更新后调用，仅刷新策略页结果缓存。"""
         for sub in self._snapshot_subscribers():
             sub.notify_strategy_results()
+
+    def notify_market_data_updated(self) -> None:
+        """盘后数据快照已原子替换，通知客户端重取日线派生数据。"""
+        from app.api.overview import invalidate_overview_cache
+
+        invalidate_overview_cache()
+        for sub in self._snapshot_subscribers():
+            sub.notify_market_data()
 
     def notify_depth_updated(self) -> None:
         """五档盘口修正完成后调用: 通知 SSE 推送 depth_updated, 触发连板梯队刷新。
@@ -942,6 +959,9 @@ class QuoteService:
             "low": "low",
             "volume": "volume",
             "amount": "amount",
+            # 前收盘/涨跌幅来自实时行情源，随日K落盘供冷启动重算。
+            "prev_close": "prev_close",
+            "change_pct": "change_pct",
             "timestamp": "quote_ts",
         }
         select_exprs = []
@@ -1752,7 +1772,10 @@ class QuoteService:
                 # 将 API 直接提供的补充字段 JOIN 到 daily_df
                 today_ohlcv = daily_df
                 if quote_extra is not None and not quote_extra.is_empty():
-                    today_ohlcv = daily_df.join(quote_extra, on="symbol", how="left")
+                    # 日K也可能已持久化同名字段；先去掉旧值，确保实时快照
+                    # 的 prev_close/change_pct 优先，避免生成 *_right 后被忽略。
+                    overlap = [c for c in quote_extra.columns if c != "symbol" and c in daily_df.columns]
+                    today_ohlcv = daily_df.drop(overlap).join(quote_extra, on="symbol", how="left")
                 # 量比时间折算: 优先用行情 quote_ts (真实成交时间), 缺失则兜底服务端时间
                 elapsed_minutes: float | None = None
                 if "quote_ts" in daily_df.columns and not daily_df.is_empty():
@@ -1783,7 +1806,10 @@ class QuoteService:
                 cutoff = today - timedelta(days=90)
                 table = {"etf": "kline_etf_daily", "index": "kline_index_daily"}.get(asset_type, "kline_daily")
                 daily_glob = str(self._repo.store.data_dir / table / "**" / "*.parquet")
-                ohlcv_cols = ["symbol", "date", "open", "high", "low", "close", "volume", "amount", "quote_ts"]
+                ohlcv_cols = [
+                    "symbol", "date", "open", "high", "low", "close", "volume", "amount",
+                    "prev_close", "change_pct", "quote_ts",
+                ]
                 hist_df = guarded_collect(
                     scan_daily_parquet(daily_glob)
                     .filter(pl.col("date") >= cutoff)

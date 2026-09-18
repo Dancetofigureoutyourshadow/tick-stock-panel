@@ -118,4 +118,5 @@ reports/cursor_tickflow_pro_rate_limit_p0.bundle
 /data/
 /.claude/
 /.uv-cache/
-/generated/
+generated/**
+

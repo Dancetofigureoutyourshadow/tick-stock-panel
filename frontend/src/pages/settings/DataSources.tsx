@@ -40,7 +40,14 @@ import {
 import { QK } from '@/lib/queryKeys'
 import { useCapabilities, usePreferences } from '@/lib/useSharedQueries'
 import { AnchorWrap } from '@/lib/useCardFlash'
-import { CAP_LABELS, TIER_RANK, tierRank, tierStyle, TierTag } from '@/lib/capability-labels'
+import {
+  CAP_LABELS,
+  isFrontendDatasetDisabled,
+  TIER_RANK,
+  tierRank,
+  tierStyle,
+  TierTag,
+} from '@/lib/capability-labels'
 import { toast } from '@/components/Toast'
 import { DataSourceEditor } from './DataSourceEditor'
 import { TickFlowKeySection, TierHelpPopover, useInvalidateTierRelated } from './Keys'
@@ -167,6 +174,7 @@ function CapabilityCard({ cap, pendingKey, onSelect }: {
 }) {
   const Icon = CAP_ICON[cap.id] ?? Database
   const busy = (provider: string) => pendingKey === `${cap.field}:${provider}`
+  const providerDisabled = (provider: string) => isFrontendDatasetDisabled(provider, cap.id)
   // 能力中立判定: usable=False 即当前路由的源供不了 (TickFlow 档位不足或插件未就绪同待遇)
   const unmet = !cap.usable
   const chipsEmpty = cap.candidates.length === 0 && cap.pending.length === 0
@@ -203,6 +211,7 @@ function CapabilityCard({ cap, pendingKey, onSelect }: {
       <div className="flex flex-wrap gap-1 mt-2 pt-2 border-t border-border/50 min-h-[26px] items-center">
         {cap.candidates.map(c => {
           const active = cap.current === c.name
+          const disabled = providerDisabled(c.name)
           // field=null → 不可路由能力 (仅 TickFlow 提供): 渲染为非交互标签,
           // 保持激活高亮但不可点击 (用 button+disabled 会被 opacity-50 冲淡成灰色)
           const routable = cap.field != null
@@ -221,10 +230,10 @@ function CapabilityCard({ cap, pendingKey, onSelect }: {
             <button
               key={c.name}
               type="button"
-              disabled={pendingKey != null}
+              disabled={pendingKey != null || disabled}
               onClick={() => cap.field != null && onSelect(cap.field, c.name)}
-              title={`「${cap.label}」由 ${c.display} 提供`}
-              className={tagCls(active)}
+              title={disabled ? `页面暂不开放 ${c.display} 的「${cap.label}」` : `「${cap.label}」由 ${c.display} 提供`}
+              className={tagCls(active, disabled)}
             >
               {busy(c.name) && <Loader2 className="h-2.5 w-2.5 animate-spin" />}
               {c.display}
@@ -318,7 +327,11 @@ function CapabilityRoutingSection() {
     onSettled: invalidateRouting,
   })
 
-  const list = matrix.data?.capabilities ?? []
+  const list = (matrix.data?.capabilities ?? []).map(cap =>
+    isFrontendDatasetDisabled(cap.current, cap.id)
+      ? { ...cap, usable: false }
+      : cap,
+  )
   const anyCustom = list.some(c => c.current !== c.default)
 
   return (
@@ -542,24 +555,30 @@ function PluginKeyConfig({ plugin }: { plugin: PluginDataSourceItem }) {
 }
 
 /** 能力芯片: 三态 — 服务中(高亮+勾) / 已适配(灰) / 档位锁定(锁, 仅 TickFlow) */
-function CapabilityChips({ caps, servingSet, isTickFlow }: {
+function CapabilityChips({ caps, servingSet, isTickFlow, providerName }: {
   caps: CapabilityRoute[]
   servingSet: Set<string>
   isTickFlow: boolean
+  providerName: string
 }) {
   if (caps.length === 0) return <span className="text-[10px] text-muted/40">未声明能力</span>
   return (
     <div className="flex flex-wrap gap-1">
       {caps.map(cap => {
-        const servingNow = servingSet.has(cap.id)
+        const disabled = isFrontendDatasetDisabled(providerName, cap.id)
+        const servingNow = !disabled && servingSet.has(cap.id)
         const locked = isTickFlow && !cap.tf_available
         const cls = servingNow
           ? 'bg-accent/15 text-accent'
+          : disabled
+            ? 'bg-elevated/40 text-muted/50'
           : locked
             ? 'bg-warning/8 text-warning/70'
             : 'bg-elevated/60 text-muted/70'
         const title = servingNow
           ? `正在提供「${cap.label}」`
+          : disabled
+            ? `页面暂不开放 ${providerName} 的「${cap.label}」`
           : locked
             ? `TickFlow 需 ${tierReqText(cap.tf_tier)} · 当前档位未解锁`
             : `已适配「${cap.label}」`
@@ -571,7 +590,7 @@ function CapabilityChips({ caps, servingSet, isTickFlow }: {
           >
             {servingNow
               ? <Check className="h-2.5 w-2.5" />
-              : locked ? <Lock className="h-2.5 w-2.5" /> : null}
+              : locked && !disabled ? <Lock className="h-2.5 w-2.5" /> : null}
             {DATASET_LABEL[cap.id] || cap.id}
           </span>
         )
@@ -620,7 +639,9 @@ export function SettingsDataSourcesPanel({ highlight }: { highlight?: string } =
     financial: prefs.data?.financial_data_provider || 'tickflow',
   }
   const servingDatasets = (name: string) =>
-    Object.entries(effProvider).filter(([, v]) => v === name).map(([k]) => k)
+    Object.entries(effProvider)
+      .filter(([k, v]) => v === name && !isFrontendDatasetDisabled(name, k))
+      .map(([k]) => k)
   const servingSetOf = (name: string) => new Set(servingDatasets(name))
 
   const matrixCaps = matrix.data?.capabilities ?? []
@@ -818,7 +839,7 @@ export function SettingsDataSourcesPanel({ highlight }: { highlight?: string } =
 
                 {/* 能力芯片: 服务中 / 已适配 / 档位锁定 */}
                 <div className="mt-2">
-                  <CapabilityChips caps={chipCaps} servingSet={servingSet} isTickFlow={isTf} />
+                  <CapabilityChips caps={chipCaps} servingSet={servingSet} isTickFlow={isTf} providerName={item.name} />
                 </div>
 
                 {/* 底部: 状态提示 + 操作 */}
@@ -1032,6 +1053,7 @@ function PluginDetail({ plugin, isActive, matrixCaps, servingSet }: {
               caps={matrixCaps.filter(c => declared.has(c.id))}
               servingSet={servingSet}
               isTickFlow={false}
+              providerName={plugin.name}
             />
           </div>
         </div>

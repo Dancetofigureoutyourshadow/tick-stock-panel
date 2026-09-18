@@ -421,12 +421,59 @@ export function Screener() {
   // 表头排序（受控）：用户点击列则按该列；未点时下方按评分默认降序
   const { sort, toggle, sortRows } = useTableSort()
 
-  // 当前显示的行数据 (全部模式 或 单策略模式) + 失效行
+  // 当前候选行 (全部模式或单策略模式)，行情请求在截断策略条数前完成，保证按“至今”列排序时口径正确。
+  const candidateRows = useMemo(
+    () => showAll ? applyFilter(allRows, filter) : filteredRows,
+    [showAll, allRows, filteredRows, filter],
+  )
+  const currentPriceSourceRows = useMemo(
+    () => [...candidateRows, ...expiredRows],
+    [candidateRows, expiredRows],
+  )
+
+  // 策略结果的 close 是选中日期收盘价；当前价单独取最新快照，避免把实时价格写回历史结果缓存。
+  const currentPriceSymbols = useMemo(
+    () => [...new Set(currentPriceSourceRows.map((row: any) => row.symbol as string))].sort(),
+    [currentPriceSourceRows],
+  )
+  const currentPriceSymbolsKey = currentPriceSymbols.join(',')
+  const currentPricesQuery = useQuery({
+    queryKey: QK.screenerCurrentPrices(assetType, currentPriceSymbolsKey),
+    queryFn: () => api.screenerCurrentPrices(currentPriceSymbols, assetType),
+    enabled: currentPriceSymbols.length > 0,
+    staleTime: 0,
+    placeholderData: previousData => previousData,
+  })
+  const currentPriceMap = useMemo(
+    () => new Map((currentPricesQuery.data?.rows ?? []).map(row => [row.symbol, row.current_price])),
+    [currentPricesQuery.data?.rows],
+  )
+  const enrichedRows = useMemo(() => {
+    const map = new Map<string, any>()
+    for (const row of currentPriceSourceRows) {
+      const basePrice = typeof row.close === 'number' && Number.isFinite(row.close) && row.close > 0
+        ? row.close
+        : null
+      const latest = currentPriceMap.get(row.symbol)
+      const currentPrice = typeof latest === 'number' && Number.isFinite(latest) && latest > 0
+        ? latest
+        : null
+      const changeAmount = basePrice != null && currentPrice != null ? currentPrice - basePrice : null
+      const changePct = basePrice != null && changeAmount != null ? changeAmount / basePrice : null
+      map.set(row.symbol, {
+        ...row,
+        current_price: currentPrice,
+        selected_to_current_pct: changePct,
+        selected_to_current_amount: changeAmount,
+      })
+    }
+    return map
+  }, [currentPriceSourceRows, currentPriceMap])
+
+  // 当前显示的行数据 (全部模式或单策略模式) + 失效行
   const displayRows = useMemo(() => {
-    let rows = showAll
-      ? applyFilter(allRows, filter)
-      : filteredRows
-    // 排序：用户点了表头则按该列，否则默认评分降序
+    let rows = candidateRows.map((row: any) => enrichedRows.get(row.symbol) ?? row)
+    // 排序：用户点了表头则按该列；未点时默认评分降序
     rows = sort
       ? sortRows(rows, columns)
       : [...rows].sort((a, b) => (b.score ?? -Infinity) - (a.score ?? -Infinity))
@@ -436,13 +483,11 @@ export function Screener() {
     const mainRows = limit != null ? rows.slice(0, limit) : rows
 
     // 追加当前策略的失效行 (灰色)
-    if (!showAll && activeStrategy) {
-      if (expiredRows.length > 0) {
-        return [...mainRows, ...expiredRows]
-      }
+    if (!showAll && activeStrategy && expiredRows.length > 0) {
+      return [...mainRows, ...expiredRows.map((row: any) => enrichedRows.get(row.symbol) ?? row)]
     }
     return mainRows
-  }, [showAll, allRows, filteredRows, filter, activeStrategy, strategyLimits, expiredRows, sort, sortRows, columns])
+  }, [candidateRows, enrichedRows, showAll, activeStrategy, strategyLimits, expiredRows, sort, sortRows, columns])
 
   // 日k列是否启用 → 决定是否加载批量 kline 数据
   const candleColumn = useMemo(() =>

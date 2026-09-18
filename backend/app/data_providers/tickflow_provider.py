@@ -121,8 +121,10 @@ class TickFlowProvider:
             return pl.DataFrame()
         return pl.DataFrame(resp or [])
 
-    def get_depth_batch(self, symbols: list[str]) -> dict[str, dict]:
+    def get_depth5(self, symbols: list[str]) -> dict[str, dict]:
         if not symbols:
             return {}
         data = get_client().depth.batch(symbols)
         return data if isinstance(data, dict) else {}
+
+    get_depth_batch = get_depth5

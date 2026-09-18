@@ -6,13 +6,14 @@
   (默认 15:35: 盘后固定价 15:30 终止 + 供应商日线定稿缓冲, 见 preferences)
 
 盘后同步策略:
-  日 K: QuoteService 交易时段已实时落盘 → 有数据时跳过 batch,首次拉 1 年区间
+  日 K: 盘中可用实时快照，15:30 后必须用官方日K批量接口覆写当天分区
   除权因子: 从已有数据最新日期的下一天开始增量获取,避免重复拉取和计算
 """
 from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from datetime import date as _date
 from pathlib import Path
 
 import polars as pl
@@ -22,6 +23,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 from app.config import settings
 from app.indicators.pipeline import filter_halt_days, run_pipeline
+from app.market_time import cn_now, cn_today, is_after_official_daily_cutoff
 from app.services import index_sync, instrument_sync, kline_sync
 from app.services import preferences as _prefs
 from app.tickflow.capabilities import Cap, CapabilitySet
@@ -31,6 +33,11 @@ from app.tickflow.repository import KlineRepository
 logger = logging.getLogger(__name__)
 
 ProgressCb = Callable[..., None]
+
+
+def _should_refresh_today_from_quotes(now=None) -> bool:
+    """盘后定版后禁止再用实时快照覆写当天官方日K。"""
+    return not is_after_official_daily_cutoff(now or cn_now())
 
 
 def _prune_partial_enriched_partitions(daily_dir: Path, enriched_dir: Path) -> list[str]:
@@ -137,6 +144,12 @@ def _invalidate(table: str | None = None) -> None:
     invalidate_data_cache(table)
 
 
+def _minute_sync_error(symbols: list[str], written: int) -> str | None:
+    if symbols and written == 0:
+        return "sync_minute: no rows written"
+    return None
+
+
 def _resolve_universe(capset: CapabilitySet, repo=None) -> list[str]:
     """解析标的池 — 以 CN_Equity_A (沪深京A股 ~5522只) 为主。
 
@@ -227,7 +240,7 @@ def run_now(
     #   无任何数据 → batch K-line API 拉首次 1 年
     from datetime import date as _date, timedelta as _td, datetime as _dt
     latest_daily = repo.latest_daily_date()
-    today = _date.today()
+    today = cn_today()
     today_exists = latest_daily and latest_daily >= today
     new_daily_days = 0
 
@@ -258,6 +271,9 @@ def run_now(
     # 日K范围拉取的起点(分支3补缺口/分支4首次/数据修正); 实时增量/跳过时为 None。
     # 供 Step 1.5 除权因子回溯范围对齐: 范围拉取→用日K范围, 非范围→最近N天兜底。
     daily_range_start: _date | None = None
+    # 官方日K批量接口已覆写今天时，旧 enriched 即使收盘价恰好相同也必须重建，
+    # 否则高低价、成交量/额仍会保留盘中快照。
+    authoritative_daily_start: _date | None = None
 
     # A 股日K拉取开关(默认开);关闭时跳过日K同步,保留已有数据。
     # 数据修正(override_start_date)时即使关闭开关也强制拉取 — 修正就是来补数据的。
@@ -290,6 +306,7 @@ def run_now(
         and stale_day is None
         and capset.has(Cap.QUOTE_POOL)
         and _prefs.get_daily_data_provider() == "tickflow"
+        and _should_refresh_today_from_quotes()
     ):
         # 付费档:今天有数据(QuoteService 已落盘)→ 实时行情覆写,确保最新。
         # stale_day 非空时禁用本分支: "只刷今天"会让停机日的盘中快照永久留存,
@@ -322,6 +339,8 @@ def run_now(
             end_date=_dt.combine(today, _dt.min.time()),
             on_chunk_done=_daily_chunk_progress,
         )
+        if written_daily > 0 and start_date <= today:
+            authoritative_daily_start = today
         gap_days = (today - start_date).days
         new_daily_days = gap_days
         emit("sync_daily", 45, f"日K 完成,覆盖 {gap_days} 天")
@@ -342,6 +361,8 @@ def run_now(
             end_date=_dt.combine(today, _dt.min.time()),
             on_chunk_done=_daily_chunk_progress,
         )
+        if written_daily > 0 and start_date <= today:
+            authoritative_daily_start = today
         new_daily_days = 365
         emit("sync_daily", 45, "日K 完成")
         logger.info("sync_daily: [%s ~ %s] done", start_date, today)
@@ -350,7 +371,11 @@ def run_now(
     # 完整性修复时删除股票 enriched 的坏分区: 增量重算只算 enriched 里不存在
     # 的日期, 盘中快照日分区已存在(虽是错的), 不删永远不会被重算。删除后
     # Step 2 把这些日期当"新日期"重算 (剩余分区最近 60 天做历史前缀, 窗口 ≤5 天回看充足)。
-    repair_start = override_start_date if override_start_date is not None else stale_day
+    repair_candidates = [
+        d for d in (override_start_date, stale_day, authoritative_daily_start)
+        if d is not None
+    ]
+    repair_start = min(repair_candidates) if repair_candidates else None
     if repair_start is not None:
         try:
             from app.services.data_integrity import prune_enriched_partitions
@@ -664,8 +689,20 @@ def run_now(
         )
         minute_dir = repo.store.data_dir / "kline_minute"
         minute_cover_days = len(list(minute_dir.glob("date=*"))) if minute_dir.exists() else 0
-        emit("sync_minute", 93, f"分钟K完成,覆盖 {minute_cover_days} 天")
-        logger.info("sync_minute: [%s ~ %s] done, %d days", minute_start, today, minute_cover_days)
+        minute_error = _minute_sync_error(minute_symbols, written_minute)
+        if minute_error is not None:
+            emit("sync_minute", 93, "分钟K同步未写入任何数据")
+            logger.warning("sync_minute: [%s ~ %s] failed, no rows written", minute_start, today)
+            stage_errors.append(minute_error)
+        else:
+            emit(
+                "sync_minute", 93,
+                f"分钟K完成,写入 {written_minute} 行,本地共 {minute_cover_days} 天",
+            )
+            logger.info(
+                "sync_minute: [%s ~ %s] done, %d rows, %d local days",
+                minute_start, today, written_minute, minute_cover_days,
+            )
         _invalidate("minute")
     else:
         skipped.append("sync_minute")

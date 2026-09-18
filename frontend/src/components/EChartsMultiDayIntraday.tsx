@@ -3,6 +3,7 @@ import * as echarts from 'echarts'
 import type { ECharts, EChartsOption } from 'echarts'
 import type { MinuteKlineRow, MinuteKlineSession } from '@/lib/api'
 import type { IntradayChartMarker } from '@/components/EChartsIntraday'
+import type { ChartPriceLine } from '@/components/EChartsCandlestick'
 import { computeIntradayAverage, formatMinuteTime, FULL_DAY_TIMES, minuteBarDelta } from '@/lib/intraday-chart'
 import { useChartTheme } from '@/lib/theme'
 
@@ -20,7 +21,7 @@ interface Props {
   sessions: MinuteKlineSession[]
   height?: number
   onPriceDoubleClick?: (price: number, currentPrice: number) => void
-  priceLines?: { value: number; label?: string; color?: string }[]
+  priceLines?: ChartPriceLine[]
   markers?: IntradayChartMarker[]
 }
 
@@ -220,6 +221,7 @@ export function EChartsMultiDayIntraday({
     }
 
     const monitoredPrices = priceLines
+      .filter(line => !line.axisLabel)
       .map(line => line.value)
       .filter(value => Number.isFinite(value) && value > 0)
     const markerPrices = markers
@@ -255,17 +257,19 @@ export function EChartsMultiDayIntraday({
     }))
     const monitorLineData = priceLines.flatMap(line => {
       if (!Number.isFinite(line.value) || line.value <= 0) return []
+      if (line.axisLabel && (line.value < minPrice - padding || line.value > maxPrice + padding)) return []
       return [{
         yAxis: line.value,
         lineStyle: { color: line.color ?? theme.text, type: 'dashed', width: 1, opacity: 0.92 },
         label: {
-          show: !!line.label,
-          formatter: line.label ?? '',
-          position: 'insideEndTop',
+          show: !!line.label || !!line.axisLabel,
+          formatter: line.axisLabel ? line.value.toFixed(2) : line.label ?? '',
+          position: line.axisLabel ? 'start' : 'insideEndTop',
+          distance: line.axisLabel ? 8 : 5,
           color: line.color ?? theme.text,
           backgroundColor: theme.tooltipBg,
           borderRadius: 4,
-          padding: [2, 6],
+          padding: line.axisLabel ? [2, 0] : [2, 6],
           fontSize: 10,
           fontFamily: 'JetBrains Mono, monospace',
         },

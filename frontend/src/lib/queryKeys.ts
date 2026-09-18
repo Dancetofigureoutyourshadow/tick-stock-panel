@@ -51,6 +51,7 @@ export const QK = {
   screenerCachedSummary: ['screener-cached', 'summary'] as const,
   screenerCachedResult: (strategyId: string, asOf?: string, ext?: string) => ['screener-cached', 'strategy', strategyId, asOf ?? '', ext ?? ''] as const,
   screenerCached:       (asOf?: string, ext?: string) => ['screener-cached', 'all', asOf ?? '', ext ?? ''] as const,
+  screenerCurrentPrices: (assetType: string, symbols: string) => ['screener-current-prices', assetType, symbols] as const,
   screenerKlineBatch:   (symbols: string) => ['screener-kline-batch', symbols] as const,
   marketSnapshot:       ['market-snapshot'] as const,
   limitLadder:          (asOf?: string) => ['limit-ladder', asOf] as const,
@@ -85,13 +86,14 @@ export const QK = {
   // Kline
   kline:                (symbol: string, start: string, end: string, extColumns?: string, period = 'day') =>
                            ['kline', symbol, start, end, extColumns ?? '', period] as const,
+  klineLatest:          (symbol: string) => ['kline-latest', symbol] as const,
   stockLevels:          (symbol: string, days?: number) => ['stock-levels', symbol, days ?? 120] as const,
   klineMinute:          (symbol: string, date: string) =>
                              ['kline-minute', symbol, date] as const,
   klineMinuteRange:     (symbol: string, days: number, freq = '1m') =>
                              ['kline-minute-range', symbol, days, freq] as const,
-  chanTrainingRecords:  ['chan-training-records'] as const,
-  chanTrainingRecord:   (id: string) => ['chan-training-record', id] as const,
+  blindTrainingRecords: ['blind-training-records'] as const,
+  blindTrainingRecord:  (id: string) => ['blind-training-record', id] as const,
   indexDaily:           (symbol: string, start: string, end: string) =>
                              ['index-daily', symbol, start, end] as const,
   indexMinute:          (symbol: string, date: string) =>
@@ -104,6 +106,7 @@ export const QK = {
   // Custom Signals
   customSignals:        ['custom-signals'] as const,
   customSignalsOptions: ['custom-signals-options'] as const,
+  internalSignals:      ['internal-signals'] as const,
 
   // Monitor (监控规则 + 触发记录)
   monitorRules:         ['monitor-rules'] as const,
@@ -144,13 +147,36 @@ export const QK = {
 // 且在 monitor "重算" 窗口内读到空结果, 造成策略列表闪烁 (变 0 → 空失效 → 又出现)。
 
 export const SSE_INVALIDATE_PREFIXES = [
-  // 精确前缀: 只命中自选页的实时数据 (quotes/enriched)。不能用宽泛的 'watchlist' ——
+  // 精确前缀: 只命中自选/持仓页的实时数据 (quotes/enriched/portfolio)。不能用宽泛的 'watchlist' ——
   // 会误伤 ['watchlist'] (自选列表) 和 ['watchlist-groups'] (分组配置, 只随手动操作变化)。
   // 旧设置里的 'watchlist' 单开关由 useQuoteStream 兼容读取。
   'watchlist-quotes',
   'watchlist-enriched',
+  'portfolio-positions',
+  'portfolio-summary',
   'quote-status',
+  'screener-current-prices',
   'index-quotes',
   'overview-market',
   'limit-ladder',
+] as const
+
+// 盘后管道或手动刷新替换日线快照后需要失效的查询。它与盘中 quotes_updated
+// 分开，避免秒级行情轮询反复拉取历史日K，同时保证关闭实时行情时也能拿到定版数据。
+export const MARKET_DATA_INVALIDATE_PREFIXES = [
+  'data-status',
+  'overview-market',
+  'index-quotes',
+  'index-daily',
+  'watchlist-enriched',
+  'watchlist-performance',
+  'kline',
+  'kline-minute',
+  'kline-minute-range',
+  'screener-cached',
+  'screener-kline-batch',
+  'market-snapshot',
+  'limit-ladder',
+  'stock-levels',
+  'rps-rotation',
 ] as const

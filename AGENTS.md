@@ -10,3 +10,16 @@
 - 保持实现简单、改动范围最小，不处理无关问题。
 - 不覆盖工作区已有修改，不虚构测试或审查结果。
 - 以实际验证结果作为完成标准。
+
+## 已确定最终版策略（冻结）
+
+以下 `generated/` 目录中的策略文件已经由用户确认，属于最终版本。除非用户明确要求解冻并指定新的版本号，否则禁止修改、重命名、替换、格式化或自动重生成这些文件。后续优化必须新建更高版本文件（例如 `v4`），不得回写以下冻结版本：
+
+- `generated/custom_sequoia_high_tight_flag_v2.py`
+- `generated/custom_sequoia_high_tight_flag_v3.py`
+- `generated/custom_sequoia_limit_up_shakeout_v2.py`
+- `generated/custom_sequoia_ma_volume_v2.py`
+- `generated/custom_sequoia_private_placement_v2.py`
+- `generated/custom_sequoia_rps_breakout_v2.py`
+- `generated/custom_sequoia_turtle_trade_v2.py`
+- `generated/custom_sequoia_uptrend_limit_down_v2.py`

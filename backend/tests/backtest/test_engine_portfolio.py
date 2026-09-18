@@ -122,6 +122,8 @@ def test_failed_open_exit_keeps_slot_and_blocks_replacement_buy():
     assert result.stats["execution"]["sell_limit_down"] == 1
     assert result.stats["execution"]["pending_exit"] == 1
     assert result.stats["execution"]["buy_no_slot"] >= 1
+    execution = result.stats["execution"]
+    assert execution["buy_signal_candidates"] >= execution["buy_pre_slot_candidates"] >= execution["buy_filled"]
     a_trade = next(t for t in result.trades if t.symbol == "A")
     assert a_trade.blocked_exit_days == 1
     assert a_trade.exit_reason == "signal"

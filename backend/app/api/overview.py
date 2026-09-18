@@ -315,29 +315,38 @@ def _top_rows(rows: list[dict], key: str, descending: bool, limit: int = 8) -> l
 
 
 def _pct_band_rows(values: list[float]) -> list[dict]:
-    bands = [
-        ("<-5%", None, -0.05),
-        ("-5~-3%", -0.05, -0.03),
-        ("-3~-1%", -0.03, -0.01),
-        ("-1~0%", -0.01, 0),
-        ("0~1%", 0, 0.01),
-        ("1~3%", 0.01, 0.03),
-        ("3~5%", 0.03, 0.05),
-        (">5%", 0.05, None),
-    ]
+    labels = [">10%", "10~7", "7~5", "5~3", "3~0", "0", "0~3", "3~5", "5~7", "7~10", ">10%"]
     total = len(values) or 1
-    out = []
-    for label, low, high in bands:
-        count = 0
-        for v in values:
-            if low is None and v < high:
-                count += 1
-            elif high is None and v >= low:
-                count += 1
-            elif low is not None and high is not None and low <= v < high:
-                count += 1
-        out.append({"label": label, "count": count, "pct": count / total * 100})
-    return out
+    counts = [0] * len(labels)
+    for raw in values:
+        v = round(raw * 100, 2) / 100
+        if v < -0.10:
+            idx = 0
+        elif v < -0.07:
+            idx = 1
+        elif v < -0.05:
+            idx = 2
+        elif v < -0.03:
+            idx = 3
+        elif v < 0:
+            idx = 4
+        elif v == 0:
+            idx = 5
+        elif v <= 0.03:
+            idx = 6
+        elif v <= 0.05:
+            idx = 7
+        elif v <= 0.07:
+            idx = 8
+        elif v <= 0.10:
+            idx = 9
+        else:
+            idx = 10
+        counts[idx] += 1
+    return [
+        {"label": label, "count": count, "pct": count / total * 100}
+        for label, count in zip(labels, counts)
+    ]
 
 
 def _build_overview(request: Request, as_of: date | None = None) -> dict:

@@ -76,6 +76,11 @@ export function routeCapUsable(matrix: CapabilityMatrix | undefined, id: RouteCa
   return routeCap(matrix, id)?.usable
 }
 
+/** 页面侧暂不开放的提供方能力。后端仍保留原始能力声明，避免改变数据源契约。 */
+export function isFrontendDatasetDisabled(provider: string | undefined, dataset: string): boolean {
+  return provider === 'mootdx' && dataset === 'full_minute'
+}
+
 /** 生效源非 TickFlow 且当前可用时返回其展示名 (卡片徽章显示实际数据源), 否则 null */
 export function routeProviderDisplay(matrix: CapabilityMatrix | undefined, id: RouteCapId): string | null {
   const cap = routeCap(matrix, id)

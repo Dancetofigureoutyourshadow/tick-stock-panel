@@ -66,7 +66,7 @@ def test_custom_depth_failure_does_not_fall_back_to_tickflow(monkeypatch):
     )
     monkeypatch.setattr("app.data_providers.custom.get_provider", lambda name: provider)
     monkeypatch.setattr(
-        "app.tickflow.client.get_client",
+        "app.data_providers.tickflow_provider.get_client",
         lambda: (_ for _ in ()).throw(AssertionError("must not fall back to TickFlow")),
     )
 
@@ -129,6 +129,10 @@ def test_invalid_custom_depth_contract_fails_closed(monkeypatch):
     )
     get_provider = MagicMock()
     monkeypatch.setattr("app.data_providers.custom.get_provider", get_provider)
+    monkeypatch.setattr(
+        "app.data_providers.tickflow_provider.get_client",
+        lambda: (_ for _ in ()).throw(AssertionError("must not fall back to TickFlow")),
+    )
 
     assert _service()._call_depth_batch(["A"]) == {}
     get_provider.assert_not_called()

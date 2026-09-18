@@ -6,6 +6,7 @@ import { QK } from '@/lib/queryKeys'
 import { klineMinuteQueryOptions } from '@/lib/kline'
 import { EChartsIntraday, type DailyOhlc, type IntradayChartMarker } from '@/components/EChartsIntraday'
 import { alignMinutePricesToDailyClose } from '@/lib/intraday-chart'
+import type { ChartPriceLine } from '@/components/EChartsCandlestick'
 
 interface Props {
   symbol: string
@@ -17,7 +18,7 @@ interface Props {
   onPriceDoubleClick?: (price: number, currentPrice: number) => void
   currentPrice?: number
   dailyOhlc?: DailyOhlc
-  priceLines?: { value: number; label?: string; color?: string }[]
+  priceLines?: ChartPriceLine[]
   markers?: IntradayChartMarker[]
   /** 是否在分时信息栏展示交易日期；盲训场景可关闭。 */
   showDate?: boolean

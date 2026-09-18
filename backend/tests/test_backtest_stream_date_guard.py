@@ -67,3 +67,19 @@ def test_valid_dates_still_accepted(client, monkeypatch, path, extra):
     resp = client.get(path, params=params)
     assert resp.status_code == 200, resp.text
     assert "event: error" in resp.text
+
+
+def test_strategy_stream_accepts_regime_position_pct(client, monkeypatch):
+    """仓位档位参数必须能进入 SSE 任务键和配置构造, 不能触发 NameError。"""
+    monkeypatch.setattr(settings, "backtest_range_guard", True)
+    resp = client.get(
+        "/api/backtest/strategy/stream",
+        params={
+            "strategy_id": "ma_cross",
+            "start": "2020-01-01",
+            "end": "2026-09-04",
+            "regime_position_pct": '{"weak":0.5}',
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert "event: error" in resp.text

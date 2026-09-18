@@ -17,7 +17,7 @@ interface Props {
   refetchIntervalMs?: number
   showDepth5?: boolean
   onPriceDoubleClick?: (price: number, currentPrice: number) => void
-  priceLines?: { value: number; label?: string; color?: string }[]
+  priceLines?: import('@/components/EChartsCandlestick').ChartPriceLine[]
   markers?: IntradayChartMarker[]
 }
 

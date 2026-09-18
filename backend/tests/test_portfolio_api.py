@@ -1,6 +1,7 @@
 """持仓账户 HTTP 契约测试。"""
 from __future__ import annotations
 
+from decimal import Decimal
 from types import SimpleNamespace
 
 import polars as pl
@@ -37,6 +38,21 @@ class _StrategyEngine:
         )
 
 
+def test_normalise_portfolio_quote_computes_missing_today_change() -> None:
+    quote = portfolio_api._normalise_quote(
+        {"prev_close": "10"},
+        Decimal("9.5"),
+        "realtime",
+    )
+
+    assert quote == {
+        "prev_close": "10",
+        "change_amount": "-0.5",
+        "change_pct": -0.05,
+        "price_source": "realtime",
+    }
+
+
 def _client(tmp_path, monkeypatch) -> TestClient:
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     monkeypatch.setattr(
@@ -51,7 +67,13 @@ def _client(tmp_path, monkeypatch) -> TestClient:
     app.state.strategy_engine = _StrategyEngine()
     app.state.quote_service = SimpleNamespace(
         get_quotes_compat=lambda: pl.DataFrame(
-            {"symbol": ["600001.SH"], "last_price": [10.0]}
+            {
+                "symbol": ["600001.SH"],
+                "last_price": [10.0],
+                "prev_close": [9.5],
+                "change_amount": [0.5],
+                "change_pct": [0.5 / 9.5],
+            }
         )
     )
     app.state.repo = SimpleNamespace(
@@ -63,6 +85,9 @@ def _client(tmp_path, monkeypatch) -> TestClient:
                 {
                     "symbol": ["600001.SH", "600002.SH"],
                     "raw_close": [9.8, 20.0],
+                    "prev_close": [9.0, 19.0],
+                    "change_amount": [0.8, 1.0],
+                    "change_pct": [0.8 / 9.0, 1.0 / 19.0],
                 }
             ),
             None,
@@ -117,6 +142,10 @@ def test_portfolio_http_cash_preview_buy_and_positions(tmp_path, monkeypatch) ->
     positions = client.get("/api/portfolio/positions?as_of=2026-09-08").json()["positions"]
     assert positions[0]["available_qty"] == 1000
     assert positions[0]["source_strategy_id"] == "s1"
+    assert positions[0]["prev_close"] == "9.5"
+    assert positions[0]["change_amount"] == "0.5"
+    assert positions[0]["change_pct"] == 0.5 / 9.5
+    assert positions[0]["price_source"] == "realtime"
 
     # 路由输入大小写不应绕过未平仓批次的二次确认保护。
     guarded = client.delete("/api/watchlist/600001.sh")
@@ -146,6 +175,47 @@ def test_portfolio_http_cash_preview_buy_and_positions(tmp_path, monkeypatch) ->
     assert sold.status_code == 200, sold.text
     assert sold.json()["trade"]["quantity"] == 1000
     assert sold.json()["position"]["status"] == "closed"
+
+
+def test_portfolio_positions_fall_back_and_fail_closed_for_today_change(tmp_path, monkeypatch) -> None:
+    client = _client(tmp_path, monkeypatch)
+    client.app.state.quote_service = SimpleNamespace(
+        get_quotes_compat=lambda: pl.DataFrame(
+            {
+                "symbol": ["600001.SH"],
+                "last_price": [10.0],
+            }
+        )
+    )
+    client.app.state.repo.get_enriched_latest = lambda: (
+        pl.DataFrame(
+            {
+                "symbol": ["600001.SH", "600002.SH"],
+                "raw_close": [10.5, 20.0],
+                "prev_close": [10.0, None],
+            }
+        ),
+        None,
+    )
+    client.post("/api/portfolio/cash", json={"type": "deposit", "amount": "100000"})
+    bought = client.post(
+        "/api/portfolio/buys",
+        json={
+            "symbol": "600002.SH",
+            "strategy_id": "s1",
+            "price": "20",
+            "quantity": 300,
+            "trade_date": "2026-09-07",
+        },
+    )
+    assert bought.status_code == 200, bought.text
+
+    # 600002 has a price but no previous close, so today's change is unknown.
+    positions = client.get("/api/portfolio/positions?as_of=2026-09-08").json()["positions"]
+    assert positions[0]["price_source"] == "latest_close"
+    assert positions[0]["prev_close"] is None
+    assert positions[0]["change_amount"] is None
+    assert positions[0]["change_pct"] is None
 
 
 def test_preview_rejects_missing_strategy_basis(tmp_path, monkeypatch) -> None:

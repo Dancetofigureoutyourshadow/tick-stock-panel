@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
+from pathlib import Path
+from threading import RLock
 from unittest.mock import MagicMock
 
 import polars as pl
@@ -42,9 +44,27 @@ def _minute_rows(count: int = 240) -> pl.DataFrame:
     )
 
 
+def _partial_close_rows() -> pl.DataFrame:
+    morning = [datetime(2026, 1, 15, 9, 30) + timedelta(minutes=i) for i in range(120)]
+    afternoon = [datetime(2026, 1, 15, 13, 0) + timedelta(minutes=i) for i in range(99)]
+    rows = _minute_rows(219)
+    return rows.with_columns(pl.Series("datetime", morning + afternoon))
+
+
+def _full_close_rows() -> pl.DataFrame:
+    morning = [datetime(2026, 1, 15, 9, 30) + timedelta(minutes=i) for i in range(120)]
+    afternoon = [datetime(2026, 1, 15, 13, 0) + timedelta(minutes=i) for i in range(120)]
+    rows = _minute_rows(240)
+    return rows.with_columns(pl.Series("datetime", morning + afternoon))
+
+
 class _DetailRepo:
-    def __init__(self, minute: pl.DataFrame | None = None) -> None:
+    def __init__(self, minute: pl.DataFrame | None = None, data_dir: Path | None = None) -> None:
         self.minute = minute if minute is not None else _minute_rows()
+        self.store = MagicMock()
+        self.store.data_dir = data_dir
+        self._write_lock = RLock()
+        self.rebuild_view = MagicMock()
 
     def resolve_asset_type(self, symbol: str) -> str:
         return "stock"
@@ -191,6 +211,57 @@ def test_custom_minute_source_remains_available_without_tickflow_capability(monk
     assert response.json()["source"] == "live"
     provider.get_minute.assert_called_once()
     get_client.assert_not_called()
+
+
+def test_post_close_partial_local_minutes_refetch_when_last_bar_is_early(monkeypatch):
+    provider = MagicMock()
+    provider.get_minute.return_value = _full_close_rows()
+    write_minute = MagicMock(return_value=240)
+    monkeypatch.setattr(kline, "cn_now", lambda: datetime(2026, 1, 15, 15, 31))
+    monkeypatch.setattr(kline, "in_continuous_session", lambda: False)
+    monkeypatch.setattr(kline.kline_sync, "_write_minute_partition", write_minute)
+    monkeypatch.setattr("app.services.preferences.get_minute_data_provider", lambda: "custom")
+    monkeypatch.setattr(
+        "app.data_providers.custom.provider_has_dataset", lambda name, dataset: True
+    )
+    monkeypatch.setattr("app.data_providers.custom.get_provider", lambda name: provider)
+
+    repo = _DetailRepo(_partial_close_rows(), Path("test-data"))
+    response = _client(repo).get(
+        "/api/kline/minute",
+        params={"symbol": _SYMBOL, "date": str(_TRADE_DATE)},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["source"] == "live"
+    assert len(response.json()["rows"]) == 240
+    provider.get_minute.assert_called_once()
+    stored = write_minute.call_args.args[0]
+    assert stored.filter(pl.col("symbol") == _SYMBOL).height == 240
+    assert stored["datetime"].max() >= datetime(2026, 1, 15, 14, 50)
+    assert write_minute.call_args.args[1] == Path("test-data/kline_minute")
+    repo.rebuild_view.assert_called_once_with("kline_minute")
+
+
+def test_failed_post_close_refetch_keeps_partial_local_minutes(monkeypatch):
+    provider = MagicMock()
+    provider.get_minute.return_value = pl.DataFrame()
+    monkeypatch.setattr(kline, "cn_now", lambda: datetime(2026, 1, 15, 15, 31))
+    monkeypatch.setattr(kline, "in_continuous_session", lambda: False)
+    monkeypatch.setattr("app.services.preferences.get_minute_data_provider", lambda: "custom")
+    monkeypatch.setattr(
+        "app.data_providers.custom.provider_has_dataset", lambda name, dataset: True
+    )
+    monkeypatch.setattr("app.data_providers.custom.get_provider", lambda name: provider)
+
+    response = _client(_DetailRepo(_partial_close_rows())).get(
+        "/api/kline/minute",
+        params={"symbol": _SYMBOL, "date": str(_TRADE_DATE)},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["source"] == "local"
+    assert len(response.json()["rows"]) == 219
 
 
 def test_failed_custom_source_does_not_fall_back_to_unsupported_tickflow(monkeypatch):

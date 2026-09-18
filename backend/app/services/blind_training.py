@@ -1,4 +1,4 @@
-"""Interactive single-stock Chan theory training service."""
+"""Interactive single-stock blind trading training service."""
 from __future__ import annotations
 
 import hashlib
@@ -6,15 +6,13 @@ import json
 import math
 import random
 import threading
-import time
 import uuid
 from datetime import date, datetime, timedelta
 from typing import Any
 
 from app.market_time import cn_today
-from app.services.chan_market_data import validate_kline_quality
-from app.services.chan_structure import IncrementalChanAnalyzer
 from app.services.json_report_store import JsonReportStore
+from app.services.kline_quality import validate_kline_quality
 
 CONTEXT_BARS = 60
 DECISION_BARS = 60
@@ -37,7 +35,6 @@ RECORD_DETAIL_FIELDS = (
     "end_date",
     "bars",
     "actions",
-    "structure_snapshots",
     "equity_curve",
     "summary",
     "cost_model",
@@ -45,12 +42,6 @@ RECORD_DETAIL_FIELDS = (
     "data_version",
     "training_plan",
     "replayed_from",
-    "chan_algorithm_source",
-    "chan_engine",
-    "chan_signal_profile",
-    "chan_signal_profile_id",
-    "chan_event_profile",
-    "chan_segments_source",
     "created_at",
     "finished_at",
     "id",
@@ -61,7 +52,6 @@ RECORD_LIST_FIELDS = tuple(
     if field not in {
         "bars",
         "actions",
-        "structure_snapshots",
         "equity_curve",
         "training_plan",
     }
@@ -69,8 +59,8 @@ RECORD_LIST_FIELDS = tuple(
 
 _sessions: dict[str, dict[str, Any]] = {}
 _lock = threading.RLock()
-_record_store = JsonReportStore("chan_training_records.json", 200, "ctr")
-_report_store = JsonReportStore("chan_training_reports.json", 200, "ctar")
+_record_store = JsonReportStore("blind_training_records.json", 200, "btr")
+_report_store = JsonReportStore("blind_training_reports.json", 200, "btar")
 
 
 def _date_text(value: Any) -> str:
@@ -276,14 +266,13 @@ def _new_state(
         "cash": INITIAL_CAPITAL,
         "lots": [],
         "actions": [],
-        "structure_snapshots": [],
         "equity_curve": [],
         "peak_equity": INITIAL_CAPITAL,
         "max_drawdown": 0.0,
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "cost_model": costs,
         "analysis": {
-            "analysis_mode": "daily_recursive",
+            "analysis_mode": "blind_test",
             "daily_quality": validate_kline_quality(rows),
             "data_warnings": [],
         },
@@ -328,7 +317,7 @@ def _visible_rows(state: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _public_analysis(state: dict[str, Any], *, full: bool = False) -> dict[str, Any]:
     analysis = {
-        "analysis_mode": "daily_recursive",
+        "analysis_mode": "blind_test",
         "daily_quality": state.get("analysis", {}).get("daily_quality"),
         "data_warnings": state.get("analysis", {}).get("data_warnings", []),
     }
@@ -343,7 +332,7 @@ def _public_analysis(state: dict[str, Any], *, full: bool = False) -> dict[str, 
 def _record_daily_analysis(record: dict[str, Any]) -> dict[str, Any]:
     stored = record.get("analysis", {})
     return {
-        "analysis_mode": "daily_recursive",
+        "analysis_mode": "blind_test",
         "daily_quality": stored.get("daily_quality")
         or validate_kline_quality(record.get("bars", [])),
         "data_warnings": [],
@@ -358,42 +347,8 @@ def _position(state: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _combined_structure_snapshot(
-    state: dict[str, Any],
-    *,
-    include_replay: bool = False,
-) -> dict[str, Any]:
-    runtime = state["_chan_runtime"]
-    return runtime.snapshot(include_replay=include_replay)
-
-
-def _capture_structure(state: dict[str, Any]) -> dict[str, Any]:
-    runtime = state.get("_chan_runtime")
-    if not isinstance(runtime, IncrementalChanAnalyzer):
-        runtime = IncrementalChanAnalyzer(level="1d")
-        state["_chan_runtime"] = runtime
-        state["_chan_primary_cursor"] = -1
-
-    primary_cursor = int(state.get("_chan_primary_cursor", -1))
-    for source_index in range(primary_cursor + 1, state["cursor"] + 1):
-        runtime.update_primary(state["rows"][source_index], source_index)
-        state["_chan_primary_cursor"] = source_index
-
-    chan = _combined_structure_snapshot(state)
-    revealed = max(0, state["cursor"] - state["start_index"])
-    snapshots = state["structure_snapshots"]
-    if not snapshots or snapshots[-1]["revealed"] != revealed:
-        snapshots.append({
-            "revealed": revealed,
-            "date": _current_row(state)["date"],
-            "structure": chan,
-        })
-    return chan
-
-
 def _snapshot(state: dict[str, Any], include_rows: bool = True) -> dict[str, Any]:
     rows = _visible_rows(state)
-    chan = _capture_structure(state)
     out = {
         "id": state["id"],
         "status": state["status"],
@@ -411,7 +366,6 @@ def _snapshot(state: dict[str, Any], include_rows: bool = True) -> dict[str, Any
         "analysis": _public_analysis(state),
         "replayed_from": state.get("replayed_from"),
         "actions": state["actions"],
-        "chan": chan,
     }
     if include_rows:
         out["rows"] = rows
@@ -419,21 +373,6 @@ def _snapshot(state: dict[str, Any], include_rows: bool = True) -> dict[str, Any
 
 
 def _record_action(state: dict[str, Any], action: dict[str, Any]) -> None:
-    runtime = state.get("_chan_runtime")
-    if isinstance(runtime, IncrementalChanAnalyzer):
-        structure = _combined_structure_snapshot(state)
-        current_date = str(_current_row(state)["date"])
-        action["chan_context"] = {
-            "signals": [
-                point for point in structure.get("points", [])
-                if str(point.get("date", ""))[:10] == current_date[:10]
-            ],
-            "matched_events": [
-                event for event in structure.get("events", [])
-                if str(event.get("date", ""))[:10] == current_date[:10]
-            ],
-            "event_profile": structure.get("event_profile", []),
-        }
     state["actions"].append(action)
     _mark_equity(state)
 
@@ -539,11 +478,6 @@ def _summary(state: dict[str, Any]) -> dict[str, Any]:
 
 
 def _saved_record(state: dict[str, Any]) -> dict[str, Any]:
-    latest_structure = (
-        state["structure_snapshots"][-1].get("structure", {})
-        if state["structure_snapshots"]
-        else {}
-    )
     visible_bars = _visible_rows(state)
     plan_row_count = min(len(state["rows"]), state["decision_end"] + 2)
     plan_rows = state["rows"][:plan_row_count]
@@ -560,13 +494,12 @@ def _saved_record(state: dict[str, Any]) -> dict[str, Any]:
         "end_date": _current_row(state)["date"],
         "bars": visible_bars,
         "actions": state["actions"],
-        "structure_snapshots": state["structure_snapshots"],
         "equity_curve": state["equity_curve"],
         "summary": _summary(state),
         "cost_model": state["cost_model"],
         "analysis": analysis,
         "data_version": {
-            "schema": "chan-training-data",
+            "schema": "blind-training-data",
             "training_rows_sha256": training_rows_sha256,
             "visible_rows_sha256": visible_rows_sha256,
             "training_row_count": len(plan_rows),
@@ -576,7 +509,7 @@ def _saved_record(state: dict[str, Any]) -> dict[str, Any]:
             "visible_last_bar_at": str(visible_bars[-1]["date"]) if visible_bars else None,
         },
         "training_plan": {
-            "schema": "chan-training-plan",
+            "schema": "blind-training-plan",
             "symbol": state["symbol"],
             "name": state["name"],
             "seed": state["seed"],
@@ -590,12 +523,6 @@ def _saved_record(state: dict[str, Any]) -> dict[str, Any]:
             "cost_model": state["cost_model"],
         },
         "replayed_from": state.get("replayed_from"),
-        "chan_algorithm_source": latest_structure.get("algorithm_source"),
-        "chan_engine": latest_structure.get("engine"),
-        "chan_signal_profile": latest_structure.get("signal_profile", {}),
-        "chan_signal_profile_id": latest_structure.get("signal_profile_id"),
-        "chan_event_profile": latest_structure.get("event_profile", []),
-        "chan_segments_source": latest_structure.get("segments_source"),
         "created_at": state["created_at"],
         "finished_at": datetime.now().isoformat(timespec="seconds"),
     }
@@ -678,7 +605,7 @@ def replay_record(
     """Create a fresh session from the exact serialized historical question."""
     record = _stored_record(training_id)
     plan = record.get("training_plan")
-    if not isinstance(plan, dict) or plan.get("schema") != "chan-training-plan":
+    if not isinstance(plan, dict) or plan.get("schema") != "blind-training-plan":
         raise ValueError("该训练记录不包含可重练方案")
     row_count = int(plan.get("row_count") or 0)
     visible = [dict(row) for row in record.get("bars", [])]
@@ -713,70 +640,6 @@ def replay_record(
     return _snapshot(state)
 
 
-def validate_random_samples(repo: Any, count: int = 5) -> dict[str, Any]:
-    """Analyze random local stocks without creating sessions or persisted records."""
-    instruments = repo.get_instruments()
-    if instruments.is_empty() or "symbol" not in instruments.columns:
-        raise ValueError("暂无可校验股票标的")
-    candidates = [
-        (str(item.get("symbol") or "").strip(), str(item.get("name") or item.get("symbol") or "").strip())
-        for item in instruments.select([c for c in ["symbol", "name"] if c in instruments.columns]).to_dicts()
-    ]
-    candidates = [item for item in candidates if item[0] and _is_eligible_name(item[1])]
-    random.SystemRandom().shuffle(candidates)
-    results: list[dict[str, Any]] = []
-    started = time.perf_counter()
-    for symbol, name in candidates:
-        if len(results) >= count:
-            break
-        rows = _load_rows(repo, symbol)
-        if len(rows) < MIN_BARS:
-            continue
-        sample_started = time.perf_counter()
-        runtime = IncrementalChanAnalyzer(level="1d")
-        for source_index, row in enumerate(rows):
-            runtime.update_primary(row, source_index)
-        structure = runtime.snapshot()
-        dates = {str(row["date"]) for row in rows}
-        issues: list[str] = []
-        for key in ("fractals", "points"):
-            if any(str(item["date"])[:10] not in dates for item in structure[key]):
-                issues.append(f"{key}: annotation date missing from source bars")
-        for key in ("strokes", "segments", "centers"):
-            if any(
-                str(item["start_date"])[:10] not in dates
-                or str(item["end_date"])[:10] not in dates
-                for item in structure[key]
-            ):
-                issues.append(f"{key}: range date missing from source bars")
-        if any(
-            int(item.get("confirmed_at", 0)) >= len(rows)
-            for key in ("fractals", "strokes", "segments", "centers", "points")
-            for item in structure[key]
-        ):
-            issues.append("future confirmation index")
-        results.append({
-            "symbol": symbol,
-            "name": name,
-            "bars": len(rows),
-            "elapsed_ms": round((time.perf_counter() - sample_started) * 1000, 2),
-            "summary": structure["summary"],
-            "quality": validate_kline_quality(rows),
-            "issues": issues,
-            "passed": not issues,
-        })
-    if not results:
-        raise ValueError("暂无满足校验条件的本地日 K 数据")
-    return {
-        "requested": count,
-        "checked": len(results),
-        "passed": sum(1 for item in results if item["passed"]),
-        "elapsed_ms": round((time.perf_counter() - started) * 1000, 2),
-        "persisted": False,
-        "results": results,
-    }
-
-
 def get_session(session_id: str) -> dict[str, Any]:
     with _lock:
         state = _sessions.get(session_id)
@@ -800,19 +663,6 @@ def discard_session(session_id: str) -> bool:
             raise ValueError("只能放弃未结束的训练")
         _sessions.pop(session_id, None)
         return True
-
-
-def session_diagnostics(session_id: str) -> dict[str, Any]:
-    with _lock:
-        state = get_session(session_id)
-        _capture_structure(state)
-        return {
-            "training_id": state["id"],
-            "structure": _combined_structure_snapshot(state, include_replay=True),
-            "data_quality": {
-                "daily": _public_analysis(state).get("daily_quality"),
-            },
-        }
 
 
 def next_bar(session_id: str) -> dict[str, Any]:
@@ -849,16 +699,14 @@ def finish_session(session_id: str) -> dict[str, Any]:
             if _available_shares(state) < _shares(state):
                 state["cursor"] = min(state["cursor"] + 1, len(state["rows"]) - 1)
                 _mark_equity(state)
-                _capture_structure(state)
             _sell(state, 100.0, trigger="auto_liquidation")
         state["status"] = "finished"
         record = _saved_record(state)
         saved = _record_store.save_report(record)
-        current_structure = _combined_structure_snapshot(state)
         _sessions.pop(session_id, None)
         return {
             "session": _snapshot(state),
-            "record": {**saved, "current_structure": current_structure},
+            "record": saved,
         }
 
 
@@ -870,38 +718,6 @@ def list_records() -> list[dict[str, Any]]:
         }
         for record in _record_store.list_reports()
     ]
-
-
-def _recompute_record_structure(
-    record: dict[str, Any],
-    *,
-    include_replay: bool = False,
-    repo: Any | None = None,
-) -> dict[str, Any]:
-    runtime = IncrementalChanAnalyzer(level="1d")
-    for source_index, row in enumerate(record.get("bars", [])):
-        runtime.update_primary(row, source_index)
-    return runtime.snapshot(include_replay=include_replay)
-
-
-def _recompute_action_structures(record: dict[str, Any]) -> list[dict[str, Any]]:
-    action_dates = {
-        str(action.get("date", ""))[:10]
-        for action in record.get("actions", [])
-        if action.get("date")
-    }
-    if not action_dates:
-        return []
-    runtime = IncrementalChanAnalyzer(level="1d")
-    snapshots: list[dict[str, Any]] = []
-    captured_dates: set[str] = set()
-    for source_index, row in enumerate(record.get("bars", [])):
-        runtime.update_primary(row, source_index)
-        date_text = str(row.get("date", ""))[:10]
-        if date_text in action_dates and date_text not in captured_dates:
-            snapshots.append({"date": date_text, "structure": runtime.snapshot()})
-            captured_dates.add(date_text)
-    return snapshots
 
 
 def get_record(training_id: str, repo: Any | None = None) -> dict[str, Any]:
@@ -920,7 +736,6 @@ def get_record(training_id: str, repo: Any | None = None) -> dict[str, Any]:
         for item in _report_store.list_reports()
         if item.get("training_id") == record.get("training_id")
     ]
-    current_structure = _recompute_record_structure(record, repo=repo)
     visible_record = {
         key: record[key]
         for key in RECORD_DETAIL_FIELDS
@@ -929,32 +744,6 @@ def get_record(training_id: str, repo: Any | None = None) -> dict[str, Any]:
     return {
         **visible_record,
         "ai_reports": reports,
-        # Historical snapshots remain the audit trail for each
-        # revealed bar; the detail chart must use the current CZSC
-        # implementation so it cannot display stale algorithm output.
-        "current_structure": current_structure,
-        "chan_algorithm_source": current_structure.get("algorithm_source"),
-        "chan_engine": current_structure.get("engine"),
-        "chan_signal_profile": current_structure.get("signal_profile", {}),
-        "chan_signal_profile_id": current_structure.get("signal_profile_id"),
-        "chan_event_profile": current_structure.get("event_profile", []),
-        "chan_segments_source": current_structure.get("segments_source"),
-    }
-
-
-def record_diagnostics(training_id: str, repo: Any | None = None) -> dict[str, Any]:
-    record = get_record(training_id, repo)
-    return {
-        "training_id": record.get("training_id"),
-        "structure": _recompute_record_structure(
-            record,
-            include_replay=True,
-            repo=repo,
-        ),
-        "data_quality": {
-            "daily": record.get("analysis", {}).get("daily_quality")
-            or validate_kline_quality(record.get("bars", [])),
-        },
     }
 
 
@@ -982,14 +771,10 @@ def record_store() -> JsonReportStore:
 
 
 def build_ai_messages(record: dict[str, Any]) -> list[dict[str, str]]:
-    import json
-    current_structure = record.get("current_structure")
-    if not isinstance(current_structure, dict):
-        current_structure = _recompute_record_structure(record)
     system = (
-        "你是一名缠论训练教练。请根据用户一次历史训练中的真实操作和缠论结构快照，"  # noqa: RUF001
+        "你是一名盲测交易复盘教练。请根据用户在未知股票名称和后续行情时做出的真实操作，"  # noqa: RUF001
         "分析交易习惯与训练表现。输出中文 Markdown，包含仓位管理、买卖时机、规则执行、"  # noqa: RUF001
-        "缠论结构偏差、做得好的地方、需要改进的地方和下一步练习建议。不要提供现实投资买卖指令。"
+        "做得好的地方、需要改进的地方和下一步练习建议。不要提供现实投资买卖指令。"
     )
     payload = {
         "symbol": record.get("symbol"),
@@ -998,13 +783,8 @@ def build_ai_messages(record: dict[str, Any]) -> list[dict[str, str]]:
         "summary": record.get("summary", {}),
         "cost_model": record.get("cost_model", {}),
         "analysis": record.get("analysis", {}),
-        "chan_algorithm_source": current_structure.get("algorithm_source"),
-        "chan_signal_profile": current_structure.get("signal_profile", {}),
-        "chan_signal_profile_id": current_structure.get("signal_profile_id"),
-        "chan_event_profile": current_structure.get("event_profile", []),
         "visible_bars": record.get("bars", []),
-        "current_structure": current_structure,
-        "action_structures": _recompute_action_structures(record),
+        "equity_curve": record.get("equity_curve", []),
     }
     return [{"role": "system", "content": system}, {
         "role": "user", "content": "训练记录(JSON)：\n" + json.dumps(payload, ensure_ascii=False),  # noqa: RUF001

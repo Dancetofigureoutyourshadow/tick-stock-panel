@@ -1,6 +1,6 @@
 import { useEffect, useRef, useCallback, useSyncExternalStore } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { SSE_INVALIDATE_PREFIXES, QK } from './queryKeys'
+import { MARKET_DATA_INVALIDATE_PREFIXES, SSE_INVALIDATE_PREFIXES, QK } from './queryKeys'
 import { klineDailyLatestQueryOptions, mergeLatestKlineRow } from './kline'
 import { getQueryConfig } from './useQueryConfig'
 import { toast } from '@/components/Toast'
@@ -182,6 +182,17 @@ export function useQuoteStream(
             })
             .catch(() => {})
         }
+      })
+
+      es.addEventListener('market_data_updated', () => {
+        // 盘后管道已把官方日线重建进 repository 内存快照。这个事件不依赖
+        // 实时行情开关；否则用户会在 5 分钟 staleTime 内持续看到盘中连板/K线。
+        qc.invalidateQueries({
+          predicate: (query) =>
+            MARKET_DATA_INVALIDATE_PREFIXES.some(
+              (prefix) => String(query.queryKey[0]).startsWith(prefix),
+            ),
+        })
       })
 
       es.addEventListener('strategy_results_updated', () => {

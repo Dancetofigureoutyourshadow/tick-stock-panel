@@ -26,9 +26,10 @@ export const SCREENER_BUILTIN_COLUMNS: ColumnConfig[] = [
   { id: 'builtin:strategies', source: { type: 'builtin', key: 'strategies' }, label: '策略', visible: true, align: 'left' },
   { id: 'builtin:score', source: { type: 'builtin', key: 'score' }, label: '评分', visible: true, align: 'right' },
   // 价格
-  { id: 'builtin:price', source: { type: 'builtin', key: 'price' }, label: '现价', visible: true, align: 'right' },
-  { id: 'builtin:pct', source: { type: 'builtin', key: 'pct' }, label: '涨跌幅', visible: true, align: 'right' },
-  { id: 'builtin:change_amount', source: { type: 'builtin', key: 'change_amount' }, label: '涨跌额', visible: false, align: 'right' },
+  { id: 'builtin:selected_price', source: { type: 'builtin', key: 'selected_price' }, label: '选中价', visible: true, align: 'right' },
+  { id: 'builtin:price', source: { type: 'builtin', key: 'price' }, label: '当前最新价', visible: true, align: 'right' },
+  { id: 'builtin:pct', source: { type: 'builtin', key: 'pct' }, label: '至今涨跌幅', visible: true, align: 'right' },
+  { id: 'builtin:change_amount', source: { type: 'builtin', key: 'change_amount' }, label: '至今涨跌额', visible: true, align: 'right' },
   { id: 'builtin:amplitude', source: { type: 'builtin', key: 'amplitude' }, label: '振幅', visible: false, align: 'right' },
   // 成交
   { id: 'builtin:turnover', source: { type: 'builtin', key: 'turnover' }, label: '换手率', visible: false, align: 'right' },
@@ -91,7 +92,7 @@ export const SCREENER_BUILTIN_COLUMNS: ColumnConfig[] = [
 
 export const SCREENER_COLUMN_GROUPS: ColumnGroup[] = [
   { id: 'core', label: '核心', icon: '🎯', keys: ['strategies', 'score', 'signals'] },
-  { id: 'price', label: '价格', icon: '💰', keys: ['price', 'pct', 'change_amount', 'amplitude'] },
+  { id: 'price', label: '价格', icon: '💰', keys: ['selected_price', 'price', 'pct', 'change_amount', 'amplitude'] },
   { id: 'volume', label: '成交', icon: '📊', keys: ['turnover', 'amount', 'float_val', 'vol_ratio', 'annual_vol'] },
   { id: 'ma', label: '均线', icon: '📈', keys: ['ma5', 'ma10', 'ma20', 'ma60'] },
   { id: 'range', label: '区间', icon: '📏', keys: ['high_60d', 'low_60d'] },

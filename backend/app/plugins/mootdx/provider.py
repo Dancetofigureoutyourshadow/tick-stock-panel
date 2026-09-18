@@ -247,6 +247,16 @@ def _is_tdx_supported_code(code: str) -> bool:
     return code[:2] in _TDX_SUPPORTED_CODE_PREFIXES[market]
 
 
+def _supported_code(symbol: str) -> str | None:
+    """Return a MooTDX-compatible code, or ``None`` for known unsupported markets."""
+    text = str(symbol or "").strip()
+    lowered = text.lower()
+    if lowered.startswith("bj") or lowered.endswith(".bj"):
+        return None
+    code = _code(text)
+    return code if _is_tdx_supported_code(code) else None
+
+
 def _normalize_quotes(rows: list[dict], requested: list[str] | None = None) -> list[dict]:
     requested = requested or []
     requested_by_code = {_code(symbol): symbol for symbol in requested}
@@ -458,13 +468,21 @@ class MooTdxProvider:
         start, end = _wall_time(start_time), _wall_time(end_time)
         frames = []
         for current, symbol in enumerate(symbols, 1):
-            code = _code(symbol)
-            for day in _dates(start_time, end_time):
-                frame = _minute_frame(self.minutes(code, day.strftime("%Y%m%d")), symbol, day)
-                if not frame.is_empty():
-                    frames.append(frame)
-            if on_chunk_done:
-                on_chunk_done(current, len(symbols))
+            try:
+                code = _supported_code(symbol)
+                if code is None:
+                    continue
+                for day in _dates(start_time, end_time):
+                    frame = _minute_frame(
+                        self.minutes(code, day.strftime("%Y%m%d")), symbol, day,
+                    )
+                    if not frame.is_empty():
+                        frames.append(frame)
+            except Exception as exc:  # one symbol must not discard the batch
+                logger.warning("MooTDX minute skipped %s: %s", symbol, exc)
+            finally:
+                if on_chunk_done:
+                    on_chunk_done(current, len(symbols))
         frame = pl.concat(frames, how="diagonal_relaxed") if frames else pl.DataFrame()
         if not frame.is_empty() and start is not None:
             frame = frame.filter(pl.col("datetime") >= pl.lit(start))
@@ -535,9 +553,7 @@ class MooTdxProvider:
         else:
             # Explicit requests must follow the same provider capability
             # boundary as the full-market path.
-            requested = [
-                symbol for symbol in requested if _is_tdx_supported_code(_code(symbol))
-            ]
+            requested = [symbol for symbol in requested if _supported_code(symbol) is not None]
         if not requested:
             return []
         rows: list[dict] = []

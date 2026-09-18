@@ -1,7 +1,7 @@
 """enriched 表计算流水线(§7.5 / §7.7 Step 2)。
 
 存储层 (enriched parquet):
-  仅存储基础行情窄表 (14 列), 指标和信号由各服务即时计算。
+  仅存储基础行情窄表, 指标和信号由各服务即时计算。
 
   存储列: symbol, date, OHLCV(前复权), volume, amount,
           raw_close, raw_high, raw_low, turnover_rate,
@@ -90,11 +90,13 @@ def invalidate_custom_signals() -> None:
     _custom_signal_exprs_today = None
 
 
-# enriched parquet 仅存储的列 (14 列)
+# enriched parquet 持久化列。除 OHLCV 外保留行情源提供的前收盘/涨跌幅，
+# 这样新股首日或停牌复牌日冷启动重算时不会丢失交易所口径。
 ENRICHED_STORAGE_COLS = [
     "symbol", "date",
     "open", "high", "low", "close",          # 前复权
     "volume", "amount",
+    "prev_close", "change_pct",                # 行情源前收盘/涨跌幅(小数)
     "raw_close", "raw_high", "raw_low",       # 不复权原始价
     "turnover_rate",                           # 依赖当时的 float_shares, 不可回推
     "consecutive_limit_ups",                   # 递推状态, 需从历史 cum_sum
@@ -390,7 +392,14 @@ def compute_indicators(
     df = df if assume_sorted else df.sort(["symbol", "date"])
 
     # Pass 1: 均线 + EMA + MACD 基础 + BOLL 基础 + KDJ 基础 + ATR 基础 + 量价 + 极值
-    prev_close = pl.col("close").shift(1).over("symbol")
+    calculated_prev_close = pl.col("close").shift(1).over("symbol")
+    # 实时快照可能携带交易所前收盘价（尤其是新股首日）。保留该值，
+    # 仅对缺失行回退到历史 K 线，避免 compute_indicators 把它覆盖掉。
+    prev_close = (
+        pl.coalesce([pl.col("prev_close"), calculated_prev_close])
+        if "prev_close" in df.columns
+        else calculated_prev_close
+    )
     _p1: list[pl.Expr] = []
     if "prev_close" in want:
         _p1.append(prev_close.alias("prev_close"))
@@ -511,12 +520,22 @@ def compute_indicators(
     if "momentum_60d" in want:
         _p4mom.append((pl.col("close") / pl.col("close").shift(60).over("symbol") - 1).alias("momentum_60d"))
     if "change_pct" in want:
-        _p4mom.append((pl.col("close") / pl.col("close").shift(1).over("symbol") - 1).alias("change_pct"))
+        calculated_change_pct = pl.when(prev_close != 0).then(
+            pl.col("close") / prev_close - 1
+        ).otherwise(None)
+        _p4mom.append(
+            pl.coalesce([pl.col("change_pct"), calculated_change_pct]).alias("change_pct")
+            if "change_pct" in df.columns
+            else calculated_change_pct.alias("change_pct")
+        )
     if _p4mom:
         df = df.with_columns(_p4mom)
     if "change_amount" in want:
+        calculated_change_amount = pl.col("close") - prev_close
         df = df.with_columns(
-            (pl.col("close") - pl.col("close").shift(1).over("symbol")).alias("change_amount"),
+            pl.coalesce([pl.col("change_amount"), calculated_change_amount]).alias("change_amount")
+            if "change_amount" in df.columns
+            else calculated_change_amount.alias("change_amount"),
         )
     if "amplitude" in want:
         df = df.with_columns(
@@ -1055,7 +1074,7 @@ def compute_enriched(
 
 
 def _select_storage_cols(df: pl.DataFrame) -> pl.DataFrame:
-    """写入 parquet 前裁剪到存储列 (14 列)。"""
+    """写入 parquet 前裁剪到基础存储列。"""
     cols = [c for c in ENRICHED_STORAGE_COLS if c in df.columns]
     return df.select(cols)
 
@@ -1485,7 +1504,7 @@ def run_pipeline(data_dir: Path | None = None,
                  on_batch_done: Callable[[int, int], None] | None = None) -> int:
     """运行盘后管道:读 kline_daily + adj_factor → 前复权 + 计算存储列 → 写 enriched。
 
-    enriched 表仅存储 14 列基础行情窄表 (OHLCV + raw_close/high/low + turnover_rate + 连板数)。
+    enriched 表仅存储基础行情窄表 (OHLCV、行情源前收盘/涨跌幅、raw_close/high/low、换手率与连板数)。
 
     模式:
       - 全量 (symbols=None, new_dates_only=False):
@@ -1948,9 +1967,24 @@ def compute_enriched_today(
         # API 返回的 prev_close 是原始价, 乘复权因子对齐复权价 (用于 change_pct)
         df = df.with_columns((pl.col("prev_close") * pl.col("_adj_factor").fill_null(1.0)).alias("prev_close"))
 
-    # change_pct / change_amount / amplitude: 有则直接用, 无则计算
+    # 实时快照可能只给部分标的 prev_close。对缺失行回退到同标的上一根 K 线，
+    # 保留首日无历史记录的 null，交由上层按“无可计算涨跌幅”处理。
+    previous_close = pl.col("close").shift(1).over("symbol")
+    df = df.with_columns(
+        pl.coalesce([pl.col("prev_close"), previous_close]).alias("prev_close")
+    )
+
+    # change_pct / change_amount / amplitude: 有则直接用, 无则按 prev_close 计算。
+    # 已有列中的 null 也必须回退，否则 quote_extra 的稀疏列会屏蔽计算逻辑。
+    calculated_change_pct = pl.when(pl.col("prev_close") != 0).then(
+        pl.col("close") / pl.col("prev_close") - 1
+    ).otherwise(None)
     if "change_pct" not in df.columns:
-        df = df.with_columns((pl.col("close") / pl.col("prev_close") - 1).alias("change_pct"))
+        df = df.with_columns(calculated_change_pct.alias("change_pct"))
+    else:
+        df = df.with_columns(
+            pl.coalesce([pl.col("change_pct"), calculated_change_pct]).alias("change_pct")
+        )
     if "change_amount" not in df.columns:
         df = df.with_columns((pl.col("close") - pl.col("prev_close")).alias("change_amount"))
     if "amplitude" not in df.columns:

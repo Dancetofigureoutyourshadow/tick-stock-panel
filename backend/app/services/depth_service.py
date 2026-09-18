@@ -1,7 +1,7 @@
 """五档盘口 sealed(真假涨停/跌停) 服务 — 独立旁路线。
 
 架构(完全解耦):
-  - 只读 enriched(拿涨跌停名单), 不写回 enriched(14列不动)
+  - 只读 enriched(拿涨跌停名单), 不写回 enriched(基础存储列不动)
   - sealed 存独立 parquet(data/depth5/date=xxx/part.parquet)
   - limit_ladder API 查询时 LEFT JOIN(同 ext_columns 机制)
   - signal_limit_up 永远是"价格涨停", sealed 是叠加的真假判定层
@@ -324,27 +324,41 @@ class DepthService:
 
     def _call_depth_batch(self, symbols: list[str]) -> dict:
         """调 tf.depth.batch, 按 capset 的 batch 切片 + 节流。返回 {symbol: MarketDepth}。"""
-        custom_provider = self._custom_depth5_provider()
-        if custom_provider is not None:
-            try:
-                data = custom_provider.get_depth5(symbols)
-                return data if isinstance(data, dict) else {}
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("custom depth5 provider failed: %s", exc)
-                return {}
-
-        from app.tickflow.client import get_client
-        tf = get_client()
+        from app.services import preferences
 
         capset = self._get_capset()
         limit = resolve_limit(capset, Cap.DEPTH5_BATCH, default_batch=100, default_rpm=30)
-
         result: dict = {}
         chunks = chunked(symbols, limit.batch)
+
+        selected_provider = preferences.get_depth5_data_provider()
+        custom_provider = self._custom_depth5_provider()
+        if selected_provider != "tickflow" and custom_provider is None:
+            return {}
+        if custom_provider is not None:
+            provider_name = getattr(custom_provider, "name", "custom")
+            fetch = getattr(custom_provider, "get_depth5", None)
+            if not callable(fetch):
+                fetch = getattr(custom_provider, "get_depth_batch", None)
+            for i, chunk in enumerate(chunks):
+                sleep_between_batches(i, limit.rpm, default_interval=2.0)
+                try:
+                    data = fetch(chunk) if callable(fetch) else {}
+                    if isinstance(data, dict):
+                        result.update(data)
+                    else:
+                        logger.warning("depth provider %s batch %d returned non-dict, skipped", provider_name, i + 1)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("depth provider %s batch %d failed (%d symbols): %s", provider_name, i + 1, len(chunk), exc)
+            return result
+
+        from app.data_providers.tickflow_provider import TickFlowProvider
+        tf_provider = TickFlowProvider()
+        provider_name = "tickflow"
         for i, chunk in enumerate(chunks):
             sleep_between_batches(i, limit.rpm, default_interval=2.0)
             try:
-                data = fetch_depth(chunk)
+                data = tf_provider.get_depth5(chunk)
                 if isinstance(data, dict):
                     result.update(data)
                 else:
@@ -641,8 +655,11 @@ class DepthService:
     # ================================================================
 
     def _has_capability(self) -> bool:
-        if self._custom_depth5_provider() is not None:
-            return True
+        from app.services import preferences
+
+        selected_provider = preferences.get_depth5_data_provider()
+        if selected_provider != "tickflow":
+            return self._custom_depth5_provider() is not None
         capset = self._get_capset()
         from app.tickflow.capabilities import Cap
         return capset.has(Cap.DEPTH5_BATCH)
@@ -662,7 +679,9 @@ class DepthService:
         except Exception as exc:  # noqa: BLE001
             logger.warning("custom depth5 provider '%s' unavailable: %s", provider_name, exc)
             return None
-        if not callable(getattr(provider, "get_depth5", None)):
+        if not callable(getattr(provider, "get_depth5", None)) and not callable(
+            getattr(provider, "get_depth_batch", None)
+        ):
             logger.warning("custom depth5 provider '%s' has no get_depth5 contract", provider_name)
             return None
         return provider

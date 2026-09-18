@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from app.custom import chan_training as routes
+from app.custom import blind_training as routes
 
 
 async def _events(response: Any) -> list[dict[str, Any]]:
@@ -41,9 +41,9 @@ async def test_ai_unconfigured_keeps_training_record_and_does_not_save_report(
         raise RuntimeError("AI 未配置")
         yield ""  # pragma: no cover - keep this an async generator
 
-    monkeypatch.setattr(routes.chan_training, "get_record", lambda *_args: record)
-    monkeypatch.setattr(routes.chan_training, "build_ai_messages", lambda _record: [])
-    monkeypatch.setattr(routes.chan_training, "record_store", lambda: store)
+    monkeypatch.setattr(routes.blind_training, "get_record", lambda *_args: record)
+    monkeypatch.setattr(routes.blind_training, "build_ai_messages", lambda _record: [])
+    monkeypatch.setattr(routes.blind_training, "record_store", lambda: store)
     monkeypatch.setattr(routes, "stream_ai_text", unavailable)
 
     response = await routes.analyze("training-1", _request())
@@ -70,9 +70,9 @@ async def test_ai_failure_can_retry_and_only_success_is_persisted(
             raise RuntimeError("上游暂时失败")
         yield "仓位管理分析"
 
-    monkeypatch.setattr(routes.chan_training, "get_record", lambda *_args: record)
-    monkeypatch.setattr(routes.chan_training, "build_ai_messages", lambda _record: [])
-    monkeypatch.setattr(routes.chan_training, "record_store", lambda: store)
+    monkeypatch.setattr(routes.blind_training, "get_record", lambda *_args: record)
+    monkeypatch.setattr(routes.blind_training, "build_ai_messages", lambda _record: [])
+    monkeypatch.setattr(routes.blind_training, "record_store", lambda: store)
     monkeypatch.setattr(routes, "stream_ai_text", flaky)
 
     first = await _events(await routes.analyze("training-2", _request()))

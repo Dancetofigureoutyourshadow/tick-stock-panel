@@ -16,6 +16,8 @@ REGIME_THREE_LEVEL_MAP = {
     "weak": "weak",
 }
 
+REGIME_LEVELS = ("strong", "lean_strong", "range", "lean_weak", "weak")
+
 
 def three_level_regime(state: str) -> str:
     return REGIME_THREE_LEVEL_MAP.get(state, state)
@@ -164,3 +166,63 @@ def build_regime_filter_mask(
             and (min_score is None or score >= float(min_score))
         )
     return mask
+
+
+def normalize_regime_position_pct(
+    ladder: Mapping[str, Any] | None,
+) -> dict[str, float] | None:
+    """Validate a five-level regime exposure ladder.
+
+    Missing levels deliberately remain neutral (``1.0``), so adding one
+    constrained level cannot silently change the other four regimes.
+    """
+    if not ladder:
+        return None
+
+    unknown = sorted(set(ladder).difference(REGIME_LEVELS))
+    if unknown:
+        raise ValueError(f"档位名无效: {', '.join(unknown)}")
+
+    normalized = {level: 1.0 for level in REGIME_LEVELS}
+    for level, raw_value in ladder.items():
+        try:
+            value = float(raw_value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"档位 {level} 不是数值") from exc
+        if not np.isfinite(value):
+            raise ValueError(f"档位 {level} 不是数值")
+        if value < 0 or value > 1:
+            raise ValueError(f"档位 {level} 必须在 0~1 之间")
+        normalized[level] = value
+    return normalized
+
+
+def build_regime_scale_series(
+    labels: Sequence[str],
+    regime_position_pct: Mapping[str, Any] | None,
+    regime_by_date: Mapping[object, Any],
+) -> np.ndarray | None:
+    """Build the T-1 exposure scale for each market-matrix timestamp.
+
+    The first timestamp stays neutral because no previous matrix timestamp is
+    available. Missing internal regime rows fail closed via the shared
+    alignment helper; unknown regime states stay neutral for forward
+    compatibility.
+    """
+    ladder = normalize_regime_position_pct(regime_position_pct)
+    if ladder is None:
+        return None
+
+    aligned = align_regime_t_minus_one(
+        labels,
+        regime_by_date,
+        required_start=None,
+        required_end=None,
+    )
+    scale = np.ones(len(labels), dtype=np.float64)
+    for index, point in enumerate(aligned):
+        if point is None:
+            continue
+        state, _score = point
+        scale[index] = ladder.get(state, 1.0)
+    return scale

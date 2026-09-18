@@ -5,18 +5,18 @@ import gzip
 import json
 import logging
 import math
-from datetime import date, timedelta
-from pathlib import Path
-from zoneinfo import ZoneInfo
+from datetime import date, datetime, time, timedelta
 from functools import lru_cache
+from pathlib import Path
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 
-from app.indicators.pipeline import compute_enriched, compute_enriched_single
-from app.market_time import cn_now, cn_today, in_continuous_session
-from app.price_limits import is_risk_warning_name, price_limit_pct
 from app.db_safe import is_valid_ext_ident
+from app.indicators.pipeline import compute_enriched, compute_enriched_single
+from app.market_time import cn_now, cn_today, in_continuous_session, should_use_live_market_snapshot
+from app.price_limits import is_risk_warning_name, price_limit_pct
 from app.services import kline_sync
 
 logger = logging.getLogger(__name__)
@@ -493,8 +493,9 @@ def _latest_live_candle(
     if df_today.is_empty():
         return None
 
-    # 非交易日(周末/假日)缓存日期 != 今天, 跳过注入避免产生重复蜡烛
-    if not enriched_date or enriched_date != date.today():
+    # 15:30 后实时快照不再是日K权威来源；等待/读取盘后官方日线，不能再用
+    # 盘中聚合覆盖完整日K。非交易日同样跳过，避免追加重复蜡烛。
+    if not should_use_live_market_snapshot(enriched_date):
         return None
 
     # 查找该 symbol 的实时 enriched 行
@@ -620,6 +621,28 @@ def _get_periodic_daily(
         symbol,
         ext_columns,
     )
+
+
+@router.get("/daily/latest")
+def get_daily_latest(
+    request: Request,
+    symbol: str = Query(..., min_length=1, max_length=32),
+):
+    """Return only today's in-memory enriched candle for one symbol."""
+    normalized_symbol = symbol.strip().upper()
+    repo = request.app.state.repo
+    asset_type = repo.resolve_asset_type(normalized_symbol)
+    row = _latest_live_candle(
+        request,
+        normalized_symbol,
+        asset_type,
+        refresh_asset=False,
+    )
+    return {
+        "symbol": normalized_symbol,
+        "row": row,
+        "source": "live" if row is not None else "none",
+    }
 
 
 @router.get("/daily")
@@ -1098,7 +1121,7 @@ def get_minute(
     """读取某只股票某天的分钟 K 线。
 
     - 本地有完整数据(240条) → 直接返回
-    - 本地无数据或不完整 → 从有效分钟数据源实时拉取返回(不写入)
+    - 本地无数据或不完整 → 从有效分钟数据源补拉，合并后写回本地
     - 自定义源失败时, 仅具备 TickFlow 单股分钟能力才回退 TickFlow
     - live=true 且当日连续竞价时段 → 跳过本地优先直接实时拉取:
       盘中分钟增量落盘的本地分区按 ≥60s 轮次更新, 90% 完整度启发式会让
@@ -1199,6 +1222,10 @@ def get_minute(
             expected = 240
 
     is_complete = not df.is_empty() and len(df) >= expected * 0.9  # 允许 10% 容差
+    if is_complete and expected >= 240:
+        last_bar = df["datetime"].max() if "datetime" in df.columns else None
+        close_tail = datetime.combine(trade_date, time(14, 50))
+        is_complete = last_bar is not None and last_bar >= close_tail
 
     if is_complete:
         return _gzip_payload(
@@ -1213,16 +1240,40 @@ def get_minute(
             pref_key="minute_batch_compress",
         )
 
-    # 本地不完整或无数据 → 从当前有效分钟源实时拉取
+    # 本地不完整或无数据 → 从当前有效分钟源实时补拉。补拉结果与本地 upsert
+    # 后返回并落盘，避免盘后每次请求都重新命中同一份残缺分区。
     live_df = kline_sync.fetch_minute_single(
         symbol, trade_date, asset_type=asset_type, capset=capset,
     )
+    import polars as pl
+
+    resolved_df = live_df
+    source = "live" if not live_df.is_empty() else "local"
+    if not live_df.is_empty() and not df.is_empty():
+        resolved_df = (
+            pl.concat([df, live_df], how="diagonal_relaxed")
+            .unique(subset=["symbol", "datetime"], keep="last")
+            .sort("datetime")
+        )
+    elif live_df.is_empty():
+        resolved_df = df
+
+    if not live_df.is_empty() and expected >= 240 and asset_type in {"stock", "etf"}:
+        minute_dirname = "kline_etf_minute" if asset_type == "etf" else "kline_minute"
+        try:
+            minute_dir = repo.store.data_dir / minute_dirname
+            with repo._write_lock:
+                kline_sync._write_minute_partition(resolved_df, minute_dir)
+            repo.rebuild_view(minute_dirname)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("minute 补拉落盘失败 (降级为仅返回): %s", exc)
+
     return _gzip_payload(
         request,
         {
             "symbol": symbol, "name": stock_name, "stock_info": stock_info,
-            "date": str(trade_date), "rows": live_df.to_dicts(),
-            "source": "live" if not live_df.is_empty() else "none",
+            "date": str(trade_date), "rows": resolved_df.to_dicts(),
+            "source": source if not resolved_df.is_empty() else "none",
             "asset_type": asset_type,
             "price_limit": price_limit,
             "prev_close": prev_close,

@@ -1222,7 +1222,8 @@ class KlineRepository:
         # 按交易日计数裁剪: 从数据里实际存在的交易日序列取最后 lookback_days 个交易日。
         # 不能用 timedelta(days=N) (自然日), 否则周末/节假日会让窗口只有 ~N×5/7 个交易日,
         # 导致 filter_history 策略的滚动窗口/行号差(_gap)漏算, 与回测结果不一致。
-        trading_dates = cache["date"].unique().sort()
+        # 只数目标日及之前的交易日: 历史日期选股时缓存里还有更晚的交易日
+        trading_dates = cache["date"].filter(cache["date"] <= target_date).unique().sort()
         if len(trading_dates) > lookback_days:
             lookback_start = trading_dates[-(lookback_days + 1)]
         else:

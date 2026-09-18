@@ -112,7 +112,7 @@ function toolLabel(name: string): string {
 /** 足迹组: 工具足迹卡 + 附带可绘图数据的走势小卡(始终可见, 不藏在展开区)。 */
 export const FootprintGroup = memo(function FootprintGroup({ calls }: { calls: ToolCallRecord[] }) {
   if (!calls.length) return null
-  const charts = calls.filter(c => c.status === 'ok' && c.chart).map(c => c.chart!)
+  const charts = calls.filter(c => c.status === 'ok' && c.charts).flatMap(c => c.charts!)
   if (!charts.length) return <FootprintCard calls={calls} />
   return (
     <div className="space-y-2">

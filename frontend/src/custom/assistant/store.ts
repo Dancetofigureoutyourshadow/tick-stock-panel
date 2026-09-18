@@ -23,7 +23,7 @@ export interface ToolCallRecord {
   status: ToolCallStatus
   summary?: string
   elapsedMs?: number
-  chart?: AssistantChart
+  charts?: AssistantChart[]
 }
 
 export type ChatMessage =
@@ -205,7 +205,7 @@ function applyEvent(event: AssistantEvent, footprintId: string, assistantId: str
                     status: event.ok ? 'ok' as ToolCallStatus : 'error' as ToolCallStatus,
                     summary: event.summary,
                     elapsedMs: event.elapsed_ms,
-                    chart: event.chart,
+                    charts: event.charts,
                   }
                 : c),
             }

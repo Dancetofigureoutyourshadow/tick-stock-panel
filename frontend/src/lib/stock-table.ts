@@ -72,6 +72,13 @@ export function getSortValue(r: any, col: ColumnConfig): any {
     }
     case 'change_amount': return r.selected_to_current_amount ?? r.change_amount
     case 'amplitude':     return r.amplitude
+    case 'open':          return r.open
+    case 'high':          return r.high
+    case 'low':           return r.low
+    case 'prev_close':    return r.prev_close
+    case 'limit_up_price': return r.limit_up_price
+    case 'limit_down_price': return r.limit_down_price
+    case 'volume':        return r.volume
     case 'turnover':      return r.turnover_rate
     case 'amount':        return r.rt_amount ?? r.amount
     case 'float_val':     return r.float_shares && (r.rt_price ?? r.close) ? r.float_shares * (r.rt_price ?? r.close) : null

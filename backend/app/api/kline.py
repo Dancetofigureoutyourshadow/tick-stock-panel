@@ -17,7 +17,7 @@ from app.db_safe import is_valid_ext_ident
 from app.indicators.pipeline import compute_enriched, compute_enriched_single
 from app.market_time import cn_now, cn_today, in_continuous_session, should_use_live_market_snapshot
 from app.price_limits import is_risk_warning_name, price_limit_pct
-from app.services import kline_sync
+from app.services import kline_sync, trading_day
 
 logger = logging.getLogger(__name__)
 
@@ -817,7 +817,9 @@ def get_minute_batch(request: Request, body: dict):
     #  节假日当日分区恒为空, 不影响该回退判据。)
     if not trade_date_str:
         today = cn_today()
-        need_fallback = today.weekday() >= 5  # 周六/周日必非交易日
+        # 周六/周日必非交易日; 工作日休市 (国庆等) 以交易日探针的「确定休市」为准,
+        # 与 /api/index/minute 同口径 — 未知 (None) 维持下方收盘后判据
+        need_fallback = today.weekday() >= 5 or trading_day.is_trading_day() is False
         if not need_fallback:
             now_cn = cn_now()
             after_close = now_cn.hour > 15 or (now_cn.hour == 15 and now_cn.minute >= 30)
@@ -851,7 +853,7 @@ def get_minute_batch(request: Request, body: dict):
         expected = 240
     elif h < 9 or (h == 9 and m < 30):
         expected = 0
-    elif h < 12 or (h == 12 and m == 0):
+    elif h < 11 or (h == 11 and m <= 30):
         expected = (h - 9) * 60 + m - 30
     elif h < 13:
         expected = 120
@@ -1132,12 +1134,16 @@ def get_minute(
     asset_type = repo.resolve_asset_type(symbol)
     stock_info = _get_stock_info(repo, symbol) if asset_type == "stock" else _get_asset_info(repo, symbol, asset_type)
     stock_name = stock_info.get("name")
+    skip_live_fetch = False
 
     if trade_date is None:
         # 默认看今天, 而不是本地落盘的最近日 (盘中后者是昨天)。
         # 非交易日(周末/节假日)才回退到本地最近有数据的交易日。
         today = cn_today()
-        need_fallback = today.weekday() >= 5  # 周六/周日必非交易日
+        # 同 /minute-batch: 周末必回退, 工作日休市以交易日探针「确定休市」为准
+        confirmed_non_trading_day = today.weekday() >= 5 or trading_day.is_trading_day() is False
+        need_fallback = confirmed_non_trading_day
+        skip_live_fetch = confirmed_non_trading_day
         if not need_fallback:
             now_cn = cn_now()
             after_close = now_cn.hour > 15 or (now_cn.hour == 15 and now_cn.minute >= 30)
@@ -1204,6 +1210,20 @@ def get_minute(
 
     df = repo.get_minute(symbol, trade_date, asset_type=asset_type)
 
+    if skip_live_fetch:
+        return _gzip_payload(
+            request,
+            {
+                "symbol": symbol, "name": stock_name, "stock_info": stock_info,
+                "date": str(trade_date), "rows": df.to_dicts(),
+                "source": "local" if not df.is_empty() else "none",
+                "asset_type": asset_type,
+                "price_limit": price_limit,
+                "prev_close": prev_close,
+            },
+            pref_key="minute_batch_compress",
+        )
+
     # 完整交易日应有 240 条分钟K；如果是今天(盘中)，期望条数按已交易分钟估算
     expected = 240
     today = cn_today()
@@ -1212,7 +1232,7 @@ def get_minute(
         h, m = now.hour, now.minute
         if h < 9 or (h == 9 and m < 30):
             expected = 0  # 还没开盘
-        elif h < 12 or (h == 12 and m == 0):
+        elif h < 11 or (h == 11 and m <= 30):
             expected = (h - 9) * 60 + m - 30  # 9:30 起
         elif h < 13:
             expected = 120  # 午休

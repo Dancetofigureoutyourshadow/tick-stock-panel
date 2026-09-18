@@ -144,12 +144,48 @@ def _rows(
     return rows
 
 
+_QUOTE_COLUMNS = (
+    "symbol", "close", "open", "high", "low", "volume", "amount",
+    "prev_close", "change_pct", "change_amount", "amplitude", "turnover_rate",
+)
+
+
+def _asset_quote_frame(ctx: ToolContext, symbols: list[str]) -> pl.DataFrame:
+    """symbols 的行情快照: 股票取 get_quotes_compat, ETF / 指数取各自的 enriched 缓存。
+
+    get_quotes_compat 只含股票 enriched 缓存; ETF 与指数是独立缓存, 与自选页
+    /api/watchlist/enriched 一样须按资产类型分流, 否则 ETF / 指数永远查不到价格。
+    只对股票缓存里没有的代码判定资产类型, 全是股票时不加载 ETF / 指数缓存。
+    """
+    frames: list[pl.DataFrame] = []
+    df = ctx.quote_service.get_quotes_compat()
+    if df is not None and not df.is_empty() and "symbol" in df.columns:
+        frames.append(df.filter(pl.col("symbol").is_in(symbols)))
+    found = set(frames[0]["symbol"].to_list()) if frames else set()
+    missing = [s for s in symbols if s not in found]
+    if missing and ctx.repo is not None:
+        by_asset: dict[str, list[str]] = {}
+        for symbol in missing:
+            asset_type = ctx.repo.resolve_asset_type(symbol)
+            if asset_type != "stock":
+                by_asset.setdefault(asset_type, []).append(symbol)
+        for asset_type, members in by_asset.items():
+            asset_df, _ = ctx.repo.get_enriched_latest_asset(asset_type)
+            if asset_df is None or asset_df.is_empty() or "symbol" not in asset_df.columns:
+                continue
+            keep = [c for c in _QUOTE_COLUMNS if c in asset_df.columns]
+            frames.append(asset_df.filter(pl.col("symbol").is_in(members)).select(keep))
+    if not frames:
+        return pl.DataFrame()
+    return pl.concat(frames, how="diagonal_relaxed")
+
+
 def _quotes_map(ctx: ToolContext, symbols: list[str]) -> dict[str, dict[str, Any]]:
     """symbol → {close, change_pct} 轻量行情映射(自选/持仓等合并展示用)。"""
     if ctx.quote_service is None or not symbols:
         return {}
     try:
-        df = ctx.quote_service.get_quotes_compat()
+        df = _asset_quote_frame(ctx, symbols)
     except Exception:  # 行情服务未就绪时静默降级为无价格列
         return {}
     if df is None or df.is_empty() or "symbol" not in df.columns:
@@ -184,8 +220,7 @@ def _get_stock_quote(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     if not isinstance(raw, list) or not raw:
         raise ValueError("symbols 不能为空, 请传入证券代码数组 (如 ['600519.SH'])。")
     symbols = list(dict.fromkeys(_validate_symbol(s) for s in raw[:50]))
-    df = ctx.quote_service.get_quotes_compat()
-    sub = df.filter(pl.col("symbol").is_in(symbols)) if df is not None and not df.is_empty() else pl.DataFrame()
+    sub = _asset_quote_frame(ctx, symbols)
     names = ctx.repo.get_name_map(symbols) if ctx.repo is not None else {}
     rows = _rows(sub, 50)
     for row in rows:

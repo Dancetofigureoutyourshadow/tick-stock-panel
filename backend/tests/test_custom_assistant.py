@@ -276,7 +276,7 @@ async def test_execute_assistant_tool_local_quote_merges_names() -> None:
 
 
 class _DailyRepo(_StubRepo):
-    """带日线序列的 repo 桩: 验证 get_stock_daily 附带走势小图 payload。"""
+    """带日线+分钟序列的 repo 桩: 验证 get_stock_daily/get_stock_quote 附带走势小图 payload。"""
 
     def resolve_asset_type(self, symbol: str) -> str:
         return "stock"
@@ -284,12 +284,28 @@ class _DailyRepo(_StubRepo):
     def get_daily_asset(self, asset_type, symbol, start, end):
         return pl.DataFrame({
             "date": ["2026-09-01", "2026-09-02", "2026-09-03"],
+            "open": [9.8, 10.4, 10.6],
+            "high": [10.6, 10.7, 10.8],
+            "low": [9.7, 10.2, 10.1],
             "close": [10.0, 10.5, 10.3],
             "volume": [100.0, 200.0, 150.0],
         })
 
+    def get_minute(self, symbol, trade_date, asset_type="stock"):
+        from datetime import datetime
 
-async def test_get_stock_daily_attaches_chart_payload() -> None:
+        return pl.DataFrame({
+            "datetime": [
+                datetime(2026, 9, 18, 9, 31),
+                datetime(2026, 9, 18, 9, 32),
+                datetime(2026, 9, 18, 9, 33),
+            ],
+            "close": [10.02, 10.05, 10.01],
+            "volume": [12.0, 8.0, 6.0],
+        })
+
+
+async def test_get_stock_daily_attaches_kline_chart_payload() -> None:
     ctx = assistant_tools.ToolContext.build(repo=_DailyRepo(), quote_service=_StubQuoteService())
     payload = await assistant_tools.execute_assistant_tool(
         "get_stock_daily",
@@ -297,13 +313,33 @@ async def test_get_stock_daily_attaches_chart_payload() -> None:
         ctx,
     )
     assert payload["ok"] is True
-    chart = payload["result"]["chart"]
-    assert chart["kind"] == "daily_close"
-    assert chart["symbol"] == "600519.SH"
-    assert chart["points"] == [
-        ["2026-09-01", 10.0, 100.0],
-        ["2026-09-02", 10.5, 200.0],
-        ["2026-09-03", 10.3, 150.0],
+    charts = payload["result"]["charts"]
+    assert charts[0]["kind"] == "daily_kline"
+    assert charts[0]["symbol"] == "600519.SH"
+    assert charts[0]["points"] == [
+        ["2026-09-01", 9.8, 10.6, 9.7, 10.0, 100.0],
+        ["2026-09-02", 10.4, 10.7, 10.2, 10.5, 200.0],
+        ["2026-09-03", 10.6, 10.8, 10.1, 10.3, 150.0],
+    ]
+
+
+async def test_get_stock_quote_attaches_intraday_chart_for_single_symbol() -> None:
+    ctx = assistant_tools.ToolContext.build(repo=_DailyRepo(), quote_service=_StubQuoteService())
+    payload = await assistant_tools.execute_assistant_tool(
+        "get_stock_quote",
+        {"symbols": ["600519.SH"]},
+        ctx,
+    )
+    assert payload["ok"] is True
+    charts = payload["result"]["charts"]
+    assert charts[0]["kind"] == "intraday"
+    assert charts[0]["symbol"] == "600519.SH"
+    # 昨收按 close/(1+pct) 反推: 1500 / 1.0123 ≈ 1481.7742
+    assert charts[0]["prev_close"] == 1481.774
+    assert charts[0]["points"] == [
+        ["09:31", 10.02, 12.0],
+        ["09:32", 10.05, 8.0],
+        ["09:33", 10.01, 6.0],
     ]
 
 

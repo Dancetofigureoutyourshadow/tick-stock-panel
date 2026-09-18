@@ -53,7 +53,7 @@ QUICK_SUGGESTS: list[dict[str, str]] = [
     {
         "id": "stock-analyze",
         "label": "分析一只个股",
-        "prompt": "帮我分析 600519.SH: 最新行情、关键价位(支撑/压力)、趋势状态和近几日走势。",
+        "prompt": "帮我分析 600519.SH: 结合分时与日K看最新走势, 给出关键价位(支撑/压力)、趋势状态和量价特征。",
     },
     {
         "id": "regime-check",
@@ -192,22 +192,75 @@ def _get_stock_quote(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
         row.setdefault("name", names.get(row.get("symbol"), ""))
     if not rows:
         return {"count": 0, "rows": [], "note": "未匹配到行情, 请确认代码格式 (如 600519.SH)。"}
-    return {"count": len(rows), "rows": rows}
+    result: dict[str, Any] = {"count": len(rows), "rows": rows}
+    # 单只查询时附当日分时小图; 批量查询 N 只附 N 张图会淹没回答, 不附。
+    if len(rows) == 1:
+        row = rows[0]
+        prev_close = row.get("prev_close")
+        if prev_close is None and row.get("close") is not None and row.get("change_pct") is not None:
+            # 行情快照无昨收列时按 close/(1+pct) 反推, 供分时图画昨收基准线
+            prev_close = round(float(row["close"]) / (1.0 + float(row["change_pct"])), 3)
+        chart = _intraday_chart_payload(ctx, symbols[0], str(row.get("name") or ""), prev_close)
+        if chart is not None:
+            result["charts"] = [chart]
+    return result
 
 
-def _daily_chart_payload(symbol: str, name: str, rows: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """收盘走势小图 payload — 前端自动渲染, 非模型生成(结果可核对)。
+def _num(v: Any) -> float | None:
+    return round(float(v), 3) if v is not None else None
 
-    点数封顶 120, 避免长区间把 NDJSON 流式事件撑大; 不足 2 点不附图。
+
+def _intraday_chart_payload(
+    ctx: ToolContext, symbol: str, name: str, prev_close: float | None = None,
+) -> dict[str, Any] | None:
+    """当日分时小图 payload — 本地分钟K收盘序列, 非模型生成(结果可核对)。
+
+    点数封顶 240(一个交易日); 本地无分钟数据时返回 None, 不阻断行情回答。
+    """
+    if ctx.repo is None:
+        return None
+    try:
+        df = ctx.repo.get_minute(symbol, date.today(), ctx.repo.resolve_asset_type(symbol))
+    except Exception:  # noqa: BLE001  分钟分区缺失/损坏时降级为无图
+        return None
+    if df is None or df.is_empty() or "close" not in df.columns or "datetime" not in df.columns:
+        return None
+    points: list[list[Any]] = []
+    for row in df.sort("datetime").to_dicts():
+        dt, close = row.get("datetime"), row.get("close")
+        if dt is None or close is None:
+            continue
+        t = dt.strftime("%H:%M") if hasattr(dt, "strftime") else str(dt)[-8:-3]
+        points.append([t, round(float(close), 3), round(float(row.get("volume") or 0), 2)])
+    if len(points) < 2:
+        return None
+    payload: dict[str, Any] = {
+        "kind": "intraday",
+        "symbol": symbol,
+        "name": name,
+        "points": points[-240:],
+    }
+    if prev_close is not None:
+        payload["prev_close"] = prev_close
+    return payload
+
+
+def _daily_kline_chart_payload(symbol: str, name: str, rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """日K 小图 payload — [date, open, high, low, close, volume], 前端渲染蜡烛图。
+
+    点数封顶 120, 避免长区间把 NDJSON 流式事件撑大; 不足 2 根不附图。
     """
     points = [
-        [str(row["date"]), round(float(row["close"]), 3), round(float(row.get("volume") or 0), 2)]
+        [
+            str(row["date"]), _num(row.get("open")), _num(row.get("high")),
+            _num(row.get("low")), _num(row.get("close")), _num(row.get("volume")),
+        ]
         for row in rows
-        if row.get("date") is not None and row.get("close") is not None
+        if row.get("date") is not None and row.get("close") is not None and row.get("open") is not None
     ]
     if len(points) < 2:
         return None
-    return {"kind": "daily_close", "symbol": symbol, "name": name, "points": points[-120:]}
+    return {"kind": "daily_kline", "symbol": symbol, "name": name, "points": points[-120:]}
 
 
 def _get_stock_daily(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
@@ -228,13 +281,16 @@ def _get_stock_daily(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     rows = _rows(df.select(keep).tail(days), days)
     names = repo.get_name_map([symbol])
     name = names.get(symbol, "")
-    return {
+    result: dict[str, Any] = {
         "symbol": symbol,
         "name": name,
         "count": len(rows),
         "rows": rows,
-        "chart": _daily_chart_payload(symbol, name, rows),
     }
+    kline = _daily_kline_chart_payload(symbol, name, rows)
+    if kline is not None:
+        result["charts"] = [kline]
+    return result
 
 
 def _get_stock_analysis(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:

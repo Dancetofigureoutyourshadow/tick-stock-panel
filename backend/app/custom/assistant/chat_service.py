@@ -184,11 +184,11 @@ async def chat_stream(
             "summary": assistant_tools.summarize_tool_result(name, result),
             "elapsed_ms": elapsed_ms,
         }
-        # 可绘图数据(如 get_stock_daily 的收盘序列)随事件透传, 前端自动附图
+        # 可绘图数据(分时/日K)随事件透传, 前端自动附图
         inner = result.get("result")
-        chart = inner.get("chart") if isinstance(inner, dict) else None
-        if chart:
-            event["chart"] = chart
+        charts = inner.get("charts") if isinstance(inner, dict) else None
+        if charts:
+            event["charts"] = charts
         await queue.put(event)
         return result
 

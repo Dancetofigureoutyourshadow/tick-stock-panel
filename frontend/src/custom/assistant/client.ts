@@ -21,18 +21,28 @@ export interface QuickSuggest {
 }
 
 /** 工具附带的可绘图数据 — 来自工具真实返回, 非模型生成(结果可核对)。 */
-export interface AssistantChart {
-  kind: 'daily_close'
-  symbol: string
-  name?: string
-  /** [date, close, volume] 按日期升序, 后端封顶 120 点 */
-  points: [string, number, number][]
-}
+export type AssistantChart =
+  | {
+      kind: 'daily_kline'
+      symbol: string
+      name?: string
+      /** [date, open, high, low, close, volume] 按日期升序, 后端封顶 120 根 */
+      points: [string, number, number, number, number, number][]
+    }
+  | {
+      kind: 'intraday'
+      symbol: string
+      name?: string
+      /** 昨收基准价(反推值), 用于画基准虚线与涨跌着色 */
+      prev_close?: number
+      /** [HH:MM, price, volume] 按时间升序, 后端封顶 240 点 */
+      points: [string, number, number][]
+    }
 
 export type AssistantEvent =
   | { type: 'notice'; message: string }
   | { type: 'tool_call'; call_id: string; name: string; args: Record<string, unknown> }
-  | { type: 'tool_result'; call_id: string; name: string; ok: boolean; summary: string; elapsed_ms: number; chart?: AssistantChart }
+  | { type: 'tool_result'; call_id: string; name: string; ok: boolean; summary: string; elapsed_ms: number; charts?: AssistantChart[] }
   | { type: 'delta'; content: string }
   | { type: 'error'; kind: string; message: string; hint?: string }
   | { type: 'done' }

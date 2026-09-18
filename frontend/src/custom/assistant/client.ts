@@ -20,10 +20,19 @@ export interface QuickSuggest {
   prompt: string
 }
 
+/** 工具附带的可绘图数据 — 来自工具真实返回, 非模型生成(结果可核对)。 */
+export interface AssistantChart {
+  kind: 'daily_close'
+  symbol: string
+  name?: string
+  /** [date, close, volume] 按日期升序, 后端封顶 120 点 */
+  points: [string, number, number][]
+}
+
 export type AssistantEvent =
   | { type: 'notice'; message: string }
   | { type: 'tool_call'; call_id: string; name: string; args: Record<string, unknown> }
-  | { type: 'tool_result'; call_id: string; name: string; ok: boolean; summary: string; elapsed_ms: number }
+  | { type: 'tool_result'; call_id: string; name: string; ok: boolean; summary: string; elapsed_ms: number; chart?: AssistantChart }
   | { type: 'delta'; content: string }
   | { type: 'error'; kind: string; message: string; hint?: string }
   | { type: 'done' }

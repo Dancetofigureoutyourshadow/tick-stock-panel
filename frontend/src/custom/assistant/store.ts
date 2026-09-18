@@ -8,6 +8,7 @@
 import { useSyncExternalStore } from 'react'
 import {
   assistantChatStream,
+  type AssistantChart,
   type AssistantContext,
   type AssistantEvent,
   type ChatHistoryMessage,
@@ -22,6 +23,7 @@ export interface ToolCallRecord {
   status: ToolCallStatus
   summary?: string
   elapsedMs?: number
+  chart?: AssistantChart
 }
 
 export type ChatMessage =
@@ -198,7 +200,13 @@ function applyEvent(event: AssistantEvent, footprintId: string, assistantId: str
           ? {
               ...m,
               calls: m.calls.map(c => c.callId === event.call_id
-                ? { ...c, status: event.ok ? 'ok' as ToolCallStatus : 'error' as ToolCallStatus, summary: event.summary, elapsedMs: event.elapsed_ms }
+                ? {
+                    ...c,
+                    status: event.ok ? 'ok' as ToolCallStatus : 'error' as ToolCallStatus,
+                    summary: event.summary,
+                    elapsedMs: event.elapsed_ms,
+                    chart: event.chart,
+                  }
                 : c),
             }
           : m),

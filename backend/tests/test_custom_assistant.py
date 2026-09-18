@@ -275,6 +275,38 @@ async def test_execute_assistant_tool_local_quote_merges_names() -> None:
     assert rows[0]["change_pct"] == 0.0123
 
 
+class _DailyRepo(_StubRepo):
+    """带日线序列的 repo 桩: 验证 get_stock_daily 附带走势小图 payload。"""
+
+    def resolve_asset_type(self, symbol: str) -> str:
+        return "stock"
+
+    def get_daily_asset(self, asset_type, symbol, start, end):
+        return pl.DataFrame({
+            "date": ["2026-09-01", "2026-09-02", "2026-09-03"],
+            "close": [10.0, 10.5, 10.3],
+            "volume": [100.0, 200.0, 150.0],
+        })
+
+
+async def test_get_stock_daily_attaches_chart_payload() -> None:
+    ctx = assistant_tools.ToolContext.build(repo=_DailyRepo(), quote_service=_StubQuoteService())
+    payload = await assistant_tools.execute_assistant_tool(
+        "get_stock_daily",
+        {"symbol": "600519.SH", "days": 10},
+        ctx,
+    )
+    assert payload["ok"] is True
+    chart = payload["result"]["chart"]
+    assert chart["kind"] == "daily_close"
+    assert chart["symbol"] == "600519.SH"
+    assert chart["points"] == [
+        ["2026-09-01", 10.0, 100.0],
+        ["2026-09-02", 10.5, 200.0],
+        ["2026-09-03", 10.3, 150.0],
+    ]
+
+
 async def test_execute_assistant_tool_validates_symbols() -> None:
     ctx = assistant_tools.ToolContext.build(repo=_StubRepo(), quote_service=_StubQuoteService())
     payload = await assistant_tools.execute_assistant_tool(

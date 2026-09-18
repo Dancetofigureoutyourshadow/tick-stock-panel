@@ -18,6 +18,7 @@ import {
 import { MarkdownRenderer } from '@/components/financials/MarkdownRenderer'
 import { cn } from '@/lib/cn'
 import type { ChatMessage, ToolCallRecord } from '../store'
+import { DailyChartCard } from './DailyChartCard'
 
 export const UserBubble = memo(function UserBubble({ content }: { content: string }) {
   return (
@@ -105,8 +106,23 @@ const TOOL_LABELS: Record<string, string> = {
 }
 
 function toolLabel(name: string): string {
-  return TOOL_LABELS[name] ?? name
+  return TOOL_LABELS[name]
 }
+
+/** 足迹组: 工具足迹卡 + 附带可绘图数据的走势小卡(始终可见, 不藏在展开区)。 */
+export const FootprintGroup = memo(function FootprintGroup({ calls }: { calls: ToolCallRecord[] }) {
+  if (!calls.length) return null
+  const charts = calls.filter(c => c.status === 'ok' && c.chart).map(c => c.chart!)
+  if (!charts.length) return <FootprintCard calls={calls} />
+  return (
+    <div className="space-y-2">
+      <FootprintCard calls={calls} />
+      {charts.map((chart, i) => (
+        <DailyChartCard key={`${chart.kind}-${chart.symbol}-${i}`} chart={chart} />
+      ))}
+    </div>
+  )
+})
 
 export const FootprintCard = memo(function FootprintCard({ calls }: { calls: ToolCallRecord[] }) {
   const [expanded, setExpanded] = useState(false)
@@ -240,7 +256,7 @@ export function AssistantMessageView({ message, onRetry }: { message: ChatMessag
     case 'assistant':
       return <AssistantMessage content={message.content} streaming={message.streaming} />
     case 'footprint':
-      return <FootprintCard calls={message.calls} />
+      return <FootprintGroup calls={message.calls} />
     case 'error':
       return <ErrorBubble kind={message.kind} message={message.message} hint={message.hint} onRetry={onRetry} />
     case 'notice':

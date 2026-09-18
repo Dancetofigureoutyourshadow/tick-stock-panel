@@ -176,14 +176,20 @@ async def chat_stream(
         started = time.monotonic()
         result = await assistant_tools.execute_assistant_tool(name, args, tool_ctx)
         elapsed_ms = int((time.monotonic() - started) * 1000)
-        await queue.put({
+        event = {
             "type": "tool_result",
             "call_id": call_id,
             "name": name,
             "ok": bool(result.get("ok")),
             "summary": assistant_tools.summarize_tool_result(name, result),
             "elapsed_ms": elapsed_ms,
-        })
+        }
+        # 可绘图数据(如 get_stock_daily 的收盘序列)随事件透传, 前端自动附图
+        inner = result.get("result")
+        chart = inner.get("chart") if isinstance(inner, dict) else None
+        if chart:
+            event["chart"] = chart
+        await queue.put(event)
         return result
 
     async def run() -> None:

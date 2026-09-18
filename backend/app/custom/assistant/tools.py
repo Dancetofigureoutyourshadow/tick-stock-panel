@@ -195,6 +195,21 @@ def _get_stock_quote(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     return {"count": len(rows), "rows": rows}
 
 
+def _daily_chart_payload(symbol: str, name: str, rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """收盘走势小图 payload — 前端自动渲染, 非模型生成(结果可核对)。
+
+    点数封顶 120, 避免长区间把 NDJSON 流式事件撑大; 不足 2 点不附图。
+    """
+    points = [
+        [str(row["date"]), round(float(row["close"]), 3), round(float(row.get("volume") or 0), 2)]
+        for row in rows
+        if row.get("date") is not None and row.get("close") is not None
+    ]
+    if len(points) < 2:
+        return None
+    return {"kind": "daily_close", "symbol": symbol, "name": name, "points": points[-120:]}
+
+
 def _get_stock_daily(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     repo = _require_repo(ctx)
     symbol = _validate_symbol(args.get("symbol"))
@@ -212,7 +227,14 @@ def _get_stock_daily(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     ]
     rows = _rows(df.select(keep).tail(days), days)
     names = repo.get_name_map([symbol])
-    return {"symbol": symbol, "name": names.get(symbol, ""), "count": len(rows), "rows": rows}
+    name = names.get(symbol, "")
+    return {
+        "symbol": symbol,
+        "name": name,
+        "count": len(rows),
+        "rows": rows,
+        "chart": _daily_chart_payload(symbol, name, rows),
+    }
 
 
 def _get_stock_analysis(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:

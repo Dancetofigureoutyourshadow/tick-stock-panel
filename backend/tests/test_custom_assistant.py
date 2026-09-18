@@ -281,6 +281,9 @@ class _DailyRepo(_StubRepo):
     def resolve_asset_type(self, symbol: str) -> str:
         return "stock"
 
+    def get_enriched_latest_asset(self, asset_type, refresh=True):
+        return pl.DataFrame(), None
+
     def get_daily_asset(self, asset_type, symbol, start, end):
         return pl.DataFrame({
             "date": ["2026-09-01", "2026-09-02", "2026-09-03"],

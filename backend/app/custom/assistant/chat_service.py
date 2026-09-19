@@ -220,11 +220,17 @@ async def chat_stream(
                     ))
                     return
 
+                # 部分兼容网关的流式 tool_calls 不带 id: 补一次并写回 call, 助手消息的
+                # tool_calls[].id 与下方 role:tool 回填的 tool_call_id 必须是同一个值。
+                for call in tool_calls:
+                    if not call.get("id"):
+                        call["id"] = uuid.uuid4().hex[:8]
+
                 assistant_message: dict[str, Any] = {
                     "role": "assistant",
                     "tool_calls": [
                         {
-                            "id": call.get("id") or uuid.uuid4().hex[:8],
+                            "id": call["id"],
                             "type": "function",
                             "function": {"name": call.get("name", ""), "arguments": call.get("arguments", "")},
                         }
@@ -243,7 +249,7 @@ async def chat_stream(
                     )
                     req_messages.append({
                         "role": "tool",
-                        "tool_call_id": call.get("id") or "",
+                        "tool_call_id": call["id"],
                         "content": json.dumps(result, ensure_ascii=False),
                     })
         except Exception as exc:  # 单轮失败收敛为 error 事件, 不打断流

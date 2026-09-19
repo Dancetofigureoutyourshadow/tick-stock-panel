@@ -24,6 +24,7 @@ from typing import Any
 
 import polars as pl
 
+from app.market_time import cn_today
 from app.services import tool_catalog
 
 # ----------------------------------------------------------------
@@ -255,7 +256,11 @@ def _intraday_chart_payload(
     if ctx.repo is None:
         return None
     try:
-        df = ctx.repo.get_minute(symbol, date.today(), ctx.repo.resolve_asset_type(symbol))
+        asset_type = ctx.repo.resolve_asset_type(symbol)
+        # 取行情快照所在交易日 (昨收基准线也来自快照行): 周末/节假日/开盘前快照停在
+        # 最近交易日, 按服务器本地 date.today() 查分钟分区会永远为空; 无快照日期时按北京日期。
+        _, trade_date = ctx.repo.get_enriched_latest_asset(asset_type, refresh=False)
+        df = ctx.repo.get_minute(symbol, trade_date or cn_today(), asset_type)
     except Exception:  # noqa: BLE001  分钟分区缺失/损坏时降级为无图
         return None
     if df is None or df.is_empty() or "close" not in df.columns or "datetime" not in df.columns:

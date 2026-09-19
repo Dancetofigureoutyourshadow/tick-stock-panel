@@ -379,7 +379,8 @@ def _get_financials(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     sub = df.filter(pl.col("symbol") == symbol)
     if sub.is_empty():
         return {"symbol": symbol, "table": table, "rows": [], "note": "本地财务数据中没有该标的。"}
-    sort_col = next((c for c in ("report_date", "end_date", "ann_date", "date") if c in sub.columns), None)
+    # 本地财务表的报告期列是 period_end; 物理行序取决于同步路径, 须显式排序后再取最近 N 期
+    sort_col = next((c for c in ("period_end", "report_date", "end_date", "ann_date", "date") if c in sub.columns), None)
     if sort_col:
         sub = sub.sort(sort_col)
     sub = sub.tail(periods)

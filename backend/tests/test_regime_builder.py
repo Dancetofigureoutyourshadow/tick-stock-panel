@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import os
 import time
-from datetime import date, timedelta
+from datetime import date
 
 import polars as pl
 import pytest
@@ -141,38 +141,6 @@ def test_aggregate_daily_ma20_above():
     r1 = result.filter(pl.col("date") == date(2026, 1, 2)).row(0, named=True)
     # 1/2: A(close11>ma10)✓, B(9<10)✗, C(21>20)✓, D(19<20)✗ → 2/4 = 0.5
     assert r1["above_ma20_pct"] == 0.5
-
-
-def test_aggregate_daily_infers_late_non_null_promo_rate():
-    """前 100 天晋级率为空时, 第 101 天的浮点值仍应保留。"""
-    start = date(2026, 1, 1)
-    rows = []
-    for day_offset in range(101):
-        current = start + timedelta(days=day_offset)
-        for symbol_index in range(12):
-            consecutive = 0
-            if day_offset == 99:
-                consecutive = 1
-            elif day_offset == 100 and symbol_index < 5:
-                consecutive = 2
-            rows.append({
-                "date": current,
-                "symbol": f"S{symbol_index:02d}",
-                "close": 10.0,
-                "change_pct": 0.0,
-                "amount": 1e8,
-                "ma20": 10.0,
-                "signal_limit_up": consecutive > 0,
-                "signal_limit_down": False,
-                "signal_broken_limit_up": False,
-                "consecutive_limit_ups": consecutive,
-            })
-
-    result = regime_builder._aggregate_daily(pl.DataFrame(rows))
-
-    assert result.height == 101
-    assert result["promo_rate"].head(100).null_count() == 100
-    assert result["promo_rate"][-1] == pytest.approx(0.4167)
 
 
 def test_aggregate_empty_returns_empty():

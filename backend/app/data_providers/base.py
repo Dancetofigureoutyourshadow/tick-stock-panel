@@ -90,3 +90,5 @@ class MarketDataProvider(Protocol):
         Rows use ``time``, ``price``, ``volume``, ``trade_count`` and
         normalized ``direction`` fields. Implementations may return empty.
         """
+    def get_depth_batch(self, symbols: list[str]) -> dict[str, dict]:
+        """Return five-level order books keyed by symbol."""

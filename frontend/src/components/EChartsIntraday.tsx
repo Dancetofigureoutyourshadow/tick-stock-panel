@@ -15,6 +15,10 @@ export interface DailyOhlc {
   close: number
 }
 
+export interface DailySummary extends DailyOhlc {
+  date: string
+}
+
 export interface IntradayChartMarker {
   date: string
   time: string
@@ -37,6 +41,7 @@ interface Props {
   height?: number
   prevClose?: number
   date?: string
+  dailySummary?: DailySummary
   priceLimit?: PriceLimitInfo
   onPriceHover?: (price: number | null) => void
   onPriceDoubleClick?: (price: number, currentPrice: number) => void
@@ -97,6 +102,7 @@ function nearestTradingTime(time: string): string {
 }
 
 function buildOption(data: MinuteKlineRow[], prevClose: number | undefined, avgPrices: (number | null)[], lineColor: string, areaColor: string, yMode: YMode, ct: ChartTheme, priceLimit?: PriceLimitInfo, showLimitLines = true, showAvgLine = true, priceLines: Props['priceLines'] = [], markers: IntradayChartMarker[] = [], date?: string): EChartsOption {
+  const limitLinesActive = showLimitLines && !priceLimit?.no_limit
   // 将数据映射到全天时间轴上的正确位置
   const timeIndexMap = new Map(FULL_DAY_TIMES.map((t, i) => [t, i]))
   const closes = new Array(FULL_DAY_TIMES.length).fill(null) as (number | null)[]
@@ -204,7 +210,7 @@ function buildOption(data: MinuteKlineRow[], prevClose: number | undefined, avgP
       }
     }
 
-    if (showLimitLines && yMode === 'limit') {
+    if (limitLinesActive && yMode === 'limit') {
       const { limitUp, limitDown } = getLimitPrices(prevClose, priceLimit)
       const limitDiffUp = limitUp - prevClose
       const limitDiffDown = prevClose - limitDown
@@ -230,16 +236,16 @@ function buildOption(data: MinuteKlineRow[], prevClose: number | undefined, avgP
       )
     } else {
       // 自适应模式: Y 轴按实际涨跌幅对称, 但不超出实际涨跌停范围
-      if (showLimitLines) {
+      if (limitLinesActive) {
         const { limitUp, limitDown } = getLimitPrices(prevClose, priceLimit)
         const limitDiff = Math.max(limitUp - prevClose, prevClose - limitDown)
         maxDiff = Math.min(maxDiff, limitDiff)
       }
-      if (!showLimitLines && maxDiff > 0) {
+      if (!limitLinesActive && maxDiff > 0) {
         maxDiff *= 1.1
       }
       // 至少保证一个可视范围 (防止数据平时 maxDiff=0)。指数不使用涨跌停范围，最小范围要更紧，否则低波动指数会被压成横线。
-      const minDiff = showLimitLines ? prevClose * 0.01 : prevClose * 0.001
+      const minDiff = limitLinesActive ? prevClose * 0.01 : prevClose * 0.001
       if (maxDiff < minDiff) maxDiff = minDiff
       yMin = prevClose - maxDiff
       yMax = prevClose + maxDiff
@@ -351,6 +357,7 @@ function buildOption(data: MinuteKlineRow[], prevClose: number | undefined, avgP
         type: 'value',
         min: yMin,
         max: yMax,
+        scale: true,
         interval: maxDiff || undefined,
         splitArea: { show: false },
         axisLine: { show: false },
@@ -455,6 +462,7 @@ export function EChartsIntraday({
   height = 320,
   prevClose,
   date,
+  dailySummary,
   priceLimit,
   onPriceHover,
   onPriceDoubleClick,
@@ -482,10 +490,21 @@ export function EChartsIntraday({
   // 全日索引 → 数据数组索引 的映射 (ref 避免重建 chart)
   const fullDayToDataIdx = useRef<Map<number, number>>(new Map())
 
-  const [infoIdx, setInfoIdx] = useState(data.length - 1)
+  const [infoIdx, setInfoIdx] = useState(-1)
   const [yMode, setYMode] = useState<YMode>('adaptive')
   const ct = useChartTheme()
   const avgPrices = useMemo(() => computeIntradayAverage(data, averagePriceScale), [data, averagePriceScale])
+  const minuteSummary = useMemo(() => {
+    if (data.length === 0) return null
+    const validHighs = data.map(row => row.high).filter(Number.isFinite)
+    const validLows = data.map(row => row.low).filter(Number.isFinite)
+    return {
+      open: data.find(row => row.open != null)?.open ?? null,
+      high: validHighs.length ? Math.max(...validHighs) : data[data.length - 1].high,
+      low: validLows.length ? Math.min(...validLows) : data[data.length - 1].low,
+      close: data[data.length - 1].close,
+    }
+  }, [data])
 
   // 分时线颜色：基于最新价 vs 昨收
   const lastClose = data.length > 0 ? data[data.length - 1].close : null
@@ -495,8 +514,8 @@ export function EChartsIntraday({
   const areaFill = lineIsFlat ? 'rgba(180,180,190,0.40)' : lineIsUp ? 'rgba(199,64,64,0.40)' : 'rgba(34,197,94,0.40)'
 
   useEffect(() => {
-    setInfoIdx(data.length - 1)
-  }, [data.length])
+    setInfoIdx(-1)
+  }, [date])
 
   useEffect(() => {
     const el = containerRef.current
@@ -526,6 +545,7 @@ export function EChartsIntraday({
         const axesInfo = event.axesInfo
         if (!axesInfo) return
         for (const info of Object.values(axesInfo)) {
+          if ((info as any)?.axisDim !== 'x') continue
           const val = (info as any)?.value
           if (val == null) continue
           const fullDayIdx = typeof val === 'number' ? val : -1
@@ -542,6 +562,7 @@ export function EChartsIntraday({
       })
 
       chart.on('globalout', () => {
+        setInfoIdx(-1)
         onPriceHoverRef.current?.(null)
       })
 
@@ -596,11 +617,18 @@ export function EChartsIntraday({
 
   const d = infoIdx >= 0 && infoIdx < data.length ? data[infoIdx] : null
   const avg = d != null ? avgPrices[infoIdx] : null
+  const displayMinute = d ?? data[data.length - 1] ?? null
+  const displayAvg = d != null ? avg : avgPrices[data.length - 1]
   const chg = d && prevClose != null ? d.close - prevClose : null
   const isUp = chg != null ? chg > 0 : true
   const isFlat = chg != null ? chg === 0 : false
   const priceClr = isFlat ? '#A1A1AA' : isUp ? '#C74040' : '#2D9B65'
-  const headerOhlc = dailyOhlc ?? d
+  const hovered = infoIdx >= 0 && d != null
+  const headerOhlc = hovered ? d : dailyOhlc ?? dailySummary ?? minuteSummary ?? d
+  const summaryVolume = data.reduce((total, row) => total + (Number.isFinite(row.volume) ? row.volume : 0), 0)
+  const summaryAmount = data.reduce((total, row) => total + (row.amount != null && Number.isFinite(row.amount) ? row.amount : 0), 0)
+  const displayedVolume = hovered ? d?.volume : summaryVolume
+  const displayedAmount = hovered ? d?.amount : summaryAmount
   const headerChg = headerOhlc && prevClose != null ? headerOhlc.close - prevClose : null
   const headerPriceClr = headerChg == null
     ? priceClr
@@ -641,10 +669,11 @@ export function EChartsIntraday({
       <div style={{ backgroundColor: ct.infoBarBg }}>
         {/* 第一行: 日期 + OHLC */}
         <div className="flex items-center gap-x-2 px-2 font-mono text-[11px] select-none flex-wrap" style={{ height: 20 }}>
-          {!d && <span className="text-muted">—</span>}
-          {d && (
+          {!headerOhlc && <span className="text-muted">—</span>}
+          {headerOhlc && (
             <>
-              {date && <span className="text-muted">{date}</span>}
+              <span className="text-muted">{hovered && d ? formatMinuteTime(d.datetime) : headerOhlc === minuteSummary || (!dailyOhlc && !dailySummary) ? '分时汇总' : '日K'}</span>
+              {date && !hovered && <span className="text-muted">{date}</span>}
               <span className="text-muted">开</span>
               <span style={{ color: headerPriceClr }}>
                 {headerOhlc?.open != null ? headerOhlc.open.toFixed(2) : '—'}
@@ -660,20 +689,20 @@ export function EChartsIntraday({
         </div>
         {/* 第二行: 价格+均价+量+额 */}
         <div className="flex items-center gap-x-4 px-2 font-mono text-[11px] select-none" style={{ height: 20 }}>
-          {d && (
+          {displayMinute && (
             <>
               <span className="flex items-center gap-x-1">
                 <span style={{ display: 'inline-block', width: 14, height: 2, background: priceClr }} />
-                <span style={{ color: priceClr }}>{d.close.toFixed(2)}</span>
+                <span style={{ color: priceClr }}>{displayMinute.close.toFixed(2)}</span>
               </span>
               {showAvgLine && <span className="flex items-center gap-x-1">
                 <span style={{ display: 'inline-block', width: 14, height: 2, background: THEME.avgLine }} />
-                <span style={{ color: THEME.avgLine }}>{avg != null ? avg.toFixed(2) : '—'}</span>
+                <span style={{ color: THEME.avgLine }}>{displayAvg != null ? displayAvg.toFixed(2) : '—'}</span>
               </span>}
               <span className="text-muted">量</span>
-              <span className="text-secondary">{d.volume.toFixed(0)}</span>
+              <span className="text-secondary">{displayedVolume?.toFixed(0)}</span>
               <span className="text-muted">额</span>
-              <span className="text-secondary">{fmtAmt(d.amount)}</span>
+              <span className="text-secondary">{fmtAmt(displayedAmount)}</span>
             </>
           )}
         </div>

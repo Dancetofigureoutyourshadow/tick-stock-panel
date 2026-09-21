@@ -268,6 +268,7 @@ export interface PriceLimitInfo {
   rate: number
   limit_up: number | null
   limit_down: number | null
+  no_limit?: boolean
   source: 'rule' | 'instrument'
 }
 

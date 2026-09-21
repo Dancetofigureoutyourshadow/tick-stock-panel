@@ -191,25 +191,6 @@ class MiningRunStore:
             manifest = self._required_manifest(safe_run_id)
             return self._transition_locked(manifest, status, error=error)
 
-    def transition_status_with_event(
-        self,
-        run_id: str,
-        status: MiningRunStatus,
-        event_type: str,
-        payload: Mapping[str, Any] | None = None,
-        *,
-        error: str | None = None,
-    ) -> dict[str, Any]:
-        """Publish a status transition and its event as one observable update."""
-        if status not in RUN_STATUSES:
-            raise MiningRunValidationError(f"unsupported mining run status: {status!r}")
-        safe_run_id = self._validate_run_id(run_id)
-        with _STORE_LOCK:
-            manifest = self._required_manifest(safe_run_id)
-            transitioned = self._transition_locked(manifest, status, error=error)
-            self.append_event(safe_run_id, event_type, payload)
-            return transitioned
-
     def write_summary(self, run_id: str, summary: Mapping[str, Any]) -> dict[str, Any]:
         """Atomically replace a run's scalar or compact aggregate summary."""
         if not isinstance(summary, Mapping):

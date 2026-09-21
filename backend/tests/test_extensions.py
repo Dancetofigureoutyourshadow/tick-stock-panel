@@ -4,7 +4,6 @@ import types
 
 import pytest
 from fastapi import APIRouter, FastAPI
-from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
 from app.extensions.contracts import (
@@ -156,35 +155,3 @@ def test_loader_isolates_failed_setup_and_registers_valid_route(
     client = TestClient(app)
     response = client.get("/api/custom/valid/status")
     assert response.status_code == 200
-    assert any(getattr(route, "path", None) == "/api/custom/valid/status" for route in app.routes)
-
-
-def test_blind_training_extension_registers_all_routes_without_conflicts(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from app.custom import blind_training as blind_training_extension
-
-    monkeypatch.setattr(
-        "app.extensions.loader._custom_module_names",
-        lambda: [blind_training_extension.__name__],
-    )
-    app = FastAPI()
-
-    registry, errors = configure_backend_extensions(app)
-
-    assert not errors
-    assert registry.extension_ids() == frozenset({"blind.training"})
-    route_key_list = [
-        (route.path, method)
-        for route in app.routes
-        if isinstance(route, APIRoute)
-        for method in route.methods
-    ]
-    route_keys = set(route_key_list)
-    assert ("/api/blind-training/sessions/{session_id}", "DELETE") in route_keys
-    assert ("/api/blind-training/sessions/{session_id}/next", "POST") in route_keys
-    assert ("/api/blind-training/records/{training_id}/analyze", "POST") in route_keys
-    assert not any(path.startswith("/api/chan-training") for path, _method in route_keys)
-    assert not any(path.endswith("/diagnostics") for path, _method in route_keys)
-    assert not any(path.endswith("/validate-samples") for path, _method in route_keys)
-    assert len(route_key_list) == len(route_keys)

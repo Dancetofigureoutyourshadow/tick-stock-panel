@@ -373,7 +373,7 @@ def _get_daily_impl(
     import polars as pl
 
     repo = request.app.state.repo
-    end = date.fromisoformat(end_date) if end_date else date.today()
+    end = date.fromisoformat(end_date) if end_date else cn_today()
     if start_date:
         start = date.fromisoformat(start_date)
     else:
@@ -599,7 +599,7 @@ def _get_periodic_daily(
         return {**base_response, "rows": [], "source": "none"}
 
     rows = daily.to_dicts()
-    if full_end >= date.today():
+    if full_end >= cn_today():
         rows = _maybe_inject_live_candle(request, symbol, rows, asset_type)
     frame = pl.DataFrame(rows)
     if "symbol" not in frame.columns:
@@ -676,7 +676,7 @@ def get_daily(
     if period == "day":
         return _get_daily_impl(request, symbol, days, start_date, end_date, ext_columns)
 
-    range_end = date.fromisoformat(end_date) if end_date else date.today()
+    range_end = date.fromisoformat(end_date) if end_date else cn_today()
     range_start = (
         date.fromisoformat(start_date)
         if start_date
@@ -715,7 +715,7 @@ def get_daily_batch(request: Request, body: dict):
     import polars as pl
     from datetime import date, timedelta
 
-    end = date.today()
+    end = cn_today()
     start = end - timedelta(days=days * 2)  # 多取一些确保交易日够
 
     cols = [

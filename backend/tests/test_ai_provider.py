@@ -426,49 +426,6 @@ async def test_generate_ai_text_default_cap_and_none_passthrough(monkeypatch):
     assert captured["max_tokens"] is None  # None = 推理模型放开, 不钳制
 
 
-@pytest.mark.asyncio
-async def test_generate_ai_text_allows_short_codex_probe_timeout(monkeypatch):
-    captured: dict = {}
-    monkeypatch.setattr(ai_provider, "is_codex_cli_provider", lambda: True)
-    monkeypatch.setattr(ai_provider, "current_ai_max_output_tokens", lambda: 8192)
-    monkeypatch.setattr(ai_provider, "current_ai_context_window", lambda: 64000)
-
-    async def fake_run(messages, *, max_tokens, timeout):
-        captured["timeout"] = timeout
-        return "ok"
-
-    monkeypatch.setattr(ai_provider, "_run_codex_cli", fake_run)
-    result = await ai_provider.generate_ai_text(
-        [{"role": "user", "content": "hi"}],
-        max_tokens=8,
-        timeout=15,
-        codex_timeout=15,
-    )
-
-    assert result == "ok"
-    assert captured["timeout"] == 15
-
-
-@pytest.mark.asyncio
-async def test_ai_test_endpoint_uses_short_codex_probe_timeout(monkeypatch):
-    from app.api.strategy import ai_test
-
-    captured: dict = {}
-
-    async def fake_generate(messages, **kwargs):
-        captured.update(kwargs)
-        return "OK"
-
-    monkeypatch.setattr(ai_provider, "generate_ai_text", fake_generate)
-
-    result = await ai_test(None)
-
-    assert result["ok"] is True
-    assert result["response"] == "OK"
-    assert captured["timeout"] == 15
-    assert captured["codex_timeout"] == 15
-
-
 def test_save_ai_settings_persists_token_sizes(monkeypatch):
     from app.api import settings as settings_api
     from app.config import settings as app_settings

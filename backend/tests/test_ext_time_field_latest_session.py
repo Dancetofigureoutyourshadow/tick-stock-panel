@@ -1,7 +1,7 @@
 """日内序列表 (PullConfig.time_field) 读侧取值: 每个 symbol 必须收敛到最新一盘。
 
-多盘并存的分区里, 选股/自选/告警/个股详情 (_load_ext_value_maps) 与 enriched 因子帧
-(ext_factors._timeseries_frame)
+多盘并存的分区里, 选股/自选/告警/个股详情 (_load_ext_value_maps)、enriched 因子帧
+(ext_factors._timeseries_frame) 与板块资金流 (sector_rotation._load_sector_flow)
 都按 symbol 去重取一行。去重只看行序, 所以写入端必须保证分区内按时间列升序:
 合并去重后的行序不稳定时, 各 symbol 取到的是随机一盘。
 """
@@ -16,6 +16,7 @@ import pytest
 
 from app.api import screener
 from app.factors import ext_factors
+from app.services import sector_rotation
 from app.services.ext_data import ExtConfig, ExtConfigStore, ExtField, PullConfig, rows_to_parquet
 
 DAY = date(2026, 9, 15)
@@ -54,6 +55,7 @@ def _write_three_sessions(data_dir: Path) -> ExtConfig:
 @pytest.fixture()
 def data_dir(tmp_path: Path) -> Path:
     screener._ext_value_map_cache.clear()
+    sector_rotation.invalidate_cache()
     d = tmp_path / "data"
     d.mkdir()
     return d
@@ -80,6 +82,16 @@ def test_ext_factor_frame_takes_latest_session_after_merge(data_dir):
     assert set(frame[value_col].to_list()) == {3.0}
 
 
+def test_sector_flow_takes_latest_session_after_merge(data_dir):
+    _write_three_sessions(data_dir)
+
+    flow = sector_rotation._load_sector_flow(data_dir, "auction.v")
+
+    assert flow is not None
+    assert flow.height == N_SYMBOLS
+    assert set(flow["_flow"].to_list()) == {3.0}
+
+
 def test_fresh_partition_sorted_even_if_upstream_returns_latest_first(data_dir):
     """首次落盘 (无旧分区, 不经合并去重): 上游按时间倒序返回也要按时间列升序落盘。"""
     cfg = _config()
@@ -94,6 +106,8 @@ def test_fresh_partition_sorted_even_if_upstream_returns_latest_first(data_dir):
 
     vmap = screener._load_ext_value_maps(repo, "auction.v")["auction__v"]
     assert vmap == {"000001.SZ": 3.0}
+    flow = sector_rotation._load_sector_flow(data_dir, "auction.v")
+    assert flow is not None and flow["_flow"].to_list() == [3.0]
 
 
 def test_snapshot_table_without_time_field_row_order_unchanged(data_dir):

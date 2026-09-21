@@ -46,8 +46,7 @@ def should_use_live_market_snapshot(
         snapshot_date == now.date()
         and now.weekday() < 5
         and now.time() < _OFFICIAL_DAILY_READY
-    )
-
+)
 
 def in_continuous_session(now: datetime | None = None) -> bool:
     """A股连续竞价时段 (北京时间): 9:30-11:30 / 13:00-15:00, 仅工作日。"""

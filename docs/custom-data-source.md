@@ -15,7 +15,7 @@
 | 全量分钟 | `full_minute` | 与 `minute` 同形;声明后可被路由为「全量分钟」生效源,内置服务盘中按当日窗口全市场批量落盘(仅修复轮语义,节奏下限 60s) |
 | 财务数据 | `financial` | 一个配置覆盖全部财务表,请求时把表名作为参数传给上游;字段由数据源决定,仅需映射出 symbol |
 
-深度盘口(depth5)仅对实现 `get_depth5(symbols)` 的代码插件开放；当前 MooTDX 插件已实现该契约。通用 HTTP YAML 数据源仍不支持此数据集。
+深度盘口(depth5)暂无数据集契约,仍由 TickFlow 提供。
 
 `full_minute` 声明式源只提供修复轮(当日窗口批量);廉价增量端点
 (`get_intraday_latest`)是 Python 插件契约,见

@@ -301,7 +301,6 @@ async def generate_ai_text(
     temperature: float | None = 0.3,
     max_tokens: int | None = 3000,
     timeout: float = 180.0,
-    codex_timeout: float | None = None,
 ) -> str:
     """Return a complete AI response from the currently configured provider.
 
@@ -309,23 +308,11 @@ async def generate_ai_text(
     (如 deepseek reasoner 系)的思考 token 计入 max_tokens 预算, 显式限制
     会挤占正文甚至全部吃光(正文 0 字 + finish=length), 长分析类调用应放开。
     显式传入的数值会被钳制到配置的输出上限 (AI 设置可调)。
-    codex_timeout 可为短探测覆盖 Codex CLI 的默认长超时。
     """
     max_tokens = _resolve_max_tokens(max_tokens)
     _check_input_budget(messages, max_tokens=max_tokens)
     if is_codex_cli_provider():
-        # Normal Codex tasks get a generous floor because the CLI may spend
-        # time waiting for reasoning. Short-lived probes (for example the
-        # settings connection test) can opt out so a stuck CLI cannot leave
-        # the UI waiting for the full task timeout.
-        effective_codex_timeout = (
-            max(timeout, 600.0) if codex_timeout is None else max(0.1, codex_timeout)
-        )
-        return await _run_codex_cli(
-            messages,
-            max_tokens=max_tokens,
-            timeout=effective_codex_timeout,
-        )
+        return await _run_codex_cli(messages, max_tokens=max_tokens, timeout=max(timeout, 600.0))
     return await _run_openai_once(
         messages,
         temperature=temperature,

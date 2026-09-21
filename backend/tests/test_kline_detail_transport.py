@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
-from pathlib import Path
-from threading import RLock
 from unittest.mock import MagicMock
 
 import polars as pl
@@ -44,27 +42,14 @@ def _minute_rows(count: int = 240) -> pl.DataFrame:
     )
 
 
-def _partial_close_rows() -> pl.DataFrame:
-    morning = [datetime(2026, 1, 15, 9, 30) + timedelta(minutes=i) for i in range(120)]
-    afternoon = [datetime(2026, 1, 15, 13, 0) + timedelta(minutes=i) for i in range(99)]
-    rows = _minute_rows(219)
-    return rows.with_columns(pl.Series("datetime", morning + afternoon))
-
-
-def _full_close_rows() -> pl.DataFrame:
-    morning = [datetime(2026, 1, 15, 9, 30) + timedelta(minutes=i) for i in range(120)]
-    afternoon = [datetime(2026, 1, 15, 13, 0) + timedelta(minutes=i) for i in range(120)]
-    rows = _minute_rows(240)
-    return rows.with_columns(pl.Series("datetime", morning + afternoon))
-
-
 class _DetailRepo:
-    def __init__(self, minute: pl.DataFrame | None = None, data_dir: Path | None = None) -> None:
+    def __init__(self, minute: pl.DataFrame | None = None) -> None:
         self.minute = minute if minute is not None else _minute_rows()
-        self.store = MagicMock()
-        self.store.data_dir = data_dir
-        self._write_lock = RLock()
-        self.rebuild_view = MagicMock()
+        # /minute 读取 repo.store.data_dir 判断分钟基准标记 (无标记即旧行为)
+        import tempfile
+        from types import SimpleNamespace
+        from pathlib import Path
+        self.store = SimpleNamespace(data_dir=Path(tempfile.mkdtemp()))
 
     def resolve_asset_type(self, symbol: str) -> str:
         return "stock"
@@ -162,19 +147,6 @@ def test_detail_kline_responses_use_configured_gzip(
     assert disabled.json() == plain.json()
 
 
-def test_minute_range_gzip_wraps_final_aggregated_payload():
-    response = _client(_DetailRepo()).get(
-        f"/api/kline/minute-range?symbol={_SYMBOL}&days=10&freq=5m",
-        headers={"Accept-Encoding": "gzip"},
-    )
-
-    assert response.status_code == 200
-    assert response.headers["content-encoding"] == "gzip"
-    payload = response.json()
-    assert payload["freq"] == "5m"
-    assert len(payload["sessions"][0]["rows"]) == 30
-
-
 @pytest.mark.parametrize("live", [False, True])
 def test_free_tier_skips_tickflow_minute_fallback(monkeypatch, live):
     get_client = MagicMock(side_effect=AssertionError("must not call TickFlow"))
@@ -213,57 +185,6 @@ def test_custom_minute_source_remains_available_without_tickflow_capability(monk
     get_client.assert_not_called()
 
 
-def test_post_close_partial_local_minutes_refetch_when_last_bar_is_early(monkeypatch):
-    provider = MagicMock()
-    provider.get_minute.return_value = _full_close_rows()
-    write_minute = MagicMock(return_value=240)
-    monkeypatch.setattr(kline, "cn_now", lambda: datetime(2026, 1, 15, 15, 31))
-    monkeypatch.setattr(kline, "in_continuous_session", lambda: False)
-    monkeypatch.setattr(kline.kline_sync, "_write_minute_partition", write_minute)
-    monkeypatch.setattr("app.services.preferences.get_minute_data_provider", lambda: "custom")
-    monkeypatch.setattr(
-        "app.data_providers.custom.provider_has_dataset", lambda name, dataset: True
-    )
-    monkeypatch.setattr("app.data_providers.custom.get_provider", lambda name: provider)
-
-    repo = _DetailRepo(_partial_close_rows(), Path("test-data"))
-    response = _client(repo).get(
-        "/api/kline/minute",
-        params={"symbol": _SYMBOL, "date": str(_TRADE_DATE)},
-    )
-
-    assert response.status_code == 200
-    assert response.json()["source"] == "live"
-    assert len(response.json()["rows"]) == 240
-    provider.get_minute.assert_called_once()
-    stored = write_minute.call_args.args[0]
-    assert stored.filter(pl.col("symbol") == _SYMBOL).height == 240
-    assert stored["datetime"].max() >= datetime(2026, 1, 15, 14, 50)
-    assert write_minute.call_args.args[1] == Path("test-data/kline_minute")
-    repo.rebuild_view.assert_called_once_with("kline_minute")
-
-
-def test_failed_post_close_refetch_keeps_partial_local_minutes(monkeypatch):
-    provider = MagicMock()
-    provider.get_minute.return_value = pl.DataFrame()
-    monkeypatch.setattr(kline, "cn_now", lambda: datetime(2026, 1, 15, 15, 31))
-    monkeypatch.setattr(kline, "in_continuous_session", lambda: False)
-    monkeypatch.setattr("app.services.preferences.get_minute_data_provider", lambda: "custom")
-    monkeypatch.setattr(
-        "app.data_providers.custom.provider_has_dataset", lambda name, dataset: True
-    )
-    monkeypatch.setattr("app.data_providers.custom.get_provider", lambda name: provider)
-
-    response = _client(_DetailRepo(_partial_close_rows())).get(
-        "/api/kline/minute",
-        params={"symbol": _SYMBOL, "date": str(_TRADE_DATE)},
-    )
-
-    assert response.status_code == 200
-    assert response.json()["source"] == "local"
-    assert len(response.json()["rows"]) == 219
-
-
 def test_failed_custom_source_does_not_fall_back_to_unsupported_tickflow(monkeypatch):
     provider = MagicMock()
     provider.get_minute.side_effect = RuntimeError("custom source unavailable")
@@ -284,6 +205,55 @@ def test_failed_custom_source_does_not_fall_back_to_unsupported_tickflow(monkeyp
     assert response.status_code == 200
     assert response.json()["source"] == "none"
     get_client.assert_not_called()
+
+
+def test_gzip_payload_strips_nonfinite_floats() -> None:
+    """gzip 路径不得写出 NaN/Infinity: 前端 JSON.parse 会直接炸掉。
+
+    停牌/坏源/指标暖机窗口会出现 nan 或 inf。Python json.dumps 默认 allow_nan=True,
+    压缩路径会把非法 JSON 词写进 gzip 体; 未压缩路径走 Starlette allow_nan=False, 整段 500。
+    助手分时小图已经按同样口径清洗 (test_assistant_intraday_chart_finite)。
+    """
+    import gzip as gz
+    import json
+    from types import SimpleNamespace
+
+    from fastapi.responses import Response
+
+    req = SimpleNamespace(headers={"accept-encoding": "gzip"})
+    payload = {
+        "symbol": _SYMBOL,
+        # 压缩路径只在 JSON 超过 1024 字节时启用
+        "pad": "x" * 1200,
+        "rows": [
+            {"close": float("nan")},
+            {"close": float("inf")},
+            {"close": 10.5},
+        ],
+    }
+    result = kline._gzip_payload(req, payload, pref_key="minute_batch_compress")
+    assert isinstance(result, Response)
+    text = gz.decompress(result.body).decode()
+    json.dumps(json.loads(text), allow_nan=False)
+    data = json.loads(text)
+    assert data["rows"][0]["close"] is None
+    assert data["rows"][1]["close"] is None
+    assert data["rows"][2]["close"] == 10.5
+
+
+def test_uncompressed_payload_strips_nonfinite_floats() -> None:
+    """未压缩路径同样清洗, 避免 Starlette JSONResponse allow_nan=False 整段 500。"""
+    import json
+    from types import SimpleNamespace
+
+    req = SimpleNamespace(headers={})
+    payload = {"rows": [{"close": float("nan")}, {"close": float("-inf")}]}
+    result = kline._gzip_payload(req, payload, pref_key="daily_batch_compress")
+    assert isinstance(result, dict)
+    json.dumps(result, allow_nan=False)
+    assert result["rows"][0]["close"] is None
+    assert result["rows"][1]["close"] is None
+
 
 
 def test_pro_tier_keeps_tickflow_minute_fallback(monkeypatch):

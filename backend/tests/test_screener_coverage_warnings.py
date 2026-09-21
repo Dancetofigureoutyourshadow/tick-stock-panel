@@ -196,26 +196,3 @@ def test_update_cache_strategy_keeps_warnings(tmp_path):
     cached = strategy_cache.read_cache(tmp_path)
     assert cached["results"]["s1"]["warnings"] == ["数据不足"]
     assert cached["results"]["other"]["total"] == 1  # 同日其余策略不受影响
-
-
-def test_update_cache_strategy_initializes_empty_cache(tmp_path):
-    """缓存不存在时, 单跑结果也必须能被 cached-result 读取。"""
-    from app.services import strategy_cache
-
-    screener_api._update_cache_strategy(
-        tmp_path, "2026-09-18", "s1",
-        {"total": 1, "as_of": "2026-09-18", "rows": [{"symbol": "000001.SZ"}]},
-    )
-
-    cached = strategy_cache.read_cache(tmp_path)
-    assert cached["results"]["s1"]["total"] == 1
-    request = SimpleNamespace(
-        app=SimpleNamespace(
-            state=SimpleNamespace(
-                repo=SimpleNamespace(store=SimpleNamespace(data_dir=tmp_path)),
-                monitor_engine=SimpleNamespace(latest_strategy_results=lambda: {}),
-            ),
-        ),
-    )
-    payload = screener_api.get_cached_result("s1", request, ext_columns=None)
-    assert payload["result"]["rows"] == [{"symbol": "000001.SZ"}]

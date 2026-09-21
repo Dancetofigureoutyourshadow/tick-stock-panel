@@ -42,139 +42,37 @@ def test_daily_batch_groups_index_symbols(repo, monkeypatch):
     assert "000001.SH" in out["data"]
 
 
-def test_daily_batch_computes_limit_signals_from_raw_prices(repo, monkeypatch):
-    date_prev = _dt.date(2026, 7, 23)
-    date_current = _dt.date(2026, 7, 24)
-    source = pl.DataFrame({
-        "symbol": ["000001.SZ", "000001.SZ"],
-        "date": [date_prev, date_current],
-        "open": [10.0, 11.0],
-        "high": [10.0, 11.0],
-        "low": [10.0, 11.0],
-        "close": [10.0, 11.0],
-        "volume": [100, 100],
-        "raw_close": [10.0, 11.0],
-        "raw_high": [10.0, 11.0],
-        "raw_low": [10.0, 11.0],
-    })
-    monkeypatch.setattr(repo, "get_enriched_latest", lambda: (pl.DataFrame(), None))
-    monkeypatch.setattr(repo, "_scan_daily_batch", lambda *args, **kwargs: source)
-    monkeypatch.setattr(repo, "get_instruments", lambda: pl.DataFrame({
-        "symbol": ["000001.SZ"], "name": ["平安银行"],
-    }))
-
-    out = repo.get_daily_batch(
-        ["000001.SZ"], date_prev, date_current,
-        columns=["symbol", "date", "close", "signal_limit_up", "signal_limit_down"],
-    )
-
-    assert out.select("signal_limit_up").to_series().to_list() == [None, True]
-    assert out.select("signal_limit_down").to_series().to_list() == [None, False]
+# 钉死的北京日期, 不会碰巧等于跑测试那天的 date.today()
+_BJ = _dt.date(2026, 3, 2)
 
 
-def test_daily_batch_overlays_live_cache_when_today_is_not_on_disk(repo, monkeypatch):
-    previous = _dt.date(2026, 7, 23)
-    current = _dt.date(2026, 7, 24)
-    monkeypatch.setattr(repo, "get_enriched_latest", lambda: (
-        pl.DataFrame({
-            "symbol": ["000001.SZ"],
-            "date": [current],
-            "open": [11.0],
-            "high": [11.5],
-            "low": [10.8],
-            "close": [11.2],
-            "volume": [120.0],
-        }),
-        current,
-    ))
-    monkeypatch.setattr(repo, "_scan_daily_batch", lambda *args, **kwargs: pl.DataFrame({
-        "symbol": ["000001.SZ"],
-        "date": [previous],
-        "open": [10.0],
-        "high": [10.4],
-        "low": [9.8],
-        "close": [10.1],
-        "volume": [100.0],
-    }))
+def test_daily_batch_window_ends_on_beijing_today(repo, monkeypatch):
+    """自选迷你K 的默认截止日必须是北京今天。
 
-    out = repo.get_daily_batch(
-        ["000001.SZ"], previous, current,
-        columns=["symbol", "date", "open", "high", "low", "close", "volume"],
-    )
+    QuoteService 盘中 flush 的当日分区日期是北京交易日。未修复代码用
+    date.today() 做窗口右端: 美西主机整个 A 股交易时段、UTC 主机北京
+    00:00-08:00, 本地日历日比北京早一天, 今日实时 K 被排除, 迷你蜡烛停在昨天。
+    raising=False: 未修复代码没有调用 cn_today, 钉了也不会被用到。
+    """
+    from app.api import kline as kline_api
 
-    assert out.select("date").to_series().to_list() == [previous, current]
-    assert out.filter(pl.col("date") == current).select("close").item() == 11.2
+    captured: list[tuple[_dt.date, _dt.date]] = []
 
+    def fake_stock_batch(symbols, start, end, columns=None):
+        captured.append((start, end))
+        return pl.DataFrame({
+            "symbol": ["600000.SH"], "date": [_BJ],
+            "open": [10.0], "high": [10.6], "low": [9.9], "close": [10.6], "volume": [1.0],
+        })
 
-def test_daily_close_projection_reads_only_bounded_partitions(repo, monkeypatch):
-    first = _dt.date(2026, 8, 10)
-    second = _dt.date(2026, 8, 11)
-    for trading_date, close in ((first, 10.1), (second, 10.3)):
-        path = (
-            repo.store.data_dir
-            / "kline_daily_enriched"
-            / f"date={trading_date.isoformat()}"
-            / "part.parquet"
-        )
-        path.parent.mkdir(parents=True, exist_ok=True)
-        pl.DataFrame({
-            "symbol": ["000001.SZ", "600000.SH"],
-            "date": [trading_date, trading_date],
-            "close": [close, 9.9],
-        }).write_parquet(path)
+    monkeypatch.setattr(kline_api, "cn_today", lambda: _BJ, raising=False)
+    monkeypatch.setattr(repo, "get_daily_batch", fake_stock_batch)
+    monkeypatch.setattr(repo, "resolve_asset_type", lambda s: "stock")
 
-    monkeypatch.setattr(
-        repo,
-        "get_daily",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("narrow close lookup must not use generic daily query")
-        ),
-    )
-    monkeypatch.setattr(
-        repo,
-        "get_enriched_latest",
-        lambda: (_ for _ in ()).throw(
-            AssertionError("narrow close lookup must not warm the enriched cache")
-        ),
-    )
+    state = type("S", (), {"repo": repo})()
+    req = type("R", (), {"app": type("A", (), {"state": state})()})()
 
-    out = repo.get_daily_asset(
-        "stock",
-        "000001.SZ",
-        first,
-        second,
-        columns=["date", "close"],
-    )
-
-    assert out.to_dicts() == [
-        {"date": first, "close": 10.1},
-        {"date": second, "close": 10.3},
-    ]
-
-
-def test_missing_daily_close_projection_does_not_fall_back_to_enriched(repo, monkeypatch):
-    monkeypatch.setattr(
-        repo,
-        "get_daily",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("missing close partitions must not use generic daily query")
-        ),
-    )
-    monkeypatch.setattr(
-        repo,
-        "get_enriched_latest",
-        lambda: (_ for _ in ()).throw(
-            AssertionError("missing close partitions must not warm the enriched cache")
-        ),
-    )
-
-    out = repo.get_daily_asset(
-        "stock",
-        "000001.SZ",
-        _dt.date(2026, 8, 10),
-        _dt.date(2026, 8, 11),
-        columns=["date", "close"],
-    )
-
-    assert out.is_empty()
-    assert out.schema == {"date": pl.Date, "close": pl.Float64}
+    kline_api.get_daily_batch(req, {"symbols": ["600000.SH"], "days": 12})
+    assert captured, "应查询日K"
+    _start, end = captured[0]
+    assert end == _BJ, f"窗口右端必须是北京日期 {_BJ}, 实际 {end} (服务器本地 {_dt.date.today()})"

@@ -9,19 +9,18 @@ from __future__ import annotations
 
 import contextlib
 import logging
-import math
 import shutil
-import time as _time
+import time
 import uuid
 from collections.abc import Callable
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, timedelta
 
 import polars as pl
 
 from app.data_providers.base import AssetType
 from app.indicators.pipeline import filter_halt_days
 from app.market_time import CN_TZ, cn_now, cn_today
-from app.services import preferences
+from app.services import minute_adjust, preferences
 from app.tickflow.capabilities import Cap, CapabilitySet
 from app.tickflow.client import get_client
 from app.tickflow.rate_limits import chunked, resolve_limit, sleep_between_batches
@@ -48,7 +47,6 @@ def _atomic_write_parquet(df: pl.DataFrame, out) -> None:
 # 标准列(无论 SDK 返回什么形状,我们把它规范成这套)
 CANONICAL_DAILY_COLS = [
     "symbol", "date", "open", "high", "low", "close", "volume", "amount",
-    "prev_close", "change_pct",
 ]
 
 
@@ -79,7 +77,7 @@ def _normalize_daily(df_in, default_symbol: str | None = None) -> pl.DataFrame:
     if "date" in df.columns and df.schema["date"] != pl.Date:
         df = df.with_columns(pl.col("date").cast(pl.Date, strict=False))
 
-    for col in ("open", "high", "low", "close", "prev_close", "change_pct"):
+    for col in ("open", "high", "low", "close"):
         if col in df.columns:
             df = df.with_columns(pl.col(col).cast(pl.Float64, strict=False))
     for col in ("volume", "amount"):
@@ -386,7 +384,7 @@ def _sweep_stale_daily_staging(staging_base, max_age_s: int = 24 * 60 * 60) -> N
     """清理崩溃遗留的旧同步目录,不碰仍可能活跃的新目录。"""
     if not staging_base.exists():
         return
-    cutoff = _time.time() - max_age_s
+    cutoff = time.time() - max_age_s
     for run_dir in staging_base.iterdir():
         try:
             if run_dir.is_dir() and run_dir.stat().st_mtime < cutoff:
@@ -427,8 +425,6 @@ def sync_daily_by_quotes(repo: KlineRepository) -> int:
             "close": q.get("last_price"),
             "volume": q.get("volume"),
             "amount": q.get("amount"),
-            "prev_close": q.get("prev_close"),
-            "change_pct": ext.get("change_pct"),
             # 快照时刻标记: data_integrity 靠 quote_ts 区分盘中快照与盘后权威历史,
             # 缺失会让盘中覆写的分区在停机后被当成完整历史, 永远不进修复。
             "quote_ts": q.get("timestamp"),
@@ -641,25 +637,20 @@ def aggregate_minute_kline(minute: pl.DataFrame, freq: str = "1m") -> pl.DataFra
         pl.col("datetime").dt.hour().cast(pl.Int64) * 60
         + pl.col("datetime").dt.minute().cast(pl.Int64)
     )
+    trading_minutes = (
+        ((pl.col("_minute_of_day") >= 9 * 60 + 30)
+         & (pl.col("_minute_of_day") < 11 * 60 + 30))
+        | ((pl.col("_minute_of_day") >= 13 * 60)
+           & (pl.col("_minute_of_day") < 15 * 60))
+    )
     if freq == "1m":
         standard = ordered.with_columns(minute_of_day.alias("_minute_of_day")).filter(
-            ((pl.col("_minute_of_day") >= 9 * 60 + 30)
-             & (pl.col("_minute_of_day") < 11 * 60 + 30))
-            | ((pl.col("_minute_of_day") >= 13 * 60)
-               & (pl.col("_minute_of_day") < 15 * 60))
+            trading_minutes
         ).drop("_minute_of_day")
-        # Keep legacy/non-wall-clock fixtures readable when no valid session row exists.
         return standard if not standard.is_empty() else ordered
 
-    filtered = (
-        ordered
-        .with_columns(minute_of_day.alias("_minute_of_day"))
-        .filter(
-            ((pl.col("_minute_of_day") >= 9 * 60 + 30)
-             & (pl.col("_minute_of_day") < 11 * 60 + 30))
-            | ((pl.col("_minute_of_day") >= 13 * 60)
-               & (pl.col("_minute_of_day") < 15 * 60))
-        )
+    filtered = ordered.with_columns(minute_of_day.alias("_minute_of_day")).filter(
+        trading_minutes
     )
     if filtered.is_empty():
         return filtered.drop("_minute_of_day")
@@ -960,7 +951,6 @@ def _try_custom_minute(
     asset_type: AssetType,
     freq: str = "1m",
     on_chunk_done: Callable[[int, int, str], None] | None = None,
-    empty_fallback_freq: str | None = None,
 ) -> tuple[pl.DataFrame | None, bool]:
     """尝试从自定义分钟源拉取。返回 (df, should_fallback_to_tickflow)。
 
@@ -978,9 +968,6 @@ def _try_custom_minute(
     on_chunk_done 适配: 上层回调是 3 参 (cur, total, seg_label), provider
     实现内部以 2 参 (cur, total) 调用。这里包装一层, provider 调 2 参时补
     默认 seg_label="custom" 转发给上层, 保证进度展示不降级。
-
-    empty_fallback_freq 仅供不落盘的展示路径使用: 请求频率返回空时以较低
-    频率重试。批量同步/落盘不传此参数, 保持分钟粒度契约不变。
     """
     provider_name = preferences.get_minute_data_provider()
     provider, fallback, err = _resolve_minute_provider(provider_name)
@@ -1002,33 +989,7 @@ def _try_custom_minute(
             symbols, start_time=start_time, end_time=end_time,
             asset_type=asset_type, freq=freq, on_chunk_done=wrapped_cb,
         )
-        if empty_fallback_freq and (df is None or len(df) == 0):
-            try:
-                fallback_df = provider.get_minute(
-                    symbols,
-                    start_time=start_time,
-                    end_time=end_time,
-                    asset_type=asset_type,
-                    freq=empty_fallback_freq,
-                    on_chunk_done=wrapped_cb,
-                )
-            except Exception as e:  # noqa: BLE001
-                logger.warning(
-                    "custom minute provider %s %s display fallback failed: %s",
-                    provider_name,
-                    empty_fallback_freq,
-                    e,
-                )
-            else:
-                if fallback_df is not None and len(fallback_df) > 0:
-                    logger.info(
-                        "custom minute provider %s returned no %s data; using %s display fallback",
-                        provider_name,
-                        freq,
-                        empty_fallback_freq,
-                    )
-                    df = fallback_df
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         logger.warning("custom minute provider %s call failed, falling back to TickFlow: %s",
                        provider_name, e)
         return (None, True)
@@ -1049,10 +1010,11 @@ def sync_minute_batch(
     count: int | None = None,
     batch_size: int | None = None,
     rpm: int | None = None,
-    on_chunk_done: Callable[[int, int, str], None] | None = None,
+    on_chunk_done: Callable[[int, int, str] | None] | None = None,
     segment_trading_days: int = 20,
     on_segment: Callable[[pl.DataFrame], None] | None = None,
     asset_type: AssetType = "stock",
+    raw_basis: bool = False,
 ) -> pl.DataFrame:
     """批量拉取多股分钟 K。
 
@@ -1133,12 +1095,12 @@ def sync_minute_batch(
                         start_time=_datetime_to_ms(cur_start),
                         end_time=_datetime_to_ms(cur_end),
                         count=10000,
-                        adjust="forward",
+                        adjust="none" if raw_basis else "forward",
                         as_dataframe=False, show_progress=False,
                     )
                 else:
                     raw = tf.klines.batch(chunk, period="1m", count=count or 1200,
-                                          adjust="forward",
+                                          adjust="none" if raw_basis else "forward",
                                           as_dataframe=False, show_progress=False)
             except Exception as e:  # noqa: BLE001
                 logger.warning("minute batch fetch failed for %d symbols: %s", len(chunk), e)
@@ -1462,7 +1424,8 @@ def fetch_minute_single(
     trade_date: date,
     asset_type: AssetType = "stock",
     *,
-    capset: CapabilitySet | None = None,
+    capset: CapabilitySet,
+    raw_basis: bool = False,
 ) -> pl.DataFrame:
     """实时拉取单股单日分钟 K(不写入本地)。
 
@@ -1479,15 +1442,12 @@ def fetch_minute_single(
     # 避免无 TickFlow Pro+ 权限的用户分时图首次打开(本地无数据)时补拉失败返回空。
     df, fallback = _try_custom_minute(
         [symbol], start_time=start_time, end_time=end_time,
-        asset_type=asset_type, freq="1m", empty_fallback_freq="5m",
+        asset_type=asset_type, freq="1m",
     )
     if not fallback:
         # 见 sync_minute_batch 同分支注释: df 在此必非 None。
         return df if df is not None else pl.DataFrame()
 
-    if capset is None:
-        from app.tickflow.policy import detect_capabilities
-        capset = detect_capabilities()
     if not capset.has(Cap.KLINE_MINUTE_BY_SYMBOL):
         return pl.DataFrame()
 
@@ -1498,7 +1458,7 @@ def fetch_minute_single(
             start_time=_datetime_to_ms(start_time),
             end_time=_datetime_to_ms(end_time),
             count=10000,
-            adjust="forward",
+            adjust="none" if raw_basis else "forward",
             as_dataframe=False, show_progress=False,
         )
     except Exception as e:
@@ -1640,37 +1600,6 @@ def _migrate_symbol_to_date_partition(repo: KlineRepository) -> None:
     logger.info("minute-K migration done: %d rows migrated", combined.height)
 
 
-def _minute_date_ranges(
-    repo: KlineRepository,
-    symbol: str,
-    start_date: date,
-    end_date: date,
-    skip_existing_days: bool,
-) -> list[tuple[date, date]]:
-    """按日期范围生成实际请求段; 非强制模式跳过已有分区。"""
-    if not skip_existing_days:
-        return [(start_date, end_date)]
-
-    local = repo.get_minute_range([symbol], start_date, end_date, asset_type="stock")
-    existing_dates: set[date] = set()
-    if not local.is_empty() and "datetime" in local.columns:
-        existing_dates = set(local["datetime"].dt.date().unique().to_list())
-
-    ranges: list[tuple[date, date]] = []
-    missing_start: date | None = None
-    current = start_date
-    while current <= end_date:
-        has_data = current in existing_dates
-        if not has_data and missing_start is None:
-            missing_start = current
-        if (has_data or current == end_date) and missing_start is not None:
-            missing_end = current - timedelta(days=1) if has_data else current
-            ranges.append((missing_start, missing_end))
-            missing_start = None
-        current += timedelta(days=1)
-    return ranges
-
-
 def sync_and_persist_minute(
     symbols: list[str],
     repo: KlineRepository,
@@ -1679,21 +1608,15 @@ def sync_and_persist_minute(
     on_chunk_done: Callable[[int, int, str], None] | None = None,
     extend_backward: bool = False,
     force_full_days: bool = False,
-    start_date: date | None = None,
-    end_date: date | None = None,
-    skip_existing_days: bool = False,
 ) -> int:
-    """同步分钟 K 并存到 Parquet(前复权价格, SDK 端 adjust=qfq)。返回写入行数。
+    """同步分钟 K 并存到 Parquet。返回写入行数。
 
+    存储口径由基准标记决定 (services/minute_adjust): 存量未迁移 → SDK adjust=qfq
+    前复权 (旧行为); 已迁移 → adjust='none' 原始价落盘, 复权读取时投影。
     使用 start_time / end_time 区间拉取, 确保所有标的覆盖同一时间段。
     on_chunk_done(current, total) 每个 chunk 完成后回调。
     force_full_days=True 时强制回溯 days 自然日 (不增量补, 用于个股补齐历史)。
     """
-    if (start_date is None) != (end_date is None):
-        raise ValueError("start_date and end_date must be provided together")
-    if start_date is not None and end_date is not None and start_date > end_date:
-        raise ValueError("minute sync start_date must not be after end_date")
-
     minute_provider = preferences.get_minute_data_provider()
     # resolver 调用统一走 _resolve_minute_provider, 与 _try_custom_minute 共用异常边界。
     # resolver 异常时视为非 custom (minute_is_custom=False), 走 capset 检查 →
@@ -1715,23 +1638,11 @@ def sync_and_persist_minute(
     # 迁移:旧版按 symbol= 分区转为 date= 分区
     _migrate_symbol_to_date_partition(repo)
 
-    # 窗口两端统一为北京时间: 起止点会与本地分钟 K 的北京墙钟混用, 用服务器
+    # 窗口两端统一为北京时区: 起止点会与本地分钟 K 的北京墙钟混用, 用服务器
     # 本地时间会让窗口整体错位 (UTC 容器上起点晚于终点, 增量补拉一个请求都发不出)。
     now = cn_now()
-    explicit_ranges: list[tuple[date, date]] | None = None
 
-    if start_date is not None and end_date is not None:
-        explicit_ranges = _minute_date_ranges(
-            repo,
-            symbols[0],
-            start_date,
-            end_date,
-            skip_existing_days,
-        )
-        if not explicit_ranges:
-            return 0
-        start_time = end_time = None
-    elif extend_backward:
+    if extend_backward:
         # 向前扩展模式: 从本地最早数据往前补, 叠加已有数据避免缺口。
         earliest_dt = _earliest_minute_datetime(repo)
         # 按交易日换算自然日 (7/5 系数)。>41 交易日时 +10 天余量覆盖节假日。
@@ -1778,62 +1689,15 @@ def sync_and_persist_minute(
             written_box[0] += _write_minute_partition(seg_df, minute_dir)
 
     segment_days = preferences.get_minute_sync_segment_days()
-    if explicit_ranges is None:
-        request_ranges = [(start_time, end_time)]
-        progress_total = 0
-    else:
-        request_ranges = [
-            (
-                datetime.combine(range_start, time(9, 25), tzinfo=CN_TZ),
-                datetime.combine(range_end, time(15, 5), tzinfo=CN_TZ),
-            )
-            for range_start, range_end in explicit_ranges
-        ]
-        segment_seconds = max(1, int(segment_days * 7 / 5)) * 86_400
-        progress_total = sum(
-            max(1, math.ceil((range_end - range_start).total_seconds() / segment_seconds))
-            for range_start, range_end in request_ranges
-        )
-        if on_chunk_done is not None:
-            on_chunk_done(0, progress_total, "准备")
-
-    completed_steps = 0
-    for range_start, range_end in request_ranges:
-        range_steps = 0
-        if explicit_ranges is not None:
-            range_steps = max(
-                1,
-                math.ceil((range_end - range_start).total_seconds() / segment_seconds),
-            )
-
-            def _range_progress(
-                current: int,
-                total: int,
-                label: str,
-                *,
-                offset: int = completed_steps,
-                expected: int = range_steps,
-            ) -> None:
-                if on_chunk_done is None:
-                    return
-                mapped = offset + min(expected, math.ceil(max(0, current) / max(total, 1) * expected))
-                on_chunk_done(mapped, progress_total, label)
-
-            chunk_progress = _range_progress
-        else:
-            chunk_progress = on_chunk_done
-        sync_minute_batch(
-            symbols, start_time=range_start, end_time=range_end,
-            batch_size=limit.batch, rpm=limit.rpm,
-            on_chunk_done=chunk_progress,
-            segment_trading_days=segment_days,
-            on_segment=_persist,
-            asset_type="stock",
-        )
-        if explicit_ranges is not None:
-            completed_steps += range_steps
-            if on_chunk_done is not None:
-                on_chunk_done(completed_steps, progress_total, f"{range_start.date()}~{range_end.date()}")
+    sync_minute_batch(
+        symbols, start_time=start_time, end_time=end_time,
+        batch_size=limit.batch, rpm=limit.rpm,
+        on_chunk_done=on_chunk_done,
+        segment_trading_days=segment_days,
+        on_segment=_persist,
+        asset_type="stock",
+        raw_basis=minute_adjust.minute_basis_is_raw(repo.store.data_dir),
+    )
 
     if written_box[0] == 0:
         return 0

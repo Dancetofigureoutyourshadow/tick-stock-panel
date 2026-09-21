@@ -47,7 +47,6 @@ def test_strategy_result_subscriber_notification_is_coalesced():
     assert data["strategy_results_updated"] is True
     assert data["quote_updated"] is False
     assert data["depth_updated"] is False
-    assert data["market_data_updated"] is False
     assert sub.wait(timeout=0.01) is False
 
 
@@ -60,18 +59,6 @@ def test_strategy_result_notification_fans_out_to_all_subscribers():
 
     assert first.pop()["strategy_results_updated"] is True
     assert second.pop()["strategy_results_updated"] is True
-
-
-def test_market_data_notification_fans_out_to_all_subscribers():
-    """盘后缓存原子替换后，所有页面都必须收到一次重取信号。"""
-    service = QuoteService()
-    first = service.subscribe()
-    second = service.subscribe()
-
-    service.notify_market_data_updated()
-
-    assert first.pop()["market_data_updated"] is True
-    assert second.pop()["market_data_updated"] is True
 
 
 class _EmptyResultStrategyEngine:

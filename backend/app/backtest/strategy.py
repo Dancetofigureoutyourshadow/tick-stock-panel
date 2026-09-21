@@ -1331,6 +1331,7 @@ class StrategyBacktestService:
             initial_capital=config.initial_capital,
             position_sizing=config.position_sizing,
             minute_fill=config.minute_fill,
+            asset_type=config.asset_type,
         )
         t_signal = time.perf_counter()
         selection_stats: dict[str, int | bool]
@@ -1952,6 +1953,7 @@ class StrategyBacktestService:
             # 分钟策略的成交价由 entry_price_override 提供 (触发分钟收盘),
             # 不再叠加日线口径的分钟成交细化。
             minute_fill=False,
+            asset_type=config.asset_type,
         )
 
         t_matrix = time.perf_counter()

@@ -1248,8 +1248,8 @@ class QuoteService:
                     # flush 焐热; 未焐热说明无 ETF 实时数据, 跳过本轮 ETF 评估)。
                     if engine.has_asset_rules("etf") and self._repo is not None:
                         try:
-                            etf_enriched, _ = self._repo.get_enriched_latest_asset("etf", refresh=False)
-                            if not etf_enriched.is_empty():
+                            etf_enriched, etf_date = self._repo.get_enriched_latest_asset("etf", refresh=False)
+                            if not etf_enriched.is_empty() and etf_date == cn_today():
                                 etf_enriched = self._inject_intraday_signals(etf_enriched, engine, "etf")
                                 rule_events = rule_events + engine.evaluate(
                                     etf_enriched, asset_type="etf", reset_strategy_results=False,

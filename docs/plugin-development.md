@@ -28,7 +28,7 @@ display_name: "我的数据源"                 # 设置页显示名
 runtime: none                            # 运行时类型: node | python | none
 entry: app.plugins.my_source.provider:MyProvider   # provider 类的导入路径
 check: app.plugins.my_source.bridge:availability   # 可用性检测函数(可选)
-datasets: [realtime]                     # 支持的数据集: daily/adj_factor/minute/realtime/depth5/transactions/financial
+datasets: [realtime]                     # 支持: daily/adj_factor/minute/realtime/depth5/financial
 api_key_env: MY_SOURCE_API_KEY           # (可选)声明后设置页提供 Key 输入框
 hidden: false                            # (可选)true = 已加载但对设置页隐藏,不注册不展示
 description: "数据源描述"
@@ -271,17 +271,6 @@ provider 不应自行切换或回退到其他数据源。
 | `name` | 可选 | 快照无名称时置 None, 下游用标的维表关联 |
 | `amplitude` / `turnover_rate` / `session` | 可选 | 缺失置 None, 不启发式伪造; turnover_rate 入口为小数制 |
 
-### get_transactions 行字段
-
-| 字段 | 必需 | 契约 |
-| --- | --- | --- |
-| `time` | ✅ | 北京时间 `HH:MM`；数据源若只有分钟精度不得伪造秒 |
-| `price` | ✅ | 成交价 |
-| `volume` | ✅ | 成交量，单位由 Provider 统一为手 |
-| `trade_count` | 可选 | 成交笔数，缺失置 None |
-| `direction` | 可选 | `buy` / `sell` / `neutral` / `unknown` |
-| `direction_code` | 可选 | 数据源原始方向编码，便于审计 |
-
 ### config.datasets 的作用
 
 `provider_has_dataset(name, dataset)` 通过 `dataset in provider.config.datasets` 判断。
@@ -342,29 +331,3 @@ uv run --extra dev python -m ruff check app/plugins/<your_plugin>/ tests/test_<y
 
 注册后, 插件和用户 YAML 自定义源走**完全相同的路由路径**(services 层的
 `provider_has_dataset` / `get_provider` 调用), 无需额外集成代码。
-
-### MooTDX provider plugin
-
-`backend/app/plugins/mootdx/` is the Python Provider plugin for the MooTDX package.
-It connects directly to TDX quote servers and does not require the local TongDaXin
-desktop client. The plugin exposes daily K-lines, adjustment factors converted from
-native `xdxr` events plus raw daily closes, historical minutes, realtime quotes,
-instruments, financial data, and the complete standard-market MooTDX surface:
-`quotes`, `bars`, `stock_count`, `stocks`, `stock_all`, `index`, `index_bars`, `minute`,
-`minutes`, `transaction`, `transactions`, `F10`, `F10C`, `finance`, `xdxr`, `k`,
-`get_k_data`, `ohlc`, `block`, plus connection helpers.
-
-The Provider realtime contract supports both requested symbols and a no-argument
-full-market pull (batched into TDX quote requests).
-
-Historical `minutes()` replies contain ordered `price/vol` points without timestamps
-or full OHLC. The adapter reconstructs Beijing trading-session timestamps, uses the
-price as OHLC for the project's minute-line contract, and estimates amount as
-`volume * 100 * price`.
-
-MooTDX also declares the independent `full_minute` capability. Its repair-round
-implementation fans the full-market symbol list out to a bounded, resource-aware
-heap queue: worker count is capped by logical CPUs, available memory and a hard
-limit of 16, while each worker owns one TDX TCP client. GPU inventory is diagnostic
-only because socket fetching and the existing Polars conversion path are CPU/I/O
-workloads. Failed symbols are isolated and retried once after all initial tasks.

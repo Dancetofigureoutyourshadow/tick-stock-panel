@@ -1,7 +1,7 @@
 """enriched 表计算流水线(§7.5 / §7.7 Step 2)。
 
 存储层 (enriched parquet):
-  仅存储基础行情窄表, 指标和信号由各服务即时计算。
+  仅存储基础行情窄表 (14 列), 指标和信号由各服务即时计算。
 
   存储列: symbol, date, OHLCV(前复权), volume, amount,
           raw_close, raw_high, raw_low, turnover_rate,
@@ -20,6 +20,7 @@ import shutil
 import time
 import uuid
 from collections.abc import Callable
+from datetime import timedelta as _timedelta
 from pathlib import Path
 
 import polars as pl
@@ -32,6 +33,9 @@ from app.enriched_generation import (
 from app.market_time import cn_today
 from app.parquet import scan_daily_parquet, scan_enriched_parquet, scan_parquet_compat
 from app.price_limits import (
+    no_limit_window_days,
+    no_limit_window_margin_days,
+    parse_listing_date,
     polars_is_risk_warning_name,
     polars_limit_price,
     polars_price_limit_pct,
@@ -90,13 +94,11 @@ def invalidate_custom_signals() -> None:
     _custom_signal_exprs_today = None
 
 
-# enriched parquet 持久化列。除 OHLCV 外保留行情源提供的前收盘/涨跌幅，
-# 这样新股首日或停牌复牌日冷启动重算时不会丢失交易所口径。
+# enriched parquet 仅存储的列 (14 列)
 ENRICHED_STORAGE_COLS = [
     "symbol", "date",
     "open", "high", "low", "close",          # 前复权
     "volume", "amount",
-    "prev_close", "change_pct",                # 行情源前收盘/涨跌幅(小数)
     "raw_close", "raw_high", "raw_low",       # 不复权原始价
     "turnover_rate",                           # 依赖当时的 float_shares, 不可回推
     "consecutive_limit_ups",                   # 递推状态, 需从历史 cum_sum
@@ -392,14 +394,7 @@ def compute_indicators(
     df = df if assume_sorted else df.sort(["symbol", "date"])
 
     # Pass 1: 均线 + EMA + MACD 基础 + BOLL 基础 + KDJ 基础 + ATR 基础 + 量价 + 极值
-    calculated_prev_close = pl.col("close").shift(1).over("symbol")
-    # 实时快照可能携带交易所前收盘价（尤其是新股首日）。保留该值，
-    # 仅对缺失行回退到历史 K 线，避免 compute_indicators 把它覆盖掉。
-    prev_close = (
-        pl.coalesce([pl.col("prev_close"), calculated_prev_close])
-        if "prev_close" in df.columns
-        else calculated_prev_close
-    )
+    prev_close = pl.col("close").shift(1).over("symbol")
     _p1: list[pl.Expr] = []
     if "prev_close" in want:
         _p1.append(prev_close.alias("prev_close"))
@@ -520,22 +515,12 @@ def compute_indicators(
     if "momentum_60d" in want:
         _p4mom.append((pl.col("close") / pl.col("close").shift(60).over("symbol") - 1).alias("momentum_60d"))
     if "change_pct" in want:
-        calculated_change_pct = pl.when(prev_close != 0).then(
-            pl.col("close") / prev_close - 1
-        ).otherwise(None)
-        _p4mom.append(
-            pl.coalesce([pl.col("change_pct"), calculated_change_pct]).alias("change_pct")
-            if "change_pct" in df.columns
-            else calculated_change_pct.alias("change_pct")
-        )
+        _p4mom.append((pl.col("close") / pl.col("close").shift(1).over("symbol") - 1).alias("change_pct"))
     if _p4mom:
         df = df.with_columns(_p4mom)
     if "change_amount" in want:
-        calculated_change_amount = pl.col("close") - prev_close
         df = df.with_columns(
-            pl.coalesce([pl.col("change_amount"), calculated_change_amount]).alias("change_amount")
-            if "change_amount" in df.columns
-            else calculated_change_amount.alias("change_amount"),
+            (pl.col("close") - pl.col("close").shift(1).over("symbol")).alias("change_amount"),
         )
     if "amplitude" in want:
         df = df.with_columns(
@@ -705,6 +690,41 @@ def compute_signals(df: pl.DataFrame, needed: set[str] | None = None) -> pl.Data
     return df
 
 
+def _attach_no_limit_window(inst_subset: pl.DataFrame) -> pl.DataFrame:
+    """给 instruments 子集附上无涨跌幅窗口列 (单一事实源: app.price_limits)。
+
+    _no_limit_days: 窗口交易日数 (0/null = 不适用, 改革前老股或无上市日)
+    _no_limit_until: 窗口边界日历日 = listing_date + 保守边际 (供 date <= 边界
+                    的向量化比较; 精确交易日序号门控由调用方补足)
+    """
+    if inst_subset.is_empty() or "listing_date" not in inst_subset.columns:
+        return inst_subset
+    info: list[dict] = []
+    for sym, raw in zip(
+        inst_subset["symbol"].to_list(),
+        inst_subset["listing_date"].to_list(),
+        strict=True,
+    ):
+        listing = parse_listing_date(raw)
+        days = no_limit_window_days(sym, listing)
+        if days > 0 and listing is not None:
+            info.append({
+                "symbol": sym,
+                "_no_limit_days": days,
+                "_no_limit_until": listing + _timedelta(days=no_limit_window_margin_days(sym)),
+            })
+    if not info:
+        return inst_subset
+    return inst_subset.join(
+        pl.DataFrame(
+            info,
+            schema={"symbol": pl.Utf8, "_no_limit_days": pl.Int64, "_no_limit_until": pl.Date},
+        ),
+        on="symbol",
+        how="left",
+    )
+
+
 def compute_limit_signals(
     df: pl.DataFrame,
     instruments: pl.DataFrame,
@@ -743,9 +763,11 @@ def compute_limit_signals(
     if need_price_limits:
         # limit_up 哨兵值 (>= 10000) 同时标记跌停侧「无涨跌停限制」, 只算跌停信号时也要带上
         instrument_needs.add("limit_up")
+        # listing_date: 注册制新股无涨跌幅窗口判定 (历史行哨兵覆盖不到时兜底)
+        instrument_needs.add("listing_date")
     if need_down:
         instrument_needs.add("limit_down")
-    for c in ["name", "float_shares", "limit_up", "limit_down"]:
+    for c in ["name", "float_shares", "limit_up", "limit_down", "listing_date"]:
         if c not in instrument_needs:
             continue
         if c in instruments.columns:
@@ -767,6 +789,9 @@ def compute_limit_signals(
         )
         inst_subset = inst_subset.join(st_flag, on="symbol", how="left")
 
+    if need_price_limits:
+        inst_subset = _attach_no_limit_window(inst_subset)
+
     df = df.join(inst_subset, on="symbol", how="left", suffix="_inst")
 
     if "turnover_rate" in want:
@@ -787,7 +812,7 @@ def compute_limit_signals(
     # 仅在 adj_factor 发生变化（除权除息 XD/DR）时使用前复权昨收作为交易所参考价;
     # 否则使用原始 raw_close.shift(1) 以避免浮点精度误差。
     if not need_price_limits:
-        cleanup = [c for c in ("name", "float_shares", "limit_up", "limit_down") if c in df.columns]
+        cleanup = [c for c in ("name", "float_shares", "limit_up", "limit_down", "listing_date") if c in df.columns]
         return df.drop(cleanup)
 
     _adj_today = pl.col("close") / pl.col("raw_close")
@@ -857,6 +882,20 @@ def compute_limit_signals(
             & pl.col("limit_up").is_not_null()
             & (pl.col("limit_up") >= _SENTINEL)
         )
+    # listing_date 窗口兜底: 哨兵只在「维表 as_of == 行情日」那一天生效, 窗口内其余
+    # 交易日 (以及 as_of 漂移后的历史重算) 由 listing_date 判定补齐。精确性用
+    # 「symbol 内日期序号 <= 窗口交易日数」门控 — 新股本地日K必从上市首日起;
+    # 序号不可信的场景 (老股本地历史被裁剪, 首行晚于上市+边际) 不标记, 回退理论价。
+    if "_no_limit_days" in df.columns:
+        _day_rank = pl.col("date").rank("ordinal").over("symbol")
+        _first_date = pl.col("date").min().over("symbol")
+        window_no_limit = (
+            (pl.col("_no_limit_days").fill_null(0) > 0)
+            & (_first_date <= pl.col("_no_limit_until"))
+            & (pl.col("date") <= pl.col("_no_limit_until"))
+            & (_day_rank <= pl.col("_no_limit_days"))
+        )
+        no_price_limit = no_price_limit | window_no_limit.fill_null(False)
     effective_exprs: list[pl.Expr] = [no_price_limit.fill_null(False).alias("_no_price_limit")]
     if need_up:
         effective_exprs.append(effective_limit_up.alias("_effective_limit_up"))
@@ -975,15 +1014,16 @@ def compute_limit_signals(
     cleanup = ["_prev_raw_close", "_limit_pct",
                "_theoretical_limit_up", "_theoretical_limit_down",
                "_effective_limit_up", "_effective_limit_down", "_no_price_limit",
-               "_grp_up", "_grp_down", "_instrument_as_of"]
+               "_grp_up", "_grp_down", "_instrument_as_of",
+               "_no_limit_days", "_no_limit_until"]
     if "_is_st" in df.columns:
         cleanup.append("_is_st")
     # 清理 join 产生的重复列
     for c in df.columns:
         if c.endswith("_inst"):
             cleanup.append(c)
-    # name / float_shares / limit_up / limit_down 只用于计算, 不存入 enriched
-    for c in ["name", "float_shares", "limit_up", "limit_down"]:
+    # name / float_shares / limit_up / limit_down / listing_date 只用于计算, 不存入 enriched
+    for c in ["name", "float_shares", "limit_up", "limit_down", "listing_date"]:
         if c in df.columns and c != "turnover_rate":
             cleanup.append(c)
     internal_outputs = {"signal_limit_up", "signal_limit_down"} - want
@@ -1088,7 +1128,7 @@ def compute_enriched(
 
 
 def _select_storage_cols(df: pl.DataFrame) -> pl.DataFrame:
-    """写入 parquet 前裁剪到基础存储列。"""
+    """写入 parquet 前裁剪到存储列 (14 列)。"""
     cols = [c for c in ENRICHED_STORAGE_COLS if c in df.columns]
     return df.select(cols)
 
@@ -1518,7 +1558,7 @@ def run_pipeline(data_dir: Path | None = None,
                  on_batch_done: Callable[[int, int], None] | None = None) -> int:
     """运行盘后管道:读 kline_daily + adj_factor → 前复权 + 计算存储列 → 写 enriched。
 
-    enriched 表仅存储基础行情窄表 (OHLCV、行情源前收盘/涨跌幅、raw_close/high/low、换手率与连板数)。
+    enriched 表仅存储 14 列基础行情窄表 (OHLCV + raw_close/high/low + turnover_rate + 连板数)。
 
     模式:
       - 全量 (symbols=None, new_dates_only=False):
@@ -1981,24 +2021,9 @@ def compute_enriched_today(
         # API 返回的 prev_close 是原始价, 乘复权因子对齐复权价 (用于 change_pct)
         df = df.with_columns((pl.col("prev_close") * pl.col("_adj_factor").fill_null(1.0)).alias("prev_close"))
 
-    # 实时快照可能只给部分标的 prev_close。对缺失行回退到同标的上一根 K 线，
-    # 保留首日无历史记录的 null，交由上层按“无可计算涨跌幅”处理。
-    previous_close = pl.col("close").shift(1).over("symbol")
-    df = df.with_columns(
-        pl.coalesce([pl.col("prev_close"), previous_close]).alias("prev_close")
-    )
-
-    # change_pct / change_amount / amplitude: 有则直接用, 无则按 prev_close 计算。
-    # 已有列中的 null 也必须回退，否则 quote_extra 的稀疏列会屏蔽计算逻辑。
-    calculated_change_pct = pl.when(pl.col("prev_close") != 0).then(
-        pl.col("close") / pl.col("prev_close") - 1
-    ).otherwise(None)
+    # change_pct / change_amount / amplitude: 有则直接用, 无则计算
     if "change_pct" not in df.columns:
-        df = df.with_columns(calculated_change_pct.alias("change_pct"))
-    else:
-        df = df.with_columns(
-            pl.coalesce([pl.col("change_pct"), calculated_change_pct]).alias("change_pct")
-        )
+        df = df.with_columns((pl.col("close") / pl.col("prev_close") - 1).alias("change_pct"))
     if "change_amount" not in df.columns:
         df = df.with_columns((pl.col("close") - pl.col("prev_close")).alias("change_amount"))
     if "amplitude" not in df.columns:
@@ -2281,7 +2306,7 @@ def compute_enriched_today(
 def _compute_limit_signals_today(df: pl.DataFrame, instruments: pl.DataFrame) -> pl.DataFrame:
     """盘中增量版的涨跌停/换手率/炸板/连板计算。"""
     inst_cols = ["symbol"]
-    for c in ["float_shares", "limit_up", "limit_down"]:
+    for c in ["float_shares", "limit_up", "limit_down", "listing_date"]:
         if c in instruments.columns:
             inst_cols.append(c)
     if "as_of" in instruments.columns:
@@ -2299,6 +2324,8 @@ def _compute_limit_signals_today(df: pl.DataFrame, instruments: pl.DataFrame) ->
             .unique(subset=["symbol"])
         )
         inst_subset = inst_subset.join(st_flag, on="symbol", how="left")
+
+    inst_subset = _attach_no_limit_window(inst_subset)
 
     df = df.join(inst_subset, on="symbol", how="left", suffix="_inst")
 
@@ -2376,6 +2403,16 @@ def _compute_limit_signals_today(df: pl.DataFrame, instruments: pl.DataFrame) ->
     else:
         effective_limit_down = limit_down_price
 
+    # listing_date 窗口兜底: 维表 as_of 过期/未命中时 (哨兵路径失效), 用上市日
+    # + 保守日历边际近似判定无涨跌幅窗口。单日行情无历史序列, 不做序号门控;
+    # 多标 1-2 天的后果 (漏一个涨停标记) 远轻于误判无涨跌幅日为涨停。
+    if "_no_limit_until" in df.columns:
+        window_no_limit = (
+            (pl.col("_no_limit_days").fill_null(0) > 0)
+            & (trade_date.cast(pl.Date, strict=False) <= pl.col("_no_limit_until"))
+        )
+        no_price_limit = no_price_limit | window_no_limit.fill_null(False)
+
     valid_prev_raw = prev_raw.is_not_null() & (prev_raw > 0)
     is_limit_up = (
         pl.when(no_price_limit)
@@ -2436,7 +2473,9 @@ def _compute_limit_signals_today(df: pl.DataFrame, instruments: pl.DataFrame) ->
     ])
 
     # 清理
-    cleanup = ["_limit_pct", "_is_st", "limit_up", "limit_down", "_instrument_as_of"]
+    cleanup = ["_limit_pct", "_is_st", "limit_up", "limit_down", "_instrument_as_of",
+               "_no_price_limit", "_effective_limit_up", "_effective_limit_down",
+               "_no_limit_days", "_no_limit_until", "listing_date"]
     for c in df.columns:
         if c.endswith("_inst"):
             cleanup.append(c)

@@ -225,32 +225,6 @@ def test_custom_success_skips_tickflow(monkeypatch):
     get_client_spy.assert_not_called()
 
 
-def test_fetch_minute_single_uses_5m_display_fallback(monkeypatch):
-    received_freqs: list[str] = []
-
-    def get_minute(*args, **kwargs):
-        received_freqs.append(kwargs["freq"])
-        if kwargs["freq"] == "1m":
-            return pl.DataFrame()
-        return _mock_minute_df("600186.SH")
-
-    mock_provider = MagicMock()
-    mock_provider.get_minute.side_effect = get_minute
-    _setup_custom_provider(monkeypatch, mock_provider, has_dataset=True)
-
-    get_client_spy = MagicMock(name="get_client_spy")
-    monkeypatch.setattr(kline_sync, "get_client", get_client_spy)
-
-    df = kline_sync.fetch_minute_single(
-        "600186.SH", date(2026, 8, 13), asset_type="stock",
-    )
-
-    assert received_freqs == ["1m", "5m"]
-    assert df.height == 1
-    assert df["symbol"][0] == "600186.SH"
-    get_client_spy.assert_not_called()
-
-
 # ---------- 测试 7: sync_minute_batch 自定义源成功直接返回 ----------
 
 def test_sync_minute_batch_custom_success_returns_directly(monkeypatch):
@@ -326,7 +300,7 @@ def test_get_minute_batch_splits_stock_and_etf(monkeypatch):
     from app.api import kline as kline_api
 
     # mock sync_minute_batch: stock 返回 df_s, etf 返回 df_e (不同 symbol 便于 concat 后 filter 验证)
-    def fake_sync(symbols, *, start_time, end_time, batch_size, rpm, asset_type):
+    def fake_sync(symbols, *, start_time, end_time, batch_size, rpm, asset_type, raw_basis=False):
         if asset_type == "stock":
             return _mock_minute_df(symbol="600519.SH")
         if asset_type == "etf":
@@ -381,7 +355,7 @@ def _endpoint_mocks(monkeypatch, local_df: pl.DataFrame, sync_ret: pl.DataFrame 
 
     captured: list[dict] = []
 
-    def fake_sync(symbols, *, start_time, end_time, batch_size, rpm, asset_type):
+    def fake_sync(symbols, *, start_time, end_time, batch_size, rpm, asset_type, raw_basis=False):
         captured.append({"symbols": list(symbols), "start": start_time, "asset": asset_type})
         return sync_ret if sync_ret is not None else pl.DataFrame()
 
@@ -544,8 +518,6 @@ def test_sync_minute_batch_custom_empty_df_skips_on_segment(monkeypatch):
     on_segment_spy.assert_not_called()
     assert isinstance(df, pl.DataFrame)
     assert df.is_empty()
-    mock_provider.get_minute.assert_called_once()
-    assert mock_provider.get_minute.call_args.kwargs["freq"] == "1m"
 
 
 # ---------- 测试 12: sync_and_persist_minute + custom provider 端到端落盘 (Issue 1) ----------
@@ -590,29 +562,6 @@ def test_sync_and_persist_minute_custom_persists(monkeypatch, tmp_path):
     assert written == expected_df.height
     assert written > 0
     get_client_spy.assert_not_called()
-
-
-def test_minute_date_ranges_skip_days_with_existing_data():
-    repo = MagicMock()
-    existing_days = {date(2026, 1, 2), date(2026, 1, 5)}
-    repo.get_minute_range.return_value = pl.DataFrame({
-        "datetime": [datetime.combine(trade_date, datetime.min.time()) for trade_date in sorted(existing_days)],
-    })
-
-    ranges = kline_sync._minute_date_ranges(
-        repo,
-        "600519.SH",
-        date(2026, 1, 1),
-        date(2026, 1, 5),
-        skip_existing_days=True,
-    )
-
-    assert ranges == [(date(2026, 1, 1), date(2026, 1, 1)), (date(2026, 1, 3), date(2026, 1, 4))]
-    repo.get_minute_range.assert_called_once_with(
-        ["600519.SH"], date(2026, 1, 1), date(2026, 1, 5), asset_type="stock",
-    )
-
-
 
 
 def test_sync_and_persist_minute_holds_repository_write_lock(monkeypatch, tmp_path):

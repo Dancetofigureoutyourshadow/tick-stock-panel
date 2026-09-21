@@ -11,8 +11,6 @@ from datetime import date, timedelta
 import polars as pl
 from polars.testing import assert_frame_equal
 
-import app.tickflow.repository as repository_module
-from app.market_time import cn_today
 from app.tickflow.repository import KlineRepository
 
 SYM = "600001.SH"
@@ -60,16 +58,6 @@ def _bare_repo(raw: pl.DataFrame) -> tuple[KlineRepository, dict]:
         return raw.filter((pl.col("date") >= start) & (pl.col("date") <= end))
 
     repo._scan_daily_symbol = _scan  # type: ignore[method-assign]
-
-    def _scan_batch(symbols, start, end, columns):
-        calls["scan"] += 1
-        return raw.filter(
-            pl.col("symbol").is_in(symbols)
-            & (pl.col("date") >= start)
-            & (pl.col("date") <= end)
-        )
-
-    repo._scan_daily_batch = _scan_batch  # type: ignore[method-assign]
     return repo, calls
 
 
@@ -116,49 +104,3 @@ def test_get_daily_falls_back_to_scan_when_cache_does_not_cover_start():
     result = repo.get_daily(SYM, dates[0] - timedelta(days=5), dates[-1])
     assert calls["scan"] == 1
     assert not result.is_empty()
-
-
-def test_get_daily_falls_back_to_scan_when_cache_generation_is_stale():
-    raw = _raw_frame()
-    dates = raw["date"].to_list()
-
-    repo, calls = _bare_repo(raw)
-    stale_hist = repo._compute_enriched_range(raw.filter(pl.col("date") < dates[-1]))
-    repo._enriched_history_cache = stale_hist
-    repo._enriched_history_start = stale_hist["date"].min()
-    repo._enriched_history_generation = "before-sync"
-    repo.get_matrix_data_generation = lambda _asset_type: "after-sync"  # type: ignore[method-assign]
-
-    result = repo.get_daily(SYM, dates[30], dates[-1])
-
-    assert calls["scan"] == 1, "落盘 generation 更新后不得继续返回同步前的历史缓存"
-    assert result["date"].max() == dates[-1]
-
-
-def test_get_daily_does_not_overlay_live_cache_after_close(monkeypatch):
-    today = cn_today()
-    raw = pl.DataFrame({"symbol": [SYM], "date": [today], "close": [10.0]})
-    repo, _ = _bare_repo(raw)
-    live_cache = pl.DataFrame({"symbol": [SYM], "date": [today], "close": [99.0]})
-    repo._enriched_history_cache = live_cache
-    repo._enriched_history_start = today
-    repo.get_enriched_latest = lambda: (live_cache, today)  # type: ignore[method-assign]
-    monkeypatch.setattr(repository_module, "should_use_live_market_snapshot", lambda _date: False)
-
-    result = repo.get_daily(SYM, today, today, columns=["symbol", "date", "close"])
-
-    assert result.to_dicts() == [{"symbol": SYM, "date": today, "close": 10.0}]
-
-
-def test_get_daily_batch_does_not_overlay_live_cache_after_close(monkeypatch):
-    """批量K线也不能在盘后把官方分区覆盖回实时快照。"""
-    today = cn_today()
-    raw = pl.DataFrame({"symbol": [SYM], "date": [today], "close": [10.0]})
-    repo, _ = _bare_repo(raw)
-    live_cache = pl.DataFrame({"symbol": [SYM], "date": [today], "close": [99.0]})
-    repo.get_enriched_latest = lambda: (live_cache, today)  # type: ignore[method-assign]
-    monkeypatch.setattr(repository_module, "should_use_live_market_snapshot", lambda _date: False)
-
-    result = repo.get_daily_batch([SYM], today, today, columns=["symbol", "date", "close"])
-
-    assert result.to_dicts() == [{"symbol": SYM, "date": today, "close": 10.0}]

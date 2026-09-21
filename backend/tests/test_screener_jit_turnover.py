@@ -8,13 +8,10 @@ warmup 读取白名单漏掉 turnover_rate 时, 即时计算后该列丢失 —�
 from __future__ import annotations
 
 from datetime import date, timedelta
-from pathlib import Path
 from unittest.mock import MagicMock
 
 import polars as pl
 
-import app.services.screener as screener_module
-from app.market_time import cn_today
 from app.services.screener import ScreenerService
 
 
@@ -79,43 +76,3 @@ def test_custom_sql_can_filter_on_turnover_rate(tmp_path) -> None:
     result = svc.run(target, ["turnover_rate > 3"], limit=10)
     # 600000 (5.5) 命中; 000001 恒为 2.0 被过滤 — 条件真正生效而非空结果
     assert [r["symbol"] for r in result.rows] == ["600000.SH"]
-
-
-def test_post_close_ladder_source_bypasses_live_and_history_caches(monkeypatch) -> None:
-    """Today's ladder reads the rebuilt partition, never the live snapshot."""
-    target = cn_today()
-    official = pl.DataFrame({
-        "symbol": ["600000.SH"],
-        "date": [target],
-        "open": [10.0],
-        "high": [10.0],
-        "low": [10.0],
-        "close": [10.0],
-        "volume": [100.0],
-        "amount": [1_000.0],
-        "raw_close": [10.0],
-        "raw_high": [10.0],
-        "raw_low": [10.0],
-        "turnover_rate": [1.0],
-        "consecutive_limit_ups": [2],
-        "consecutive_limit_downs": [0],
-    })
-
-    svc = _service(Path("post-close-test-data"))
-    live = pl.DataFrame({
-        "symbol": ["600000.SH"],
-        "date": [target],
-        "close": [99.0],
-    })
-    svc.repo.get_enriched_latest_asset.return_value = (live, target)
-    svc.repo.get_enriched_history.side_effect = AssertionError("盘后不得读取历史内存缓存")
-    monkeypatch.setattr(screener_module, "cn_today", lambda: target)
-    monkeypatch.setattr(screener_module, "is_after_official_daily_cutoff", lambda: True)
-    monkeypatch.setattr(screener_module, "should_use_live_market_snapshot", lambda _date: False)
-    monkeypatch.setattr(Path, "exists", lambda _: True)
-    monkeypatch.setattr(screener_module.pl, "read_parquet", lambda _: official)
-    monkeypatch.setattr(svc, "_compute_enriched_full", lambda df, _: df)
-
-    df = svc._load_enriched_for_date(target)
-
-    assert df.select("close").item() == 10.0

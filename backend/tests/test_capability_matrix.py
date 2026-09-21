@@ -222,36 +222,6 @@ def test_depth5_capability_semantics(monkeypatch):
     assert cap["effective"] == "depth_src"
     assert cap["usable"] is True
 
-    _fake_sources(
-        monkeypatch,
-        [{"name": "mootdx", "display_name": "MooTDX", "datasets": ["depth5"],
-          "available": True, "status": "ok"}],
-    )
-    cap = _by_id(
-        build_capability_matrix(
-            dict(DEFAULT_CURRENT, depth5_data_provider="mootdx"), tickflow_tier="free",
-        ),
-    )["depth5"]
-    assert cap["tf_available"] is False
-    assert [c["name"] for c in cap["candidates"]] == ["mootdx"]
-    assert cap["effective"] == "mootdx"
-    assert cap["usable"] is True
-
-    _fake_sources(
-        monkeypatch,
-        [{"name": "mootdx", "display_name": "MooTDX", "datasets": ["depth5"],
-          "available": True, "status": "ok"}],
-    )
-    cap = _by_id(
-        build_capability_matrix(
-            dict(DEFAULT_CURRENT, depth5_data_provider="mootdx"), tickflow_tier="free",
-        ),
-    )["depth5"]
-    assert cap["tf_available"] is False
-    assert [c["name"] for c in cap["candidates"]] == ["mootdx"]
-    assert cap["effective"] == "mootdx"
-    assert cap["usable"] is True
-
 
 def test_unknown_current_display_falls_back_to_name(monkeypatch):
     """偏好指向未注册源 (正常经 getters 校验不会发生): 展示回退为原始名, 不抛异常。"""
@@ -296,38 +266,6 @@ def test_full_minute_routable_like_other_capabilities(monkeypatch):
     fm_default = caps_pro_default["full_minute"]
     assert [c["name"] for c in fm_default["candidates"]] == ["myfm"]
     assert fm_default["usable"] is False
-
-
-def test_settings_matrix_uses_full_minute_preference(monkeypatch):
-    """The settings API must pass the dedicated full-minute route to the matrix."""
-    from app.api import settings as settings_api
-    from app.services import preferences
-    from app.tickflow import policy
-
-    _fake_sources(
-        monkeypatch,
-        [{
-            "name": "mootdx",
-            "display_name": "MooTDX",
-            "datasets": ["full_minute"],
-            "available": True,
-            "status": "ok",
-        }],
-    )
-    monkeypatch.setattr(policy, "base_tier_name", lambda: "pro")
-    monkeypatch.setattr(preferences, "get_realtime_data_provider", lambda: "tickflow")
-    monkeypatch.setattr(preferences, "get_daily_data_provider", lambda: "tickflow")
-    monkeypatch.setattr(preferences, "get_minute_data_provider", lambda: "tickflow")
-    monkeypatch.setattr(preferences, "get_full_minute_data_provider", lambda: "mootdx")
-    monkeypatch.setattr(preferences, "get_depth5_data_provider", lambda: "tickflow")
-    monkeypatch.setattr(preferences, "get_adj_factor_provider", lambda: "tickflow")
-    monkeypatch.setattr(preferences, "get_financial_provider", lambda: "tickflow")
-
-    full_minute = _by_id(settings_api.get_capability_matrix())["full_minute"]
-
-    assert full_minute["current"] == "mootdx"
-    assert full_minute["effective"] == "mootdx"
-    assert full_minute["usable"] is True
 
 
 def test_api_endpoint_injects_all_routing_preferences(monkeypatch):

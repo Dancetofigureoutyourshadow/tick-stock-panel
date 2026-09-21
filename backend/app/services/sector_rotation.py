@@ -32,6 +32,7 @@ from typing import Any
 
 import polars as pl
 
+from app.services.ext_data import ExtConfigStore
 from app.services.rps_rotation import _load_concept_map_df
 from app.services.stocksdk_board_flow import snapshot as stocksdk_flow_snapshot
 
@@ -168,6 +169,55 @@ def _minute_pcts(minute_dir: Path, target: str) -> tuple[pl.DataFrame | None, st
     if out.is_empty():
         return None, "minute_empty", has_amount
     return out, basis, has_amount
+
+
+def _load_sector_flow(data_dir: Path, flow_field: str) -> pl.DataFrame | None:
+    """读取扩展资金流列，按每个标的最新一盘保留一行。"""
+    if not flow_field or "." not in flow_field:
+        return None
+    config_id, _, column = flow_field.partition(".")
+    if not config_id or not column:
+        return None
+    try:
+        config = ExtConfigStore(data_dir).get(config_id)
+    except Exception:
+        return None
+    if config is None:
+        return None
+    base = data_dir / "ext_data" / config.id
+    if config.mode == "timeseries":
+        parts = sorted(p for p in (base / "timeseries").rglob("*.parquet") if p.is_file())
+        path = parts[-1] if parts else None
+    else:
+        candidate = base / "part.parquet"
+        path = candidate if candidate.exists() else None
+    if path is None:
+        return None
+    try:
+        df = pl.read_parquet(path)
+    except Exception:
+        return None
+    if df.is_empty() or column not in df.columns:
+        return None
+    symbol_col = next((c for c in ("symbol", "code", "股票代码", "代码") if c in df.columns), None)
+    mapped_col = None
+    for mapping in (config.symbol_map, config.code_map):
+        if isinstance(mapping, dict) and mapping.get("type") == "mapped" and mapping.get("col"):
+            mapped_col = str(mapping["col"])
+            break
+    use_col = symbol_col if symbol_col is not None else mapped_col
+    if use_col is None or use_col not in df.columns:
+        return None
+    out = (
+        df.select([
+            _bare(use_col).alias("_bare"),
+            pl.col(column).cast(pl.Float64, strict=False).alias("_flow"),
+        ])
+        .drop_nulls(subset=["_flow", "_bare"])
+        .filter(pl.col("_flow").is_finite() & (pl.col("_flow") != 0.0))
+        .unique(subset=["_bare"], keep="last")
+    )
+    return out if not out.is_empty() else None
 
 
 def _r4(value) -> float | None:

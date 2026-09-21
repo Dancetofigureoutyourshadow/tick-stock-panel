@@ -1,6 +1,7 @@
 """能力标准统一: 自定义/插件数据源能力增广回归测试。
 
-对应 _augment_custom_sources 的数据集→能力映射 (daily/adj_factor/minute/financial/full_minute):
+对应 _augment_custom_sources 的数据集→能力映射
+(daily/adj_factor/minute/depth5/financial/full_minute):
 某数据集的当前 provider 非 tickflow 且声明了该数据集 → grant 对应能力;
 取数路由仍按 preferences 分流, 不会误调 TickFlow。
 """
@@ -13,14 +14,14 @@ from app.tickflow.policy import _augment_custom_sources
 
 
 def _set_providers(monkeypatch, *, daily="tickflow", adj="tickflow",
-                   minute="tickflow", depth="tickflow", financial="tickflow",
+                   minute="tickflow", depth5="tickflow", financial="tickflow",
                    full_minute="tickflow") -> None:
     """mock preferences 各数据集 provider getter。"""
     from app.services import preferences
     monkeypatch.setattr(preferences, "get_daily_data_provider", lambda: daily)
     monkeypatch.setattr(preferences, "get_adj_factor_provider", lambda: adj)
     monkeypatch.setattr(preferences, "get_minute_data_provider", lambda: minute)
-    monkeypatch.setattr(preferences, "get_depth5_data_provider", lambda: depth)
+    monkeypatch.setattr(preferences, "get_depth5_data_provider", lambda: depth5)
     monkeypatch.setattr(preferences, "get_financial_provider", lambda: financial)
     monkeypatch.setattr(preferences, "get_full_minute_data_provider", lambda: full_minute)
 
@@ -84,26 +85,21 @@ def test_minute_custom_source_grants_minute_batch(monkeypatch):
     assert capset.has(Cap.KLINE_MINUTE_BATCH)
 
 
+def test_depth5_custom_source_grants_depth_batch(monkeypatch):
+    """五档独立路由到声明 depth5 的自定义源时补授批量五档能力。"""
+    _set_providers(monkeypatch, depth5="mock_src")
+    _set_datasets(monkeypatch, {"depth5"})
+    capset = CapabilitySet()
+    _augment_custom_sources(capset)
+    assert capset.has(Cap.DEPTH5_BATCH)
+
+
 def test_financial_custom_source_grants_financial(monkeypatch):
     _set_providers(monkeypatch, financial="mock_src")
     _set_datasets(monkeypatch, {"financial"})
     capset = CapabilitySet()
     _augment_custom_sources(capset)
     assert capset.has(Cap.FINANCIAL)
-
-
-def test_depth5_custom_source_grants_depth5_batch(monkeypatch):
-    _set_providers(monkeypatch, depth="mootdx")
-    _set_datasets(monkeypatch, {"depth5"})
-    monkeypatch.setattr(
-        "app.data_providers.custom.get_provider",
-        lambda _name: MagicMock(get_depth5=lambda _symbols: {}),
-    )
-
-    capset = CapabilitySet()
-    _augment_custom_sources(capset)
-
-    assert capset.has(Cap.DEPTH5_BATCH)
 
 
 def test_provider_active_but_dataset_not_declared_no_grant(monkeypatch):

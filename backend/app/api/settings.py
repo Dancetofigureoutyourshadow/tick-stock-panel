@@ -672,6 +672,12 @@ def install_plugin(name: str) -> dict:
     result = list_data_sources()
     result["install_ok"] = ok
     result["install_message"] = message
+    status = next((p for p in result["plugins"] if p["name"] == name), None)
+    result["plugin_available"] = bool(status and status.get("available"))
+    if ok and status and not status.get("available"):
+        result["install_message"] = (
+            f"依赖已安装，但数据源当前不可用：{status.get('status', '运行时探测失败')}"
+        )
     return result
 
 

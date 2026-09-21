@@ -641,6 +641,17 @@ def build_market_data_matrix(
             continue
         if column in panel.columns and panel[column].dtype.is_numeric():
             fields[column] = float_matrix(column)
+        elif column == "turnover_rate":
+            # Enriched panels written before turnover_rate became a storage
+            # column still carry float_shares. Derive the percentage here so
+            # the long-panel and parquet matrix paths expose the same field.
+            fields[column] = np.full(shape, np.nan, dtype=np.float32)
+            if "float_shares" in panel.columns:
+                _write_turnover_rate_matrix(
+                    fields[column],
+                    volume,
+                    float_matrix("float_shares"),
+                )
         elif column == "raw_close":
             # A live quote is already an unadjusted price when no separate raw
             # field is supplied. Keep this explicit compatibility contract for

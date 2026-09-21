@@ -96,3 +96,24 @@ def test_uninstall_plugin_uv_targets_running_interpreter(monkeypatch, tmp_path):
     assert "--python" in uv_cmd
     idx = uv_cmd.index("--python")
     assert uv_cmd[idx + 1] == sys.executable
+
+
+def test_install_plugin_uv_uses_writable_cache_and_utf8_output(monkeypatch, tmp_path):
+    """uv 安装不能依赖可能无权限的默认缓存, 且必须按 UTF-8 读取错误输出。"""
+    _fake_python_plugin(monkeypatch, tmp_path)
+    monkeypatch.delenv("UV_CACHE_DIR", raising=False)
+    calls: list[tuple[list[str], dict]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((list(cmd), kwargs))
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(loader.shutil, "which", lambda cmd, *_a, **_k: "/fake/uv" if cmd == "uv" else None)
+    monkeypatch.setattr(loader.subprocess, "run", fake_run)
+
+    ok, msg = loader.install_plugin("baostock")
+    assert ok, msg
+    _, kwargs = calls[0]
+    assert kwargs["encoding"] == "utf-8"
+    assert kwargs["errors"] == "replace"
+    assert kwargs["env"]["UV_NO_CACHE"] == "1"

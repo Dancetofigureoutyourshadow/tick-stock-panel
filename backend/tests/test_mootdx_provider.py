@@ -15,6 +15,11 @@ from app.plugins.mootdx import provider as mootdx_provider
 from app.plugins.mootdx.provider import MooTdxProvider
 
 
+@pytest.fixture(autouse=True)
+def isolate_mootdx_server_state(monkeypatch, tmp_path):
+    monkeypatch.setattr(bridge.settings, "data_dir", tmp_path)
+
+
 class FakeMooTdx:
     def __init__(self):
         self.calls = []
@@ -227,7 +232,7 @@ def test_tdx_client_quote_validation_uses_only_quote_endpoint(monkeypatch):
     assert client.closed is False
 
 
-def test_tdx_client_quote_validation_has_bounded_server_attempts(monkeypatch):
+def test_tdx_client_quote_validation_walks_all_server_candidates(monkeypatch):
     class EmptyQuoteClient:
         def quotes(self, **_kwargs):
             return pl.DataFrame()
@@ -251,12 +256,27 @@ def test_tdx_client_quote_validation_has_bounded_server_attempts(monkeypatch):
     monkeypatch.setitem(sys.modules, "mootdx.quotes", quotes_module)
     servers = [(f"quote-node-{i}", 7709) for i in range(20)]
     monkeypatch.setattr(bridge, "_TDX_SERVERS", servers)
+    monkeypatch.setattr(bridge, "_server_candidates", lambda: servers)
     monkeypatch.setattr(bridge, "_probe", lambda *_args, **_kwargs: True)
 
     with pytest.raises(RuntimeError):
         bridge.tdx_client(timeout=3, validation="quote")
 
-    assert attempted == servers[:bridge._QUOTE_SERVER_ATTEMPTS]
+    assert attempted == servers
+
+
+def test_tdx_server_order_persists_health_priority(monkeypatch, tmp_path):
+    servers = [("first", 7709), ("second", 7709), ("third", 7709)]
+    monkeypatch.setattr(bridge.settings, "data_dir", tmp_path)
+    monkeypatch.setattr(bridge, "_server_candidates", lambda: servers)
+
+    bridge._record_server_result(servers[1], success=True, latency_ms=12.34)
+    assert bridge._ordered_servers(servers) == [servers[1], servers[0], servers[2]]
+
+    bridge._record_server_result(servers[1], success=False)
+    assert bridge._ordered_servers(servers) == [servers[0], servers[2], servers[1]]
+    payload = (tmp_path / "user_data" / "mootdx_server_order.json").read_text(encoding="utf-8")
+    assert '"last_latency_ms": 12.3' in payload
 
 
 def test_tdx_client_quote_validation_starts_with_verified_server(monkeypatch):

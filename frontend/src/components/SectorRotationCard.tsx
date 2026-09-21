@@ -7,7 +7,8 @@
  * 切入=1h 排名跃升 / 资金流; 行数 5/10/15/20; 自动剔除属性板块黑名单与超成员数
  * 上限的大桶, 名单可编辑, localStorage 按 kind 持久化) 或自定义监控清单
  * (≤20, localStorage 按 kind 持久化); 显示模式: 走势线 (默认) / 热力图。
- * 资金流维度来自用户选择的扩展数据列; 指数叠加线来自 /api/index/* (核心四只)。
+ * 资金流视图直接来自 stock-sdk 的行业/概念即时板块接口; 指数叠加线来自
+ * /api/index/* (核心四只)。
  * 布局: 展示图全宽在上; 下方左=切换强度线, 右=板块榜单。
  * 强度图与展示图 x 轴窗口一致, 经 echarts.connect 联动指针; 榜单行与展示图双向高亮。
  */
@@ -22,7 +23,6 @@ import { cn } from '@/lib/cn'
 import { toast } from '@/components/Toast'
 import { CORE_INDEXES } from '@/components/Layout'
 
-const FLOW_LS_PREFIX = 'sector_rotation_flow_'
 const INDEX_LS_PREFIX = 'sector_rotation_index_'
 const ROWS_MODE_PREFIX = 'sector_rotation_rows_'
 const CUSTOM_NAMES_PREFIX = 'sector_rotation_custom_'
@@ -41,7 +41,6 @@ function parseSectorSource(raw: string | null): SectorSource {
   if (raw === 'custom' || raw === 'score' || raw === 'pct' || raw === 'rank_change' || raw === 'momentum' || raw === 'flow') return raw
   return 'score' // 未设置过 / 旧默认值 'auto' → 默认综合分 (显式选择过的值已持久化, 不受影响)
 }
-const NUMERIC_TYPES = new Set(['float', 'int', 'number', 'double', 'long'])
 // 强度图与展示图跨实例联动分组 (x 轴指针同步)
 const CHART_CONNECT_GROUP = 'sector-rotation-card'
 
@@ -175,7 +174,7 @@ const NO_DATA_HINTS: Record<string, string> = {
 
 export function SectorRotationCard({ kind }: { kind: 'concept' | 'industry' }) {
   const dimLabel = kind === 'industry' ? '行业' : '概念'
-  const [flow, setFlow] = useState<string>(() => localStorage.getItem(`${FLOW_LS_PREFIX}${kind}`) ?? '')
+  const [viewMode, setViewMode] = useState<'rotation' | 'flow'>('rotation')
   const [bucket, setBucket] = useState(5)
   const [hoverName, setHoverName] = useState<string | null>(null)
   // 展示板块来源: 自动榜 (5 种排序维度, 剔除属性板块) 或自定义监控 (≤20)
@@ -212,26 +211,6 @@ export function SectorRotationCard({ kind }: { kind: 'concept' | 'industry' }) {
   const [pickerOpen, setPickerOpen] = useState(false)
   const [pickerSearch, setPickerSearch] = useState('')
 
-  const schemaQuery = useQuery({
-    queryKey: QK.extSchemaAll,
-    queryFn: api.extDataSchemaAll,
-    staleTime: 300_000,
-  })
-  // 资金流候选: 全部扩展表的数值列 (id.列名), 不写死任何表
-  const flowOptions = useMemo(() => {
-    const options: { value: string; label: string }[] = []
-    for (const item of schemaQuery.data?.items ?? []) {
-      for (const column of item.columns ?? []) {
-        if (!NUMERIC_TYPES.has(String(column.type).toLowerCase())) continue
-        options.push({
-          value: `${item.id}.${column.name}`,
-          label: `${item.label || item.id} · ${column.label || column.name}`,
-        })
-      }
-    }
-    return options
-  }, [schemaQuery.data])
-
   // 自定义模式把监控清单传给后端 (空清单 = 按活跃榜展示);
   // 自动模式传排序维度、行数与排除名单 ([] = 清空名称过滤, null = 用后端内置名单)
   const seriesNames = rowsMode === 'custom' ? customNames : []
@@ -240,9 +219,9 @@ export function SectorRotationCard({ kind }: { kind: 'concept' | 'industry' }) {
     ? ''
     : `${rowsMode}|${autoRows}|${excludeNames === null ? 'default' : JSON.stringify(excludeNames)}`
   const rotationQuery = useQuery({
-    queryKey: QK.sectorRotation(kind, flow, bucket, seriesKey, filterKey),
+    queryKey: QK.sectorRotation(kind, bucket, seriesKey, filterKey),
     queryFn: () => api.sectorRotation({
-      kind, flow: flow || undefined, bucket,
+      kind, bucket,
       seriesNames: seriesNames.length ? seriesNames : undefined,
       autoRows: rowsMode === 'custom' ? undefined : autoRows,
       excludeSectors: rowsMode === 'custom' || excludeNames === null ? undefined : excludeNames,
@@ -255,6 +234,7 @@ export function SectorRotationCard({ kind }: { kind: 'concept' | 'industry' }) {
   // 编辑器展示名单: 未自定义时用后端内置名单预填 (响应缺省时为空)
   const effectiveExclude = excludeNames ?? (data?.default_exclude_sectors ?? [])
   const displayNames = data?.series?.sectors ?? []
+  const activeDisplayNames = viewMode === 'flow' ? (data?.flow_series?.sectors ?? []) : displayNames
   const maxHeatRows = rowsMode === 'custom' ? MAX_CUSTOM_SECTORS : Math.max(HEAT_ROWS, autoRows)
   const heatRows = Math.min(maxHeatRows, displayNames.length)
   const heatNames = displayNames.slice(0, heatRows)
@@ -408,7 +388,69 @@ export function SectorRotationCard({ kind }: { kind: 'concept' | 'industry' }) {
       })),
     }
   }, [data, bucket, startCol, timeline, chartTheme, phase, dimLabel, cols])
-  const trend = useEChart(trendOption, {
+  const flowTrendOption = useMemo<echarts.EChartsOption | null>(() => {
+    const flowSeries = data?.flow_series
+    if (viewMode !== 'flow' || !flowSeries || !flowSeries.sectors.length || !flowSeries.buckets.length) return null
+    const buckets = flowSeries.buckets
+    const latestBucket = flowSeries.observed_buckets?.[flowSeries.observed_buckets.length - 1]
+    const latestIndex = latestBucket ? buckets.indexOf(latestBucket) : -1
+    const sectorMap = new Map((data?.sectors ?? []).map(item => [item.name, item]))
+    return {
+      grid: { left: 62, right: 46, top: 12, bottom: 30 },
+      legend: {
+        type: 'scroll', bottom: 0, left: 'center', itemWidth: 14, itemHeight: 2, itemGap: 8,
+        textStyle: { fontSize: 9, color: chartTheme.text }, pageIconSize: 8,
+      },
+      tooltip: {
+        trigger: 'axis', backgroundColor: chartTheme.tooltipBg, borderColor: chartTheme.tooltipBorder,
+        textStyle: { color: chartTheme.tooltipText, fontSize: 10 },
+        formatter: (params: unknown) => {
+          const list = (Array.isArray(params) ? params : [params]) as Array<{
+            axisValue?: string; seriesName?: string; marker?: string; value?: number | null
+          }>
+          const index = buckets.indexOf(list[0]?.axisValue ?? '')
+          if (index < 0) return ''
+          const lines = [`<b>${buckets[index]}</b>`, `stock-sdk 板块资金流 · 更新时间 ${data?.flow_as_of ?? '—'}`]
+          const entries = list
+            .filter(item => item.seriesName && typeof item.value === 'number')
+            .map(item => ({ name: item.seriesName!, value: item.value as number, marker: item.marker ?? '' }))
+            .sort((a, b) => b.value - a.value)
+          for (const item of entries) {
+            const sector = sectorMap.get(item.name)
+            const row = flowSeries.sectors.indexOf(item.name)
+            const delta = flowSeries.delta_net[row]?.[index]
+            lines.push(`${item.marker} ${item.name} 累计净流入 ${fmtFlow(item.value)}`)
+            lines.push(`本桶净流入 ${fmtFlow(delta)}`)
+            lines.push(`当前涨幅 ${fmtPct(sector?.pct_now)}`)
+          }
+          return lines.join('<br/>')
+        },
+      },
+      xAxis: {
+        type: 'category', data: buckets, axisLine: { show: false }, axisTick: { show: false },
+        axisLabel: { fontSize: 9, color: chartTheme.text, interval: Math.max(0, Math.ceil(buckets.length / 8) - 1) },
+      },
+      yAxis: {
+        type: 'value', axisLabel: { fontSize: 9, color: chartTheme.text, formatter: (value: number) => fmtFlow(value) },
+        splitLine: { lineStyle: { color: 'rgba(128,140,160,0.15)' } },
+      },
+      series: flowSeries.sectors.map((name, index) => ({
+        name, type: 'line' as const, smooth: true, symbol: 'none',
+        data: (flowSeries.net[index] ?? []).map((value, point) => (
+          point === latestIndex && (index < 3 || index >= flowSeries.sectors.length - 3)
+            ? { value, label: { show: true, formatter: name, position: 'top' as const, fontSize: 9, color: TREND_COLORS[index % TREND_COLORS.length], textBorderColor: chartTheme.tooltipBg, textBorderWidth: 2 } }
+            : value
+        )),
+        lineStyle: { color: TREND_COLORS[index % TREND_COLORS.length], width: 1.4 },
+        connectNulls: true,
+        emphasis: { focus: 'series', lineStyle: { width: 2.6 } },
+        blur: { lineStyle: { opacity: 0.06 } },
+        ...(index === 0 ? { markLine: { silent: true, symbol: 'none', lineStyle: { color: chartTheme.border, type: 'dashed' as const, width: 1 }, data: [{ yAxis: 0 }], label: { show: false } } } : {}),
+      })),
+    }
+  }, [data, viewMode, chartTheme])
+  const activeTrendOption = viewMode === 'flow' ? flowTrendOption : trendOption
+  const trend = useEChart(activeTrendOption, {
     onMouseOver: (params) => {
       if (params.seriesType === 'line' && params.seriesName) setHoverName(params.seriesName)
     },
@@ -528,7 +570,7 @@ export function SectorRotationCard({ kind }: { kind: 'concept' | 'industry' }) {
     clearPrev()
     prevHoverRef.current = null
     if (!hoverName) return
-    const y = displayNames.indexOf(hoverName)
+    const y = activeDisplayNames.indexOf(hoverName)
     if (y < 0) return
     if (displayMode === 'heatmap') {
       inst.dispatchAction({ type: 'highlight', seriesIndex: 0, dataIndex: Array.from({ length: cols }, (_, c) => y * cols + c) })
@@ -537,7 +579,7 @@ export function SectorRotationCard({ kind }: { kind: 'concept' | 'industry' }) {
       inst.dispatchAction({ type: 'highlight', seriesIndex: y })
       prevHoverRef.current = { mode: 'trend', index: y }
     }
-  }, [displayMode, hoverName, data, bucket, cols, displayNames, heat.instRef, trend.instRef])
+  }, [displayMode, hoverName, data, bucket, cols, activeDisplayNames, heat.instRef, trend.instRef])
 
   // 强度图: 黄=切换强度 (左轴), 灰虚线=全市场, 蓝线=指数 (右轴 %); 窗口与展示图一致;
   // 领涨易主时点标注新领涨板块名: 可见窗口内取强度最高 2 个 (琥珀) 与最低 2 个 (灰色)
@@ -632,15 +674,7 @@ export function SectorRotationCard({ kind }: { kind: 'concept' | 'industry' }) {
     setRowsMode(value)
     localStorage.setItem(`${ROWS_MODE_PREFIX}${kind}`, value)
   }
-  const onFlowChange = (value: string) => {
-    setFlow(value)
-    if (value) localStorage.setItem(`${FLOW_LS_PREFIX}${kind}`, value)
-    else {
-      localStorage.removeItem(`${FLOW_LS_PREFIX}${kind}`)
-      // 资金流维度依赖扩展列数据源: 清空列后该维度失效, 自动回退综合分
-      if (rowsMode === 'flow') onRowsModeChange('score')
-    }
-  }
+  const onViewModeChange = (value: 'rotation' | 'flow') => setViewMode(value)
   const onDisplayModeChange = (value: 'trend' | 'heatmap') => {
     setDisplayMode(value)
     localStorage.setItem(`${DISPLAY_MODE_PREFIX}${kind}`, value)
@@ -708,9 +742,27 @@ export function SectorRotationCard({ kind }: { kind: 'concept' | 'industry' }) {
           )
         )}
         <span className="text-[10px] text-muted">
-          {data?.status === 'ok' && latest ? `${data.date} ${data.as_of} · 切换强度 ${latest.rotation.toFixed(2)} · 领涨 ${latest.leader}` : '全量分钟聚合'}
+          {viewMode === 'flow'
+            ? (data?.flow_as_of ? `stock-sdk 即时板块资金流 · ${new Date(data.flow_as_of).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}` : 'stock-sdk 即时板块资金流')
+            : (data?.status === 'ok' && latest ? `${data.date} ${data.as_of} · 切换强度 ${latest.rotation.toFixed(2)} · 领涨 ${latest.leader}` : '全量分钟聚合')}
         </span>
+        {viewMode === 'flow' && data?.flow_status === 'stale' && (
+          <span className="rounded bg-amber-400/10 px-1.5 py-0.5 text-[9px] text-amber-400">资金流过期</span>
+        )}
+        {viewMode === 'flow' && data?.flow_status === 'single_point' && (
+          <span className="rounded bg-amber-400/10 px-1.5 py-0.5 text-[9px] text-amber-400">当前仅 1 个快照</span>
+        )}
         <div className="ml-auto flex flex-wrap items-center gap-1.5">
+          <span className="text-[9px] text-muted">视图</span>
+          <select
+            aria-label="板块轮动视图"
+            className="h-6 rounded border border-border bg-surface px-1 text-[10px] text-secondary outline-none focus:border-accent"
+            value={viewMode}
+            onChange={event => onViewModeChange(event.target.value as 'rotation' | 'flow')}
+          >
+            <option value="rotation">涨幅轮动</option>
+            <option value="flow">资金流</option>
+          </select>
           <span className="text-[9px] text-muted">显示</span>
           <select
             aria-label="显示模式"
@@ -733,8 +785,7 @@ export function SectorRotationCard({ kind }: { kind: 'concept' | 'industry' }) {
             <option value="pct">现涨幅</option>
             <option value="rank_change">切入</option>
             <option value="momentum">强弱切换</option>
-            {/* 资金流维度依赖扩展列数据源: 未选列时不提供, 避免静默退化成综合分 */}
-            {flow && <option value="flow">资金流</option>}
+            <option value="flow">资金流</option>
             <option value="custom">自定义</option>
           </select>
           {rowsMode !== 'custom' && (
@@ -768,18 +819,6 @@ export function SectorRotationCard({ kind }: { kind: 'concept' | 'industry' }) {
             onChange={event => onIndexChange(event.target.value)}
           >
             {CORE_INDEXES.map(item => <option key={item.symbol} value={item.symbol}>{item.name}</option>)}
-          </select>
-          <span className="text-[9px] text-muted">资金流</span>
-          <select
-            aria-label="资金流扩展列"
-            className="h-6 max-w-52 truncate rounded border border-border bg-surface px-1 text-[10px] text-secondary outline-none focus:border-accent"
-            value={flow}
-            onChange={event => onFlowChange(event.target.value)}
-          >
-            <option value="">不使用</option>
-            {flowOptions.map(option => (
-              <option key={option.value} value={option.value}>{option.label}</option>
-            ))}
           </select>
           <select
             aria-label="分钟桶粒度"
@@ -910,7 +949,27 @@ export function SectorRotationCard({ kind }: { kind: 'concept' | 'industry' }) {
             </div>
           )}
 
-          {displayMode === 'heatmap' ? (
+          {viewMode === 'flow' && data.flow_status === 'partial' && (
+            <div className="mb-1 rounded border border-amber-500/30 bg-amber-500/5 px-2 py-1.5 text-[10px] text-amber-200">
+              stock-sdk 板块资金流返回不完整，当前仅展示已确认数据
+              {data.flow_as_of ? ` · 更新时间 ${new Date(data.flow_as_of).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}` : ''}
+              <span className="ml-1">· 请检查 stock-sdk 或 Node.js 配置</span>
+            </div>
+          )}
+          {viewMode === 'flow' && data.flow_history_complete === false && (data.flow_series?.observed_count ?? 0) > 0 && (
+            <div className="mb-1 rounded border border-amber-500/30 bg-amber-500/5 px-2 py-1.5 text-[10px] text-amber-200">
+              {data.flow_series?.history_start && data.flow_series.history_start !== '09:30'
+                ? `今日从 ${data.flow_series.history_start} 才开始采集，09:30 前资金流无法由 stock-sdk 即时接口回补；`
+                : '今日资金流采集中间存在缺口；'}
+              当前仅展示已采集分钟，后续将按当前时间继续增加。
+            </div>
+          )}
+          {viewMode === 'flow' && !(data.flow_series?.buckets.length) ? (
+            <div className="flex h-36 items-center justify-center px-6 text-center text-xs text-muted">
+              stock-sdk 板块资金流暂不可用
+              {data.flow_error ? ` · ${data.flow_error}` : ' · 请检查 Node.js、stock-sdk 或网络'}
+            </div>
+          ) : displayMode === 'heatmap' && viewMode === 'rotation' ? (
             heatRows > 0 && (
               // key 强制模式切换时销毁重建容器: 两个分支同为 <div> 时 React 会原地
               // 复用节点换挂 ref, 造成两个 echarts 实例交叉挤占同一个 dom
@@ -922,12 +981,14 @@ export function SectorRotationCard({ kind }: { kind: 'concept' | 'industry' }) {
               </div>
             )
           ) : (
-            displayNames.length > 0 && (
+            activeDisplayNames.length > 0 && (
               <div key="trend" className="rounded-lg border border-border/60 bg-elevated/30 p-1.5">
                 <div className="px-1 pb-1 text-[9px] text-muted">
-                  展示板块涨幅走势 (桶内均值, 右轴 %) — 线上穿 0% 轴为切入, 下穿为退潮; 悬停列表或线条即聚焦: 其余线压暗、目标线加粗并浮出名称, 图例可单看某条线
-                </div>
-                <div ref={trend.ref} style={{ height: Math.max(260, displayNames.length * 8 + 240) }} className="w-full" />
+                {viewMode === 'flow'
+                  ? `stock-sdk 板块累计净流入走势 (人民币) — 固定 09:30–15:00, 午休不计桶; 当前已采集 ${data.flow_series?.observed_count ?? 0} 分钟, 末端仅标注最强/最弱各 3 个板块, 悬停查看累计净流入与本桶净流入`
+                  : '展示板块涨幅走势 (桶内均值, 右轴 %) — 线上穿 0% 轴为切入, 下穿为退潮; 悬停列表或线条即聚焦: 其余线压暗、目标线加粗并浮出名称, 图例可单看某条线'}
+              </div>
+                <div ref={trend.ref} style={{ height: Math.max(260, activeDisplayNames.length * 8 + 240) }} className="w-full" />
               </div>
             )
           )}
@@ -994,8 +1055,15 @@ export function SectorRotationCard({ kind }: { kind: 'concept' | 'industry' }) {
               <div ref={chart.ref} className="h-32 w-full" />
             </div>
             <div className="overflow-hidden rounded-lg border border-border/60">
-              <div className="grid grid-cols-[minmax(0,1.4fr)_64px_64px_58px_minmax(72px,1fr)] border-b border-border bg-base/50 px-2 py-1.5 text-[9px] font-medium text-muted">
-                <span>{dimLabel}</span><span className="text-right">现涨幅</span><span className="text-right">1h前</span><span className="text-right">排名变化</span><span className="text-right">{data.flow_available ? '资金流 / 综合分' : '综合分'}</span>
+              <div className={cn(
+                'grid border-b border-border bg-base/50 px-2 py-1.5 text-[9px] font-medium text-muted',
+                viewMode === 'flow' ? 'grid-cols-[minmax(0,1.4fr)_72px_72px_72px_64px]' : 'grid-cols-[minmax(0,1.4fr)_64px_64px_58px_minmax(72px,1fr)]',
+              )}>
+                {viewMode === 'flow' ? (
+                  <><span>{dimLabel}</span><span className="text-right">累计净流入</span><span className="text-right">本桶净流入</span><span className="text-right">资金更新时间</span><span className="text-right">现涨幅</span></>
+                ) : (
+                  <><span>{dimLabel}</span><span className="text-right">现涨幅</span><span className="text-right">1h前</span><span className="text-right">排名变化</span><span className="text-right">综合分</span></>
+                )}
               </div>
               <div className="max-h-40 overflow-y-auto">
                 {data.sectors.map((sector: SectorRotationSector) => (
@@ -1004,7 +1072,8 @@ export function SectorRotationCard({ kind }: { kind: 'concept' | 'industry' }) {
                     onMouseEnter={() => setHoverName(sector.name)}
                     onMouseLeave={() => setHoverName(null)}
                     className={cn(
-                      'grid grid-cols-[minmax(0,1.4fr)_64px_64px_58px_minmax(72px,1fr)] items-center border-b border-border/40 px-2 py-1.5 text-[10px] last:border-b-0 hover:bg-elevated/40',
+                      'grid items-center border-b border-border/40 px-2 py-1.5 text-[10px] last:border-b-0 hover:bg-elevated/40',
+                      viewMode === 'flow' ? 'grid-cols-[minmax(0,1.4fr)_72px_72px_72px_64px]' : 'grid-cols-[minmax(0,1.4fr)_64px_64px_58px_minmax(72px,1fr)]',
                       hoverName === sector.name && 'bg-accent/10',
                     )}
                   >
@@ -1020,14 +1089,31 @@ export function SectorRotationCard({ kind }: { kind: 'concept' | 'industry' }) {
                       />
                       {sector.name}
                     </span>
-                    <span className={`text-right font-mono ${pctClass(sector.pct_now)}`}>{fmtPct(sector.pct_now)}</span>
-                    <span className={`text-right font-mono ${pctClass(sector.pct_prev)}`}>{fmtPct(sector.pct_prev)}</span>
-                    <span className={`text-right font-mono ${sector.rank_change == null ? 'text-muted' : sector.rank_change > 0 ? 'text-bull' : sector.rank_change < 0 ? 'text-bear' : 'text-muted'}`}>
-                      {sector.rank_change == null ? '—' : sector.rank_change > 0 ? `↑${sector.rank_change}` : sector.rank_change < 0 ? `↓${-sector.rank_change}` : '—'}
-                    </span>
-                    <span className="truncate text-right font-mono text-secondary" title={data.flow_available ? `资金流 ${fmtFlow(sector.flow)}` : '未选择资金流, 综合分=涨幅归一'}>
-                      {data.flow_available ? `${fmtFlow(sector.flow)} · ${sector.score?.toFixed(0) ?? '—'}` : `${sector.score?.toFixed(0) ?? '—'}分`}
-                    </span>
+                    {viewMode === 'flow' ? (() => {
+                      const flowRow = data.flow_series?.sectors.indexOf(sector.name) ?? -1
+                      const latestBucket = data.flow_series?.observed_buckets?.at(-1)
+                      const latestIndex = latestBucket ? (data.flow_series?.buckets.indexOf(latestBucket) ?? -1) : -1
+                      const delta = flowRow >= 0 && latestIndex >= 0 ? data.flow_series?.delta_net[flowRow]?.[latestIndex] : null
+                      return (
+                        <>
+                          <span className={`text-right font-mono ${pctClass(sector.flow_net)}`}>{fmtFlow(sector.flow_net)}</span>
+                          <span className={`text-right font-mono ${pctClass(delta)}`}>{fmtFlow(delta)}</span>
+                          <span className="text-right font-mono text-muted">{data.flow_as_of ? new Date(data.flow_as_of).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : '—'}</span>
+                          <span className={`text-right font-mono ${pctClass(sector.pct_now)}`}>{fmtPct(sector.pct_now)}</span>
+                        </>
+                      )
+                    })() : (
+                      <>
+                        <span className={`text-right font-mono ${pctClass(sector.pct_now)}`}>{fmtPct(sector.pct_now)}</span>
+                        <span className={`text-right font-mono ${pctClass(sector.pct_prev)}`}>{fmtPct(sector.pct_prev)}</span>
+                        <span className={`text-right font-mono ${sector.rank_change == null ? 'text-muted' : sector.rank_change > 0 ? 'text-bull' : sector.rank_change < 0 ? 'text-bear' : 'text-muted'}`}>
+                          {sector.rank_change == null ? '—' : sector.rank_change > 0 ? `↑${sector.rank_change}` : sector.rank_change < 0 ? `↓${-sector.rank_change}` : '—'}
+                        </span>
+                        <span className="truncate text-right font-mono text-secondary" title="综合分按涨幅归一，仅用于涨幅榜排序">
+                          {sector.score?.toFixed(0) ?? '—'}分
+                        </span>
+                      </>
+                    )}
                   </div>
                 ))}
                 {!data.sectors.length && <div className="p-3 text-center text-[10px] text-muted">暂无板块数据</div>}
@@ -1037,7 +1123,7 @@ export function SectorRotationCard({ kind }: { kind: 'concept' | 'industry' }) {
           <div className="mt-1.5 flex items-center gap-1.5 text-[9px] text-muted">
             <Database className="h-3 w-3" />
             {`${data.member_count} 个${dimLabel} · ${data.bucket_minutes}分钟桶 · 基准 ${data.basis === 'prev_close' ? '昨收' : data.basis === 'first_close' ? '今开' : '混合'}`}
-            {data.flow_available ? ` · 资金流 ${data.flow_field}` : ' · 未启用资金流'}
+            {data.flow_status === 'ok' || data.flow_status === 'single_point' ? ` · stock-sdk 资金流 ${data.flow_as_of ? new Date(data.flow_as_of).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : '已更新'}` : data.flow_status === 'partial' ? ' · stock-sdk 资金流返回不完整' : data.flow_status === 'stale' ? ' · stock-sdk 资金流已过期' : ' · stock-sdk 资金流不可用'}
             <span className="ml-auto">
               {rowsMode === 'custom'
                 ? `自定义监控 ${customNames.length} 个`

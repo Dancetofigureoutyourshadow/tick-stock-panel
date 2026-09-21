@@ -710,8 +710,10 @@ export function SettingsDataSourcesPanel({ highlight }: { highlight?: string } =
     mutationFn: (name: string) => api.installPlugin(name),
     onSuccess: (data) => {
       invalidateSources()
-      if (data.install_ok) {
+      if (data.install_ok && data.plugin_available !== false) {
         toast('插件依赖安装成功', 'success')
+      } else if (data.install_ok) {
+        toast(data.install_message || '依赖已安装，但数据源当前不可用', 'error')
       } else {
         toast(data.install_message || '安装失败', 'error')
       }
@@ -792,6 +794,7 @@ export function SettingsDataSourcesPanel({ highlight }: { highlight?: string } =
             const isSelected = selected === item.name
             const plugin = pluginMap.get(item.name)
             const pluginUnavailable = plugin && !plugin.available
+            const pluginInstalled = plugin?.installed === true
             const installing = installMut.isPending && installMut.variables === item.name
             const uninstalling = uninstallMut.isPending && uninstallMut.variables === item.name
             const declared = new Set(item.datasets)
@@ -848,7 +851,11 @@ export function SettingsDataSourcesPanel({ highlight }: { highlight?: string } =
                     {servingCount > 0
                       ? `服务中 ${servingCount} 项能力`
                       : pluginUnavailable
-                        ? (plugin?.runtime === 'none' ? '点击配置 Key' : (plugin?.install_hint || plugin?.status || ''))
+                        ? (plugin?.runtime === 'none'
+                          ? '点击配置 Key'
+                          : pluginInstalled
+                            ? `已安装，但当前不可用：${plugin?.status || '运行时探测失败'}`
+                            : (plugin?.install_hint || plugin?.status || ''))
                         : ''}
                   </span>
                   <div className="flex items-center gap-1 shrink-0">
@@ -858,6 +865,14 @@ export function SettingsDataSourcesPanel({ highlight }: { highlight?: string } =
                           <span className="inline-flex items-center gap-1 text-[10px] text-accent">
                             <RefreshCw className="h-2.5 w-2.5 animate-spin" /> 安装中...
                           </span>
+                        ) : pluginInstalled ? (
+                          <button
+                            onClick={(e) => { e.stopPropagation(); reload.mutate() }}
+                            disabled={reload.isPending}
+                            className="rounded px-1.5 py-0.5 text-[10px] font-medium bg-warning/10 text-warning hover:bg-warning/20 transition-colors disabled:opacity-50"
+                          >
+                            {reload.isPending ? '检测中...' : '重新检测'}
+                          </button>
                         ) : (
                           <button
                             onClick={(e) => { e.stopPropagation(); installMut.mutate(item.name) }}

@@ -443,6 +443,7 @@ class PortfolioAccount:
         strategy_snapshot: dict[str, Any],
         trade_date: str,
         current_prices: dict[str, Decimal | str | int] | None = None,
+        allow_buy_warnings: bool = False,
         add_to_watchlist: Any | None = None,
     ) -> dict[str, Any]:
         symbol = symbol.strip().upper()
@@ -479,7 +480,7 @@ class PortfolioAccount:
                 """SELECT symbol, remaining_qty, remaining_cost_cents FROM positions
                    WHERE remaining_qty > 0"""
             ).fetchall()
-            if len(open_positions) >= int(settings["max_positions"]):
+            if len(open_positions) >= int(settings["max_positions"]) and not allow_buy_warnings:
                 raise PortfolioError("持仓名额已满")
             cash_cents = int(state["cash_cents"])
             marks = current_prices or {}
@@ -506,11 +507,11 @@ class PortfolioAccount:
                 )
             )
             required_cents = gross_cents + commission_cents
-            if gross_cents > single_cap_cents:
+            if gross_cents > single_cap_cents and not allow_buy_warnings:
                 raise PortfolioError("买入金额超过单票仓位上限")
-            if gross_cents > max(0, max_exposure_cents - invested_cents):
+            if gross_cents > max(0, max_exposure_cents - invested_cents) and not allow_buy_warnings:
                 raise PortfolioError("买入后将超过最大总仓位")
-            if required_cents > cash_cents:
+            if required_cents > cash_cents and not allow_buy_warnings:
                 raise PortfolioError("可用现金不足")
             connection.execute(
                 "UPDATE account_state SET cash_cents = cash_cents - ? WHERE singleton = 1",

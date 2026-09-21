@@ -18,6 +18,7 @@
  *   minute       —— 分钟K(period 默认 5)
  *   realtime     —— 全 A 股实时快照(batch.cn)
  *   instruments  —— 全 A 股标的维表(batch.cn 提取元数据)
+ *   sector_flow  —— 行业/概念/地域板块资金流排名(fundFlow.sectorRank)
  *   ping         —— 探活
  *
  * 说明: daily/adj/minute 的入参 symbols 是「app 符号」(如 600519.SH)。stock-sdk 能容错解析，
@@ -245,6 +246,13 @@ async function opInstruments(sdk, job) {
   return rows
 }
 
+async function opSectorFlow(sdk, job) {
+  const sectorType = job.sectorType || 'industry'
+  const indicator = job.indicator || 'today'
+  const rows = await fetchWithRetry(() => sdk.fundFlow.sectorRank({ sectorType, indicator }))
+  return Array.isArray(rows) ? rows : []
+}
+
 async function main() {
   let job
   try {
@@ -279,6 +287,9 @@ async function main() {
         break
       case 'instruments':
         rows = await opInstruments(sdk, job)
+        break
+      case 'sector_flow':
+        rows = await opSectorFlow(sdk, job)
         break
       default:
         process.stdout.write(JSON.stringify({ ok: false, error: `unknown op: ${op}` }))

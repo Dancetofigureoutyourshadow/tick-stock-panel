@@ -1,4 +1,4 @@
-"""板块切换(盘中轮动) API — 基于全量分钟数据 + 扩展资金流。薄层, 计算在 services。"""
+"""板块切换(盘中轮动) API — 全量分钟涨幅 + stock-sdk 板块资金流。"""
 from __future__ import annotations
 
 import json
@@ -15,7 +15,6 @@ router = APIRouter(prefix="/api/sector-rotation", tags=["sector-rotation"])
 def get_sector_rotation(
     request: Request,
     kind: Literal["concept", "industry"] = Query("concept", description="板块维度: 概念/行业 二选一"),
-    flow: str | None = Query(None, max_length=200, description="资金流扩展列 (表id.列名), 缺省纯涨幅"),
     top: int = Query(30, ge=5, le=100, description="返回板块数上限"),
     bucket: int = Query(5, description="分钟桶粒度 (1/5/15)"),
     series_names: str | None = Query(None, max_length=2000, description='自定义展示板块 JSON 数组, 如 ["A题材","B题材"]; 缺省=自动榜'),
@@ -23,10 +22,10 @@ def get_sector_rotation(
     auto_rows: int | None = Query(None, ge=1, le=20, description="自动模式展示行数 (前N), 缺省 10"),
     sort_by: Literal["activity", "score", "pct", "rank_change", "momentum", "flow"] = Query(
         "activity",
-        description="自动榜排序维度: activity=近30分钟成交额, score=综合分, pct=现涨幅, rank_change=1h排名跃升, momentum=近1小时动量(走强→走弱), flow=扩展资金流",
+        description="自动榜排序维度: activity=近30分钟成交额, score=涨幅分, pct=现涨幅, rank_change=1h排名跃升, momentum=近1小时动量(走强→走弱), flow=stock-sdk净流入",
     ),
 ):
-    """盘中板块切换走势: 全量分钟K聚合到板块, 涨幅 + 扩展资金流综合评分。
+    """盘中板块切换走势: 全量分钟K聚合涨幅，并附加 stock-sdk 板块资金流序列。
 
     series_names 提供时展示矩阵仅含这些板块 (自定义监控, ≤20, 当日无行情的剔除, 不过滤),
     缺省为自动榜 (sort_by 维度降序, 先剔除排除名单与超成员数上限的板块,
@@ -43,7 +42,6 @@ def get_sector_rotation(
     return sector_rotation.build_sector_rotation(
         request.app.state.repo,
         kind=kind,
-        flow_field=flow,
         top=top,
         bucket_minutes=bucket,
         series_names=names,

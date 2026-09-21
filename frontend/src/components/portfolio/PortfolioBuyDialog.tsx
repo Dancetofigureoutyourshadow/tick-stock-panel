@@ -84,13 +84,14 @@ export function PortfolioBuyDialog({
   }
 
   const buy = useMutation({
-    mutationFn: () => api.portfolioBuy({
+    mutationFn: (options: { confirmBuyWarnings: boolean }) => api.portfolioBuy({
       symbol,
       name,
       strategy_id: strategyId,
       buy_score: selectedScore,
       price,
       quantity: Number(quantity),
+      confirm_buy_warnings: options.confirmBuyWarnings,
     }),
     onSuccess: result => {
       invalidate()
@@ -111,10 +112,35 @@ export function PortfolioBuyDialog({
 
   const qty = Number(quantity)
   const priceNumber = Number(price)
-  const permanentlyBlocked = item?.blocked_reason === '持仓名额已满'
-    || item?.blocked_reason === '预算不足一手'
+  const grossAmount = priceNumber > 0 && qty > 0 ? priceNumber * qty : 0
+  const singlePositionCap = Number(preview.data?.single_position_cap ?? 0)
+  const maxTotalPosition = Number(settings.data?.max_total_position ?? 1)
+  const totalAssets = Number(preview.data?.total_assets ?? 0)
+  const maxExposure = totalAssets * maxTotalPosition
+  const projectedExposure = Number(preview.data?.market_value ?? 0) + grossAmount
+  const warnings = [
+    preview.data?.remaining_slots === 0 || item?.blocked_reason === '持仓名额已满' ? '持仓名额已满' : '',
+    item?.blocked_reason === '预算不足一手' ? '当前预算不足一手' : '',
+    grossAmount > singlePositionCap && singlePositionCap > 0
+      ? `买入金额超过单票仓位上限 ¥${money(singlePositionCap)}`
+      : '',
+    projectedExposure > maxExposure && maxExposure >= 0
+      ? `买入后将超过最大总仓位 ¥${money(maxExposure)}`
+      : '',
+    grossAmount + estimate.fee > Number(preview.data?.available_cash ?? 0)
+      ? '买入后可用现金不足'
+      : '',
+  ].filter(Boolean)
   const invalid = !strategyId || !(priceNumber > 0) || !(qty > 0)
-    || !Number.isInteger(qty) || qty % 100 !== 0 || permanentlyBlocked
+    || !Number.isInteger(qty) || qty % 100 !== 0 || !item
+
+  const submitBuy = () => {
+    const confirmed = warnings.length === 0 || window.confirm(
+      `本次买入存在以下提示：\n\n${warnings.map(warning => `• ${warning}`).join('\n')}\n\n确认仍要买入吗？`,
+    )
+    if (!confirmed) return
+    buy.mutate({ confirmBuyWarnings: warnings.length > 0 })
+  }
 
   return (
     <Modal onClose={onClose} ariaLabel={`买入 ${symbol}`} panelClassName="w-[94vw] max-w-lg rounded-card border border-border bg-surface shadow-xl">
@@ -164,7 +190,7 @@ export function PortfolioBuyDialog({
               <span className="text-muted">预计佣金</span><span className="text-right font-mono text-foreground">¥{money(estimate.fee)}</span>
               <span className="text-muted">成交后剩余现金</span><span className={`text-right font-mono ${estimate.remaining < 0 ? 'text-danger' : 'text-foreground'}`}>¥{money(estimate.remaining)}</span>
             </div>
-            {item.blocked_reason && <div className="flex items-center gap-1.5 rounded border border-warning/30 bg-warning/10 px-3 py-2 text-[11px] text-warning"><AlertTriangle className="h-3.5 w-3.5" />{item.blocked_reason}，仍可仅加入自选。</div>}
+            {item.blocked_reason && <div className="flex items-center gap-1.5 rounded border border-warning/30 bg-warning/10 px-3 py-2 text-[11px] text-warning"><AlertTriangle className="h-3.5 w-3.5" />提示：{item.blocked_reason}，确认后仍可买入。</div>}
             {!item.has_exit_rules && <div className="flex items-center gap-1.5 rounded border border-danger/30 bg-danger/10 px-3 py-2 text-[11px] font-medium text-danger"><AlertTriangle className="h-3.5 w-3.5" />无卖出提醒</div>}
           </>
         )}
@@ -172,7 +198,7 @@ export function PortfolioBuyDialog({
       </div>
       <div className="flex items-center justify-end gap-2 border-t border-border/60 px-5 py-3">
         <button type="button" onClick={() => addOnly.mutate()} disabled={addOnly.isPending} className="inline-flex h-9 items-center gap-1.5 rounded-btn border border-border px-3 text-xs text-secondary hover:bg-elevated disabled:opacity-50"><Star className="h-3.5 w-3.5" />仅加入自选</button>
-        <button type="button" onClick={() => buy.mutate()} disabled={invalid || buy.isPending || preview.isLoading} className="inline-flex h-9 items-center gap-1.5 rounded-btn bg-accent px-4 text-xs font-medium text-white disabled:opacity-40"><ShoppingCart className="h-3.5 w-3.5" />{buy.isPending ? '成交中…' : '确认买入'}</button>
+        <button type="button" onClick={submitBuy} disabled={invalid || buy.isPending || preview.isLoading} className="inline-flex h-9 items-center gap-1.5 rounded-btn bg-accent px-4 text-xs font-medium text-white disabled:opacity-40"><ShoppingCart className="h-3.5 w-3.5" />{buy.isPending ? '成交中…' : '确认买入'}</button>
       </div>
     </Modal>
   )

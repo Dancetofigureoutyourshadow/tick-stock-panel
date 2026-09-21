@@ -226,3 +226,32 @@ def test_preview_rejects_missing_strategy_basis(tmp_path, monkeypatch) -> None:
     )
     assert response.status_code == 400
     assert "来源策略" in response.json()["detail"]
+
+
+def test_buy_allows_single_position_cap_after_explicit_confirmation(tmp_path, monkeypatch) -> None:
+    client = _client(tmp_path, monkeypatch)
+    assert client.post(
+        "/api/portfolio/cash", json={"type": "deposit", "amount": "100000"}
+    ).status_code == 200
+    assert client.put(
+        "/api/portfolio/settings",
+        json={"max_positions": 4, "max_total_position": "1"},
+    ).status_code == 200
+
+    payload = {
+        "symbol": "600001.SH",
+        "strategy_id": "s1",
+        "price": "10",
+        "quantity": 3000,
+        "trade_date": "2026-09-07",
+    }
+    rejected = client.post("/api/portfolio/buys", json=payload)
+    assert rejected.status_code == 400
+    assert "单票仓位上限" in rejected.json()["detail"]
+
+    confirmed = client.post(
+        "/api/portfolio/buys",
+        json={**payload, "confirm_buy_warnings": True},
+    )
+    assert confirmed.status_code == 200, confirmed.text
+    assert confirmed.json()["trade"]["gross_amount"] == "30000.00"

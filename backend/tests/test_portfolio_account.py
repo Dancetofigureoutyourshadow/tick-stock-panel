@@ -194,6 +194,49 @@ def test_buy_rechecks_exposure_with_current_position_marks(tmp_path) -> None:
         )
 
 
+def test_buy_warnings_require_explicit_override(tmp_path) -> None:
+    account = PortfolioAccount(tmp_path)
+    account.record_cash("deposit", "100000")
+    account.update_settings({"max_positions": 4, "max_total_position": "1"})
+
+    with pytest.raises(PortfolioError, match="买入金额超过单票仓位上限"):
+        account.buy(
+        symbol="AAA", name="甲", price="10", quantity=3000,
+        strategy_snapshot={"strategy_id": "s1"}, trade_date="2026-09-01",
+    )
+
+    bought = account.buy(
+        symbol="AAA", name="甲", price="10", quantity=3000,
+        strategy_snapshot={"strategy_id": "s1"}, trade_date="2026-09-01",
+        allow_buy_warnings=True,
+    )
+    assert bought["trade"]["gross_amount"] == "30000.00"
+
+
+def test_buy_warnings_can_override_slots_exposure_and_cash_together(tmp_path) -> None:
+    account = PortfolioAccount(tmp_path)
+    account.record_cash("deposit", "100000")
+    account.update_settings({"max_positions": 1, "max_total_position": "0.8"})
+    account.buy(
+        symbol="AAA", name="甲", price="10", quantity=1000,
+        strategy_snapshot={"strategy_id": "s1"}, trade_date="2026-09-01",
+    )
+
+    with pytest.raises(PortfolioError, match="持仓名额已满"):
+        account.buy(
+            symbol="BBB", name="乙", price="10", quantity=10000,
+            strategy_snapshot={"strategy_id": "s1"}, trade_date="2026-09-02",
+            current_prices={"AAA": "10"},
+        )
+
+    bought = account.buy(
+        symbol="BBB", name="乙", price="10", quantity=10000,
+        strategy_snapshot={"strategy_id": "s1"}, trade_date="2026-09-02",
+        current_prices={"AAA": "10"}, allow_buy_warnings=True,
+    )
+    assert bought["trade"]["gross_amount"] == "100000.00"
+
+
 def test_buy_rolls_back_ledger_when_watchlist_link_fails(tmp_path) -> None:
     account = PortfolioAccount(tmp_path)
     account.record_cash("deposit", "10000")

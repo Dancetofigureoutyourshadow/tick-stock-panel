@@ -1934,7 +1934,8 @@ export interface PluginDataSourceItem {
   display_name: string
   datasets: string[]
   runtime: string          // node | python | none
-  available: boolean       // 依赖是否已安装
+  installed: boolean       // 依赖是否已安装到当前后端运行环境
+  available: boolean       // 依赖已安装且运行时探测可用
   status: string           // 可用性原因 (供 UI 显示)
   description: string
   install_hint: string     // 未装依赖时显示的安装命令
@@ -2182,6 +2183,10 @@ export interface SectorRotationSector {
   rank_now: number | null
   rank_prev: number | null
   rank_change: number | null
+  flow_inflow: number | null
+  flow_outflow: number | null
+  flow_net: number | null
+  /** 兼容旧榜单字段，等于 stock-sdk 板块主力净流入 */
   flow: number | null
   score: number | null
   n_members: number
@@ -2194,8 +2199,14 @@ export interface SectorRotation {
   date?: string
   kind?: 'concept' | 'industry'
   basis?: string
-  flow_field?: string | null
   flow_available?: boolean
+  flow_status?: 'ok' | 'single_point' | 'partial' | 'stale' | 'unavailable'
+  flow_reason?: string | null
+  flow_error?: string | null
+  flow_as_of?: string | null
+  /** 是否已经从 09:30 开始采集；false 时仅展示已采集的连续区间 */
+  flow_history_complete?: boolean | null
+  flow_source?: string | null
   bucket_minutes?: number
   member_count?: number
   /** 内置属性板块排除名单 (供前端编辑器预填/恢复默认) */
@@ -2214,6 +2225,23 @@ export interface SectorRotation {
     sectors: string[]
     /** matrix[行][列] = 该板块该桶涨幅; 无行情为 null */
     matrix: (number | null)[][]
+  }
+  /** stock-sdk 板块资金流分时矩阵，金额单位为人民币 */
+  flow_series?: {
+    buckets: string[]
+    /** 实际已经采集到的交易分钟; buckets 固定为 09:30-15:00, 午休不含在内 */
+    observed_buckets?: string[]
+    observed_count?: number
+    history_start?: string | null
+    history_end?: string | null
+    history_contiguous?: boolean
+    sectors: string[]
+    inflow: (number | null)[][]
+    outflow: (number | null)[][]
+    net: (number | null)[][]
+    delta_inflow: (number | null)[][]
+    delta_outflow: (number | null)[][]
+    delta_net: (number | null)[][]
   }
   /** 全部板块清单按活跃度降序 (近 30 分钟成分股成交额合计; 量额缺失为 null 排后; 永不剔除) */
   universe?: SectorRotationUniverseItem[]
@@ -2296,7 +2324,7 @@ export const api = {
     // npm install 可能耗时较长, 用 6 分钟超时
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), 360_000)
-    return request<DataSourcesResponse & { install_ok: boolean; install_message: string }>(
+    return request<DataSourcesResponse & { install_ok: boolean; install_message: string; plugin_available?: boolean }>(
       `/api/settings/plugins/${encodeURIComponent(name)}/install`,
       { method: 'POST', signal: controller.signal },
     ).finally(() => clearTimeout(timer))
@@ -3356,9 +3384,8 @@ export const api = {
   },
 
   // ===== 板块切换 (盘中轮动) =====
-  sectorRotation: (params: { kind: 'concept' | 'industry'; flow?: string; top?: number; bucket?: number; seriesNames?: string[]; autoRows?: number; excludeSectors?: string[]; sortBy?: 'activity' | 'score' | 'pct' | 'rank_change' | 'momentum' | 'flow' }) => {
+  sectorRotation: (params: { kind: 'concept' | 'industry'; top?: number; bucket?: number; seriesNames?: string[]; autoRows?: number; excludeSectors?: string[]; sortBy?: 'activity' | 'score' | 'pct' | 'rank_change' | 'momentum' | 'flow' }) => {
     const query = new URLSearchParams({ kind: params.kind })
-    if (params.flow) query.set('flow', params.flow)
     if (params.top != null) query.set('top', String(params.top))
     if (params.bucket != null) query.set('bucket', String(params.bucket))
     if (params.seriesNames?.length) query.set('series_names', JSON.stringify(params.seriesNames))
@@ -3934,6 +3961,7 @@ export const api = {
     symbol: string; strategy_id: string; buy_score?: number | string | null
     price?: number | string | null; quantity: number; name?: string
     watchlist_group_id?: string | null
+    confirm_buy_warnings?: boolean
   }) => request<{ position: PortfolioPosition; trade: PortfolioTrade }>(
     '/api/portfolio/buys', { method: 'POST', body: JSON.stringify(payload) },
   ),

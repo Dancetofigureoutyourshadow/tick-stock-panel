@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import importlib
+from importlib import metadata as importlib_metadata
 import logging
 import math
+import os
 import re
 import shutil
 import subprocess
@@ -33,6 +35,16 @@ _LOAD_ERRORS: list[dict] = []
 _PLUGIN_STATUS: dict[str, dict] = {}
 
 _NAME_RE = re.compile(r"^[a-z0-9_]+$")
+
+
+def _uv_env() -> dict[str, str]:
+    """为插件安装提供不依赖用户全局缓存权限的 uv 环境。"""
+    return {
+        **os.environ,
+        "UV_HTTP_TIMEOUT": "300",
+        # 插件安装是低频操作; 禁用 uv 缓存可避开旧用户/当前用户 ACL 不一致。
+        "UV_NO_CACHE": "1",
+    }
 
 
 def plugins_dir() -> Path:
@@ -168,8 +180,7 @@ def install_plugin(name: str) -> tuple[bool, str]:
             result = subprocess.run(
                 [npm, "install", "--omit=dev", "--no-audit", "--no-fund"],
                 cwd=str(pdir),
-                capture_output=True,
-                text=True,
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
                 timeout=300,
             )
         elif runtime == "python":
@@ -190,8 +201,8 @@ def install_plugin(name: str) -> tuple[bool, str]:
             if uv_bin:
                 result = subprocess.run(
                     [uv_bin, "pip", "install", "--python", sys.executable, "-r", str(req)],
-                    capture_output=True, text=True, timeout=300,
-                    env={**__import__("os").environ, "UV_HTTP_TIMEOUT": "300"},
+                    capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300,
+                    env=_uv_env(),
                 )
                 # exit 2 通常是配置文件解析错误, 绕过配置重试
                 # --no-config 会丢镜像, 显式传国内镜像加速 (与用户 uv.toml 意图一致)
@@ -201,13 +212,13 @@ def install_plugin(name: str) -> tuple[bool, str]:
                          "--index-url", "https://pypi.tuna.tsinghua.edu.cn/simple",
                          "--python", sys.executable,
                          "-r", str(req)],
-                        capture_output=True, text=True, timeout=300,
-                        env={**__import__("os").environ, "UV_HTTP_TIMEOUT": "300"},
+                        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300,
+                        env=_uv_env(),
                     )
             else:
                 result = subprocess.run(
                     [sys.executable, "-m", "pip", "install", "-r", str(req)],
-                    capture_output=True, text=True, timeout=300,
+                    capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300,
                 )
         else:
             return False, f"runtime={runtime} 无需安装依赖"
@@ -272,7 +283,15 @@ def uninstall_plugin(name: str) -> tuple[bool, str]:
         cmd = ([uv_bin, "pip", "uninstall", "--python", sys.executable, *pkgs]
                if uv_bin else [sys.executable, "-m", "pip", "uninstall", "-y", *pkgs])
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=120,
+                env=_uv_env() if uv_bin else None,
+            )
             if result.returncode != 0:
                 return False, f"卸载失败: {(result.stderr or '').strip()[-300:]}"
             return True, f"已卸载 {len(pkgs)} 个包"
@@ -564,6 +583,7 @@ def _register_one_plugin(manifest: dict) -> None:
         logger.info("插件 %s 标记为 hidden, 跳过注册", name)
         return
     runtime = str(manifest.get("runtime", "none")).lower()
+    installed = _dependency_installed(manifest)
     # 委托检测: 调用插件自己的 check 函数 (node 型/python 型各自实现)
     available, reason = _call_check(manifest.get("check"))
     _PLUGIN_STATUS[name] = {
@@ -571,6 +591,7 @@ def _register_one_plugin(manifest: dict) -> None:
         "display_name": manifest.get("display_name", name),
         "datasets": list(manifest.get("datasets", []) or []),
         "runtime": runtime,
+        "installed": installed,
         "available": available,
         "status": reason,
         "description": manifest.get("description", ""),
@@ -611,6 +632,37 @@ def _call_check(check_ref: str | None) -> tuple[bool, str]:
         return bool(result), "ok" if result else "不可用"
     except Exception as e:  # noqa: BLE001
         return False, str(e)
+
+
+def _dependency_installed(manifest: dict) -> bool:
+    """判断插件依赖是否已安装到当前后端运行环境。"""
+    runtime = str(manifest.get("runtime", "none")).lower()
+    if runtime == "none":
+        return True
+
+    pdir = plugin_dir_of(str(manifest.get("name") or ""))
+    if runtime == "node":
+        return (pdir / "node_modules").is_dir()
+    if runtime != "python":
+        return False
+
+    req = pdir / "requirements.txt"
+    if not req.exists():
+        return False
+    packages: list[str] = []
+    for raw in req.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        package = re.split(r"[<>=!~;\[\s]", line, maxsplit=1)[0].strip()
+        if package:
+            packages.append(package)
+    if not packages:
+        return False
+    try:
+        return all(importlib_metadata.version(package) for package in packages)
+    except importlib_metadata.PackageNotFoundError:
+        return False
 
 
 def _load_entry(entry_ref: str):

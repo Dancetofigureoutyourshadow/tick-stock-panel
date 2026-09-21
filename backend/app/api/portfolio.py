@@ -53,6 +53,7 @@ class BuyRequest(BaseModel):
     trade_date: str | None = None
     name: str = ""
     watchlist_group_id: str | None = None
+    confirm_buy_warnings: bool = False
 
 
 class SellRequest(BaseModel):
@@ -383,6 +384,7 @@ def confirm_buy(payload: BuyRequest, request: Request):
             strategy_snapshot=snapshot,
             trade_date=payload.trade_date or cn_today().isoformat(),
             current_prices=prices,
+            allow_buy_warnings=payload.confirm_buy_warnings,
             add_to_watchlist=lambda value: watchlist.add(
                 value,
                 "",

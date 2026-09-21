@@ -2,8 +2,8 @@
 
 不依赖网络与真实 data/: 用 tmp_path 构造
 分钟分区 + 前日日K + 概念扩展表 + 资金流扩展表, 断言:
-聚合口径 (等权/前收基准)、切换信号方向 (rank_change)、轮动强度时间线、
-资金流读取与降级 (flow 不可用退化为纯涨幅)、成分数去重、
+    聚合口径 (等权/前收基准)、切换信号方向 (rank_change)、轮动强度时间线、
+    stock-sdk 板块资金流分时矩阵、成分数去重、
 非法参数 fail-closed、无分钟/无成分的明确 no_data。
 """
 from __future__ import annotations
@@ -78,33 +78,36 @@ def _write_concept_ext(data_dir: Path) -> None:
     )
 
 
-def _write_flow_ext(data_dir: Path) -> None:
-    config = ExtConfig(
-        id="ext_flow",
-        label="测试资金流",
-        mode="snapshot",
-        fields=[ExtField("symbol", "string", "代码"), ExtField("净流入", "float", "净流入")],
-    )
-    ExtConfigStore(data_dir).upsert(config)
-    write_ext_parquet(
-        pl.DataFrame({
-            "symbol": SYMS_A + SYMS_B,
-            "净流入": [1000.0, 500.0, 100.0, 50.0],  # A 题材合计 1500, B 题材合计 150
-        }),
-        config,
-        data_dir,
-    )
+def _fake_stocksdk_flow(kind: str, **_: object) -> dict:
+    rows = [
+        {"name": "A题材", "pct": 0.01, "inflow": 1500.0, "outflow": 500.0, "net": 1000.0, "member_count": 2},
+        {"name": "B题材", "pct": 0.06, "inflow": 5000.0, "outflow": 3000.0, "net": 2000.0, "member_count": 2},
+    ]
+    return {
+        "status": "ok", "kind": kind, "date": DAY, "as_of": f"{DAY}T10:35:00+08:00",
+        "source": "stock_sdk_sector_rank", "rows": rows,
+        "series": {
+            "buckets": ["09:35", "10:35"], "sectors": ["A题材", "B题材"],
+            "observed_buckets": ["09:35", "10:35"], "observed_count": 2,
+            "inflow": [[500.0, 1500.0], [1000.0, 5000.0]],
+            "outflow": [[200.0, 500.0], [400.0, 3000.0]],
+            "net": [[300.0, 1000.0], [600.0, 2000.0]],
+            "delta_inflow": [[None, None], [500.0, 3500.0]],
+            "delta_outflow": [[None, None], [200.0, 2500.0]],
+            "delta_net": [[None, None], [300.0, 1400.0]],
+        },
+    }
 
 
 @pytest.fixture()
-def repo(tmp_path: Path):
+def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     _reset_caches()
     data_dir = tmp_path / "data"
     data_dir.mkdir()
     _write_minute(data_dir)
     _write_prev_daily(data_dir)
     _write_concept_ext(data_dir)
-    _write_flow_ext(data_dir)
+    monkeypatch.setattr(sector_rotation, "stocksdk_flow_snapshot", _fake_stocksdk_flow)
     yield SimpleNamespace(store=SimpleNamespace(data_dir=data_dir))
     _reset_caches()
 
@@ -200,37 +203,38 @@ def test_rotation_index_with_wide_universe(tmp_path):
     assert fading["rank_change"] < 0
 
 
-def test_flow_from_selected_ext_and_score(repo):
-    """资金流按用户选择的扩展列聚合到板块, 与涨幅各占 50%。"""
-    result = sector_rotation.build_sector_rotation(
-        repo, kind="concept", flow_field="ext_flow.净流入",
-    )
+def test_flow_comes_from_stocksdk_board_rows_and_series(repo):
+    """资金流直接取 stock-sdk 板块行，不经过股票成分股聚合。"""
+    result = sector_rotation.build_sector_rotation(repo, kind="concept")
     assert result["status"] == "ok"
     assert result["flow_available"] is True
-    assert result["flow_field"] == "ext_flow.净流入"
     sectors = {item["name"]: item for item in result["sectors"]}
-    assert sectors["A题材"]["flow"] == 1500.0
-    assert sectors["B题材"]["flow"] == 150.0
-    # 涨幅归一: B=100, A=0; 资金流归一: A=100, B=0 → 两者综合分均为 50
-    assert sectors["A题材"]["score"] == pytest.approx(50.0)
-    assert sectors["B题材"]["score"] == pytest.approx(50.0)
+    assert sectors["A题材"]["flow_net"] == 1000.0
+    assert sectors["B题材"]["flow_inflow"] == 5000.0
+    assert result["flow_status"] == "ok"
+    assert result["flow_series"]["sectors"] == result["series"]["sectors"]
+    flow_matrix = dict(zip(result["flow_series"]["sectors"], result["flow_series"]["delta_net"], strict=True))
+    assert flow_matrix["B题材"][-1] == 1400.0
 
 
-def test_flow_missing_degrades_to_pure_pct(repo):
-    """资金流指向不存在的表/列 → 不阻断, flow_available=False, score 退化为纯涨幅归一。"""
-    result = sector_rotation.build_sector_rotation(
-        repo, kind="concept", flow_field="ext_nope.净流入",
-    )
+def test_flow_status_is_explicit_when_stocksdk_unavailable(repo, monkeypatch):
+    monkeypatch.setattr(sector_rotation, "stocksdk_flow_snapshot", lambda kind, **_: {
+        "status": "unavailable", "reason": "source_unavailable", "kind": kind,
+    })
+    sector_rotation.invalidate_cache()
+    result = sector_rotation.build_sector_rotation(repo, kind="concept")
     assert result["status"] == "ok"
     assert result["flow_available"] is False
-    sectors = {item["name"]: item for item in result["sectors"]}
-    assert sectors["B题材"]["flow"] is None
-    assert sectors["B题材"]["score"] == pytest.approx(100.0)
-    assert sectors["A题材"]["score"] == pytest.approx(0.0)
+    assert result["flow_status"] == "unavailable"
+    assert result["flow_series"]["buckets"] == []
 
 
-def test_no_minute_partition_gives_no_data(repo, tmp_path):
+def test_no_minute_partition_gives_flow_only_or_no_data(repo, monkeypatch):
     (repo.store.data_dir / "kline_minute" / f"date={DAY}" / "part.parquet").unlink()
+    monkeypatch.setattr(sector_rotation, "stocksdk_flow_snapshot", lambda kind, **_: {
+        "status": "unavailable", "reason": "source_unavailable", "kind": kind,
+    })
+    sector_rotation.invalidate_cache()
     result = sector_rotation.build_sector_rotation(repo, kind="concept")
     assert result["status"] == "no_data"
     assert result["reason"] == "minute_missing"
@@ -240,8 +244,9 @@ def test_no_member_map_gives_no_data(repo):
     import shutil
     shutil.rmtree(repo.store.data_dir / "ext_data" / "ext_gn")
     result = sector_rotation.build_sector_rotation(repo, kind="concept")
-    assert result["status"] == "no_data"
+    assert result["status"] == "ok"
     assert result["reason"] == "members_missing"
+    assert result["flow_series"]["sectors"]
 
 
 def test_invalid_params_fail_closed(repo):
@@ -305,11 +310,12 @@ def test_activity_ranking_and_custom_series(tmp_path):
     assert result["series"]["sectors"] == ["A题材", "B题材"]
 
 
-def test_industry_kind_uses_industry_map(repo):
-    """kind=industry 无行业映射 → 明确 no_data (二选一互不串数据)。"""
+def test_industry_kind_can_use_stocksdk_rows_without_stock_map(repo):
+    """行业资金流由 stock-sdk 行业接口独立提供，不依赖概念成分映射。"""
     result = sector_rotation.build_sector_rotation(repo, kind="industry")
-    assert result["status"] == "no_data"
+    assert result["status"] == "ok"
     assert result["reason"] == "members_missing"
+    assert result["flow_series"]["sectors"]
 
 
 GYMS = ["600901.SH", "600902.SH"]  # 名称命中默认黑名单 (融资融券)
@@ -362,21 +368,6 @@ def _write_activity_data(tmp_path: Path):
                         + ["融资融券"] * len(GYMS) + ["巨盘概念"] * len(GIANT_ALL)),
         }),
         config,
-        data_dir,
-    )
-    flow_config = ExtConfig(
-        id="ext_flow",
-        label="活跃度测试资金流",
-        mode="snapshot",
-        fields=[ExtField("symbol", "string", "代码"), ExtField("净流入", "float", "净流入")],
-    )
-    ExtConfigStore(data_dir).upsert(flow_config)
-    write_ext_parquet(
-        pl.DataFrame({
-            "symbol": SYMS_A + SYMS_B + GYMS + GIANT_BARS,
-            "净流入": [1000.0, 500.0, 100.0, 50.0, 10000.0, 10000.0, 10.0, 10.0],
-        }),
-        flow_config,
         data_dir,
     )
     return SimpleNamespace(store=SimpleNamespace(data_dir=data_dir))
@@ -517,27 +508,12 @@ def test_momentum_mode_splits_strong_and_weak(tmp_path):
     assert default["series"]["sectors"] == ["B题材", "A题材"]
 
 
-def test_sort_by_flow_respects_exclude_and_member_cap(tmp_path):
-    """flow 维度: 融资融券资金流 20000 最大但被默认黑名单拦截;
-    清空名称过滤后入榜第一; 巨盘概念仍被成员数上限挡住; activity 维度不受影响。"""
-    repo = _write_activity_data(tmp_path)
-    flow = sector_rotation.build_sector_rotation(
-        repo, kind="concept", bucket_minutes=5,
-        flow_field="ext_flow.净流入", sort_by="flow", auto_rows=2,
+def test_sort_by_flow_uses_stocksdk_net(repo):
+    """flow 排序使用 stock-sdk 板块净流入，且不依赖成分股净流入扩展表。"""
+    result = sector_rotation.build_sector_rotation(
+        repo, kind="concept", bucket_minutes=5, sort_by="flow", auto_rows=1,
     )
-    assert flow["flow_available"] is True
-    assert flow["series"]["sectors"] == ["A题材", "B题材"]
-
-    cleared = sector_rotation.build_sector_rotation(
-        repo, kind="concept", bucket_minutes=5,
-        flow_field="ext_flow.净流入", sort_by="flow", exclude_sectors=[], auto_rows=2,
-    )
-    assert cleared["series"]["sectors"] == ["融资融券", "A题材"]
-
-    activity = sector_rotation.build_sector_rotation(
-        repo, kind="concept", bucket_minutes=5, auto_rows=2,
-    )
-    assert activity["series"]["sectors"] == ["A题材", "B题材"]
+    assert result["series"]["sectors"] == ["B题材"]
 
 
 def test_exclude_cache_isolation_and_auto_rows(tmp_path):

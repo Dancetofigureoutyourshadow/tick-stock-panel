@@ -61,6 +61,27 @@ def _signals(strategy, panel: pl.DataFrame, **overrides):
     return strategy.matrix_strategy.compute_signals(market, params)
 
 
+def test_matrix_derives_turnover_rate_when_enriched_panel_has_float_shares_only():
+    strategy = _load(ROOT / "generated" / "custom_sequoia_high_tight_flag_v3.py")
+    panel = _rows().drop("turnover_rate").with_columns(
+        pl.lit(10_000_000.0).alias("float_shares")
+    )
+
+    market = build_market_data_matrix(
+        panel,
+        field_columns={"amount", "turnover_rate"},
+    )
+
+    np.testing.assert_allclose(
+        market.field("turnover_rate")[:, 0],
+        np.array([0.1] * 40 + [0.02] * 60, dtype=np.float32),
+    )
+    strategy.matrix_strategy.compute_signals(
+        market,
+        {item["id"]: item["default"] for item in strategy.meta["params"]},
+    )
+
+
 def test_v2_and_v3_load_with_stable_ids_and_defaults():
     v2 = _load(ROOT / "generated" / "custom_sequoia_high_tight_flag_v2.py")
     v3 = _load(ROOT / "generated" / "custom_sequoia_high_tight_flag_v3.py")

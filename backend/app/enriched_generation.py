@@ -23,6 +23,8 @@ _WRITER_LOCKS: dict[tuple[str, str], threading.RLock] = {}
 _ACTIVE_PUBLICATIONS: weakref.WeakValueDictionary[str, EnrichedPublication] = (
     weakref.WeakValueDictionary()
 )
+_PARTITION_REPLACE_ATTEMPTS = 10
+_PARTITION_REPLACE_DELAY_S = 0.5
 
 
 def _marker_path(data_dir: Path, asset_type: str) -> Path:
@@ -73,6 +75,22 @@ def _write_marker(path: Path, payload: dict[str, Any]) -> None:
         _fsync_directory(path.parent)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def _replace_partition_with_retry(source: Path, destination: Path) -> None:
+    """穿过 Windows 读端短暂持有 parquet 句柄的窗口。"""
+    last_error: PermissionError | None = None
+    for attempt in range(_PARTITION_REPLACE_ATTEMPTS):
+        try:
+            os.replace(source, destination)
+            return
+        except PermissionError as exc:
+            if os.name != "nt":
+                raise
+            last_error = exc
+            if attempt < _PARTITION_REPLACE_ATTEMPTS - 1:
+                time.sleep(_PARTITION_REPLACE_DELAY_S)
+    raise last_error  # type: ignore[misc]
 
 
 def _unlock_file(stream: BinaryIO) -> None:
@@ -312,9 +330,17 @@ class EnrichedPublication:
                 os.fsync(stream.fileno())
             with _exclusive_generation_lock(self.data_dir, self.asset_type):
                 self._claim_or_verify()
-                os.replace(temporary, out)
-                _fsync_directory(out.parent)
+                _replace_partition_with_retry(temporary, out)
                 self._changed = True
+                _fsync_directory(out.parent)
+        except BaseException:
+            # If the formal partition was not replaced, this publication owns no
+            # partial disk change and must release its marker.  Otherwise a
+            # transient Windows replace error leaves every later rebuild blocked
+            # by a publishing claim that can no longer make progress.
+            if self._publishing and not self._changed:
+                self.abandon()
+            raise
         finally:
             temporary.unlink(missing_ok=True)
 

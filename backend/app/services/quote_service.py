@@ -337,9 +337,14 @@ class QuoteService:
 
         用于盘后管道/数据修正运行期间, 防止实时行情覆写管道正在写的 parquet。
         与 stop() 的区别: 线程继续存活但跳过 _fetch_quotes; preferences 开关态不变,
-        管道结束调用 resume() 即恢复。线程级检查, 即时生效, 无 join 等待。
+        管道结束调用 resume() 即恢复。暂停会等待已经开始的 fetch 完成, 避免写盘竞态。
         """
         self._paused = True
+        # 仅设置标志不能阻止已经通过 _poll_loop 检查的 fetch 继续写盘。
+        # 等待当前 fetch 退出, 并让 _fetch_quotes 在锁内再次检查暂停态,
+        # 才能保证管道开始写 enriched 时不存在实时写入者。
+        with self._fetch_lock:
+            pass
         logger.info("行情轮询已临时暂停 (管道/修正运行中)")
 
     def resume(self) -> None:
@@ -665,6 +670,10 @@ class QuoteService:
         的本轮不落盘 (见 _process_full_market_records)。
         """
         with self._fetch_lock:
+            # pause() 与这里使用同一把锁, 避免 pause 设置标志后仍有一个
+            # 已经越过 _poll_loop 检查的 fetch 抢到写盘机会。
+            if self._paused:
+                return False
             before = self._fetched_at
             if final:
                 logger.info("最终行情同步开始")

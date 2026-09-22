@@ -42,6 +42,7 @@ export function PortfolioBuyDialog({
   const [price, setPrice] = useState('')
   const [quantity, setQuantity] = useState('')
   const [removeError, setRemoveError] = useState('')
+  const [buyWarningConfirmation, setBuyWarningConfirmation] = useState<string[] | null>(null)
   const selectedScore = scoresByStrategy && Object.prototype.hasOwnProperty.call(scoresByStrategy, strategyId)
     ? scoresByStrategy[strategyId] ?? null
     : score ?? null
@@ -135,71 +136,95 @@ export function PortfolioBuyDialog({
     || !Number.isInteger(qty) || qty % 100 !== 0 || !item
 
   const submitBuy = () => {
-    const confirmed = warnings.length === 0 || window.confirm(
-      `本次买入存在以下提示：\n\n${warnings.map(warning => `• ${warning}`).join('\n')}\n\n确认仍要买入吗？`,
-    )
-    if (!confirmed) return
-    buy.mutate({ confirmBuyWarnings: warnings.length > 0 })
+    if (warnings.length > 0) {
+      setBuyWarningConfirmation(warnings)
+      return
+    }
+    buy.mutate({ confirmBuyWarnings: false })
   }
 
   return (
-    <Modal onClose={onClose} ariaLabel={`买入 ${symbol}`} panelClassName="w-[94vw] max-w-lg rounded-card border border-border bg-surface shadow-xl">
-      <div className="flex items-center justify-between border-b border-border/60 px-5 py-4">
-        <div>
-          <div className="text-sm font-medium text-foreground">买入并加入自选</div>
-          <div className="mt-0.5 text-[11px] text-muted">{symbol}{name ? ` · ${name}` : ''}</div>
+    <>
+      <Modal onClose={onClose} ariaLabel={`买入 ${symbol}`} panelClassName="w-[94vw] max-w-lg rounded-card border border-border bg-surface shadow-xl">
+        <div className="flex items-center justify-between border-b border-border/60 px-5 py-4">
+          <div>
+            <div className="text-sm font-medium text-foreground">买入并加入自选</div>
+            <div className="mt-0.5 text-[11px] text-muted">{symbol}{name ? ` · ${name}` : ''}</div>
+          </div>
+          <ShoppingCart className="h-4 w-4 text-accent" />
         </div>
-        <ShoppingCart className="h-4 w-4 text-accent" />
-      </div>
-      <div className="space-y-4 px-5 py-4">
-        <label className="block space-y-1.5">
-          <span className="text-[11px] text-muted">本次买入依据</span>
-          <select
-            value={strategyId}
-            onChange={event => setStrategyId(event.target.value)}
-            className="h-9 w-full rounded-btn border border-border bg-base px-3 text-xs text-foreground"
-          >
-            {strategies.map(strategy => (
-              <option key={strategy.id} value={strategy.id}>{strategy.name}</option>
-            ))}
-          </select>
-          {strategies.length > 1 && <div className="text-[10px] text-warning">该股票命中多个策略，请明确选择本次买入依据。</div>}
-        </label>
+        <div className="space-y-4 px-5 py-4">
+          <label className="block space-y-1.5">
+            <span className="text-[11px] text-muted">本次买入依据</span>
+            <select
+              value={strategyId}
+              onChange={event => setStrategyId(event.target.value)}
+              className="h-9 w-full rounded-btn border border-border bg-base px-3 text-xs text-foreground"
+            >
+              {strategies.map(strategy => (
+                <option key={strategy.id} value={strategy.id}>{strategy.name}</option>
+              ))}
+            </select>
+            {strategies.length > 1 && <div className="text-[10px] text-warning">该股票命中多个策略，请明确选择本次买入依据。</div>}
+          </label>
 
-        {preview.isLoading ? (
-          <div className="rounded-lg border border-dashed border-border px-4 py-6 text-center text-xs text-muted">正在计算建议仓位…</div>
-        ) : preview.isError ? (
-          <div className="rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-xs text-danger">{String((preview.error as Error).message)}</div>
-        ) : item && (
-          <>
-            <div className="grid grid-cols-2 gap-3">
-              <label className="space-y-1.5">
-                <span className="text-[11px] text-muted">成交价</span>
-                <input value={price} onChange={event => setPrice(event.target.value)} type="number" min="0" step="0.01" className="h-9 w-full rounded-btn border border-border bg-base px-3 text-xs text-foreground" />
-                <span className="block text-[10px] text-muted">{item.price_source === 'realtime' ? '实时最新价' : item.price_source === 'latest_close' ? '最新收盘价' : item.price_source === 'missing' ? '行情缺失，请手动填写' : '手动价格'}</span>
-              </label>
-              <label className="space-y-1.5">
-                <span className="text-[11px] text-muted">数量（100 股整数倍）</span>
-                <input value={quantity} onChange={event => setQuantity(event.target.value)} type="number" min="100" step="100" className="h-9 w-full rounded-btn border border-border bg-base px-3 text-xs text-foreground" />
-                <span className="block text-[10px] text-muted">建议 {item.suggested_qty} 股</span>
-              </label>
-            </div>
-            <div className="grid grid-cols-2 gap-x-5 gap-y-2 rounded-lg border border-border/60 bg-base/50 p-3 text-[11px]">
-              <span className="text-muted">策略评分</span><span className="text-right font-mono text-foreground">{selectedScore ?? '—'}</span>
-              <span className="text-muted">建议仓位</span><span className="text-right font-mono text-foreground">¥{item.suggested_budget} · {preview.data && Number(preview.data.total_assets) > 0 ? `${(Number(item.suggested_budget) / Number(preview.data.total_assets) * 100).toFixed(1)}%` : '—'}</span>
-              <span className="text-muted">预计佣金</span><span className="text-right font-mono text-foreground">¥{money(estimate.fee)}</span>
-              <span className="text-muted">成交后剩余现金</span><span className={`text-right font-mono ${estimate.remaining < 0 ? 'text-danger' : 'text-foreground'}`}>¥{money(estimate.remaining)}</span>
-            </div>
-            {item.blocked_reason && <div className="flex items-center gap-1.5 rounded border border-warning/30 bg-warning/10 px-3 py-2 text-[11px] text-warning"><AlertTriangle className="h-3.5 w-3.5" />提示：{item.blocked_reason}，确认后仍可买入。</div>}
-            {!item.has_exit_rules && <div className="flex items-center gap-1.5 rounded border border-danger/30 bg-danger/10 px-3 py-2 text-[11px] font-medium text-danger"><AlertTriangle className="h-3.5 w-3.5" />无卖出提醒</div>}
-          </>
-        )}
-        {removeError && <div className="text-[11px] text-danger">{removeError}</div>}
-      </div>
-      <div className="flex items-center justify-end gap-2 border-t border-border/60 px-5 py-3">
-        <button type="button" onClick={() => addOnly.mutate()} disabled={addOnly.isPending} className="inline-flex h-9 items-center gap-1.5 rounded-btn border border-border px-3 text-xs text-secondary hover:bg-elevated disabled:opacity-50"><Star className="h-3.5 w-3.5" />仅加入自选</button>
-        <button type="button" onClick={submitBuy} disabled={invalid || buy.isPending || preview.isLoading} className="inline-flex h-9 items-center gap-1.5 rounded-btn bg-accent px-4 text-xs font-medium text-white disabled:opacity-40"><ShoppingCart className="h-3.5 w-3.5" />{buy.isPending ? '成交中…' : '确认买入'}</button>
-      </div>
-    </Modal>
+          {preview.isLoading ? (
+            <div className="rounded-lg border border-dashed border-border px-4 py-6 text-center text-xs text-muted">正在计算建议仓位…</div>
+          ) : preview.isError ? (
+            <div className="rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-xs text-danger">{String((preview.error as Error).message)}</div>
+          ) : item && (
+            <>
+              <div className="grid grid-cols-2 gap-3">
+                <label className="space-y-1.5">
+                  <span className="text-[11px] text-muted">成交价</span>
+                  <input value={price} onChange={event => setPrice(event.target.value)} type="number" min="0" step="0.01" className="h-9 w-full rounded-btn border border-border bg-base px-3 text-xs text-foreground" />
+                  <span className="block text-[10px] text-muted">{item.price_source === 'realtime' ? '实时最新价' : item.price_source === 'latest_close' ? '最新收盘价' : item.price_source === 'missing' ? '行情缺失，请手动填写' : '手动价格'}</span>
+                </label>
+                <label className="space-y-1.5">
+                  <span className="text-[11px] text-muted">数量（100 股整数倍）</span>
+                  <input value={quantity} onChange={event => setQuantity(event.target.value)} type="number" min="100" step="100" className="h-9 w-full rounded-btn border border-border bg-base px-3 text-xs text-foreground" />
+                  <span className="block text-[10px] text-muted">建议 {item.suggested_qty} 股</span>
+                </label>
+              </div>
+              <div className="grid grid-cols-2 gap-x-5 gap-y-2 rounded-lg border border-border/60 bg-base/50 p-3 text-[11px]">
+                <span className="text-muted">策略评分</span><span className="text-right font-mono text-foreground">{selectedScore ?? '—'}</span>
+                <span className="text-muted">建议仓位</span><span className="text-right font-mono text-foreground">¥{item.suggested_budget} · {preview.data && Number(preview.data.total_assets) > 0 ? `${(Number(item.suggested_budget) / Number(preview.data.total_assets) * 100).toFixed(1)}%` : '—'}</span>
+                <span className="text-muted">预计佣金</span><span className="text-right font-mono text-foreground">¥{money(estimate.fee)}</span>
+                <span className="text-muted">成交后剩余现金</span><span className={`text-right font-mono ${estimate.remaining < 0 ? 'text-danger' : 'text-foreground'}`}>¥{money(estimate.remaining)}</span>
+              </div>
+              {item.blocked_reason && <div className="flex items-center gap-1.5 rounded border border-warning/30 bg-warning/10 px-3 py-2 text-[11px] text-warning"><AlertTriangle className="h-3.5 w-3.5" />提示：{item.blocked_reason}，确认后仍可买入。</div>}
+              {!item.has_exit_rules && <div className="flex items-center gap-1.5 rounded border border-danger/30 bg-danger/10 px-3 py-2 text-[11px] font-medium text-danger"><AlertTriangle className="h-3.5 w-3.5" />无卖出提醒</div>}
+            </>
+          )}
+          {removeError && <div className="text-[11px] text-danger">{removeError}</div>}
+        </div>
+        <div className="flex items-center justify-end gap-2 border-t border-border/60 px-5 py-3">
+          <button type="button" onClick={() => addOnly.mutate()} disabled={addOnly.isPending} className="inline-flex h-9 items-center gap-1.5 rounded-btn border border-border px-3 text-xs text-secondary hover:bg-elevated disabled:opacity-50"><Star className="h-3.5 w-3.5" />仅加入自选</button>
+          <button type="button" onClick={submitBuy} disabled={invalid || buy.isPending || preview.isLoading} className="inline-flex h-9 items-center gap-1.5 rounded-btn bg-accent px-4 text-xs font-medium text-white disabled:opacity-40"><ShoppingCart className="h-3.5 w-3.5" />{buy.isPending ? '成交中…' : '确认买入'}</button>
+        </div>
+      </Modal>
+      {buyWarningConfirmation && (
+        <Modal
+          onClose={() => setBuyWarningConfirmation(null)}
+          ariaLabel="确认继续买入"
+          panelClassName="w-[92vw] max-w-md rounded-card border border-border bg-surface shadow-xl"
+        >
+          <div className="flex items-center gap-2 border-b border-border/60 px-4 py-3">
+            <AlertTriangle className="h-4 w-4 text-warning" />
+            <div className="text-sm font-medium text-foreground">买入提示</div>
+          </div>
+          <div className="space-y-3 px-4 py-4 text-xs">
+            <div className="text-secondary">本次买入存在以下提示，确认后仍可继续：</div>
+            <ul className="list-disc space-y-1.5 pl-5 text-warning">
+              {buyWarningConfirmation.map(warning => <li key={warning}>{warning}</li>)}
+            </ul>
+          </div>
+          <div className="flex justify-end gap-2 border-t border-border/60 px-4 py-3">
+            <button type="button" onClick={() => setBuyWarningConfirmation(null)} className="h-9 rounded-btn border border-border px-3 text-xs text-secondary hover:text-foreground">取消</button>
+            <button type="button" onClick={() => { setBuyWarningConfirmation(null); buy.mutate({ confirmBuyWarnings: true }) }} disabled={buy.isPending} className="h-9 rounded-btn bg-accent px-4 text-xs font-medium text-white disabled:opacity-40">{buy.isPending ? '成交中…' : '确认继续买入'}</button>
+          </div>
+        </Modal>
+      )}
+    </>
   )
 }

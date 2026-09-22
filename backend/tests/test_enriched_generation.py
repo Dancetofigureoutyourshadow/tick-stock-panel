@@ -71,6 +71,32 @@ def test_failed_multi_partition_publication_remains_fail_closed(
         get_enriched_generation(tmp_path, "stock")
 
 
+def test_failed_first_partition_write_releases_publication_claim(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    publication = EnrichedPublication(tmp_path, recover=True)
+    out = tmp_path / "kline_daily_enriched" / "date=2026-08-14" / "part.parquet"
+    original_replace = os.replace
+
+    def fail_partition_replace(source, destination):
+        if destination == out:
+            raise PermissionError(5, "access denied")
+        return original_replace(source, destination)
+
+    monkeypatch.setattr("app.enriched_generation.os.replace", fail_partition_replace)
+    monkeypatch.setattr("app.enriched_generation.time.sleep", lambda _seconds: None)
+
+    with pytest.raises(PermissionError, match="access denied"):
+        publication.write_parquet(_frame(), out)
+
+    marker = json.loads(
+        (tmp_path / ".matrix_generation_stock.json").read_text(encoding="utf-8")
+    )
+    assert marker["state"] == "ready"
+    assert not out.exists()
+
+
 def test_recovery_replaces_stale_publication_but_not_active_owner(tmp_path) -> None:
     first = EnrichedPublication(tmp_path, recover=True)
     out = tmp_path / "kline_daily_enriched" / "date=2026-08-14" / "part.parquet"

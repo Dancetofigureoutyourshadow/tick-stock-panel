@@ -248,79 +248,63 @@
 双通道并行:面板走密码会话,外部走 Token 网关 —— 互不影响、互不挤占限流。核心域 8 个域是数据与语义的所有者;扩展域 5 条通道只消费契约,零核心改动。
 
 ```mermaid
-flowchart LR
-    subgraph CLIENTS["消费端 · 双通道并行"]
-        UI["🖥️ 面板 UI<br/>React 18 · 19 页面"]
-        MCPS["🔌 MCP 服务器<br/>12 工具 · scope 联动"]
-        APP["🧮 外部程序<br/>脚本 · 看板 · 服务"]
-    end
-
-    subgraph GATE["开放网关 · 契约层"]
-        GW{"认证 · 六档 scope<br/>滑窗限流 120/min<br/>61 端点契约 + 快照守护"}
-    end
-
-    subgraph SVC["应用层"]
-        API["⚡ FastAPI 核心<br/>REST · SSE 事件流"]
-    end
-
-    subgraph CORE["核心域 · 8 域 —— 数据与语义的所有者"]
-        direction TB
-        subgraph FDN["🧱 数据底座"]
-            D1["能力路由 · 插件化数据源<br/>TickFlow / fuyao / YAML 源"]
-            D2[("enriched 分区存储<br/>Parquet · DuckDB · 零外部依赖")]
-        end
-        subgraph CMP["⚙️ 计算研究 · Polars"]
-            C1["指标流水线<br/>存 15 列 · 现算 68 列 · 增量分区"]
-            C2["策略 · 因子 · 回测 · 挖掘<br/>子进程隔离 + 持久 run ID"]
-        end
-        subgraph PDC["📡 生产管道"]
-            P1["市场环境 · 监控推送 · 事件总线"]
-            P2["扩展数据存储 · 认证配置 · 订阅锚点"]
-        end
-        D1 --> D2
-        D2 --> C1
-        C1 --> C2
-        C2 --> P1
-        P2
-    end
-
-    subgraph EXT["扩展域 · 5 条接入通道 (只消费契约, 零核心改动)"]
+flowchart TB
+    subgraph CLIENTS["🖥️ 消费端"]
         direction LR
-        X1["数据源插件"] ~~~ X2["扩展数据表<br/>读 + 写"] ~~~ X3["自定义策略/信号"] ~~~ X4["声明式页面<br/>前端插槽"] ~~~ X5["后端 custom 模块"]
+        UI["面板 UI<br/>React · 19 页面"]
+        MCP["MCP 服务器<br/>12 工具 · scope 联动"]
+        APPC["外部程序<br/>脚本 · 看板"]
     end
 
-    UI -->|"密码会话 (面板专属)"| API
-    MCPS -->|"Bearer + scope"| GW
-    APP -->|"Bearer + scope"| GW
-    GW -->|"放行 + 限流头"| API
-    API --- CORE
-    CORE -.->|"只读契约 + 行数据写入"| EXT
-    P1 ==>|"告警事件 · SSE 一次性票据"| GW
+    GW{"开放网关<br/>Token · 六档 scope<br/>限流 120/min · 61 端点契约"}
+
+    API["应用层 · ⚡ FastAPI<br/>REST · SSE 事件流"]
+
+    subgraph CORE["核心域 · 数据与语义的所有者"]
+        S1[("能力路由 · 插件化数据源<br/>enriched 分区存储<br/>Parquet · DuckDB")]
+        S2["指标流水线 · 存15现算68列<br/>策略 · 因子 · 回测 · 挖掘"]
+        S3["监控引擎 · 事件总线 · SSE 出站<br/>扩展数据 · 认证配置"]
+        S1 -->|"enriched 口径"| S2
+        S2 -->|"信号 · 事件"| S3
+    end
+
+    subgraph EXT["🧩 扩展域 · 5 条接入通道 —— 只消费开放契约, 零核心改动"]
+        direction LR
+        X1["数据源插件"]
+        X2["扩展数据表<br/>读 + 写"]
+        X3["自定义策略<br/>与信号"]
+        X4["声明式页面<br/>前端插槽挂载"]
+        X5["custom 后端模块<br/>★ AI 助手参考实现"]
+    end
+
+    UI -->|"密码会话"| API
+    MCP -->|"Bearer + scope"| GW
+    APPC -->|"Bearer + scope"| GW
+    GW -->|"契约放行"| API
+    API ==> S1
+    S3 -.-> X3
 
     classDef client fill:#eef2ff,stroke:#6366f1,color:#312e81
     classDef gate fill:#faf5ff,stroke:#8b5cf6,color:#6b21a8,stroke-width:2px
     classDef svc fill:#ecfeff,stroke:#06b6d4,color:#164e63
     classDef fdn fill:#ecfdf5,stroke:#10b981,color:#064e3b
     classDef cmp fill:#f0f9ff,stroke:#0ea5e9,color:#0c4a6e
-    classDef pdc fill:#fff7ed,stroke:#f97316,color:#7c2d12
+    classDef pdc fill:#fffbeb,stroke:#f59e0b,color:#78350f
     classDef ext fill:#f8fafc,stroke:#94a3b8,color:#334155,stroke-dasharray:5 4
+    classDef star fill:#fffbeb,stroke:#d97706,color:#78350f,stroke-width:2px
 
-    class UI,MCPS,APP client
+    class UI,MCP,APPC client
     class GW gate
     class API svc
-    class D1,D2 fdn
-    class C1,C2 cmp
-    class P1,P2 pdc
-    class X1,X2,X3,X4,X5 ext
+    class S1 fdn
+    class S2 cmp
+    class S3 pdc
+    class X1,X2,X3,X4 ext
+    class X5 star
 
-    style GATE fill:#faf5ff,stroke:#ddd6fe,color:#6b21a8,stroke-width:2px
-    style CORE fill:#fffbeb,stroke:#fcd34d,color:#78350f
-    style FDN fill:#ecfdf5,stroke:#a7f3d0,color:#065f46
-    style CMP fill:#f0f9ff,stroke:#bae6fd,color:#075985
-    style PDC fill:#fff7ed,stroke:#fed7aa,color:#9a3412
-    style EXT fill:#f8fafc,stroke:#94a3b8,color:#334155,stroke-dasharray:7 5
-    style CLIENTS fill:#f5f3ff,stroke:#c7d2fe,color:#3730a3
-    style SVC fill:#ecfeff,stroke:#a5f3fc,color:#155e75
+    style CLIENTS fill:#f5f3ff,stroke:#c4b5fd,stroke-width:1.5px,color:#4c1d95
+    style CORE fill:#f8fafc,stroke:#cbd5e1,stroke-width:1.5px,color:#0f172a
+    style EXT fill:#f8fafc,stroke:#94a3b8,stroke-width:1.5px,stroke-dasharray:6 4,color:#334155
 ```
 
 ### 核心域 / 扩展域边界

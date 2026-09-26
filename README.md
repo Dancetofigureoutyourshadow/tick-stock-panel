@@ -4,33 +4,27 @@
 
 <br/>
 
-
 [![个人开源](https://img.shields.io/badge/%E4%B8%AA%E4%BA%BA%E5%BC%80%E6%BA%90-green?style=for-the-badge&labelColor=red)](https://github.com/shy3130/tick-stock-panel)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow?style=for-the-badge)](./LICENSE)
 [![Engine: Polars](https://img.shields.io/badge/Engine-Polars-6f42c1?style=for-the-badge)](https://pola.rs/)
-[![Data: 多源插件化 · 能力路由](https://img.shields.io/badge/Data-%E5%A4%9A%E6%BA%90%E6%8F%92%E4%BB%B6%E5%8C%96%20%C2%B7%20%E8%83%BD%E5%8A%9B%E8%B7%AF%E7%94%B1-00b386?style=for-the-badge)](./docs/custom-data-source.md)
+[![Open API](https://img.shields.io/badge/Open_API-61_%E7%AB%AF%E7%82%B9-00b386?style=for-the-badge)](./docs/open-platform-plan.md)
+[![MCP](https://img.shields.io/badge/MCP-12_%E5%B7%A5%E5%85%B7-7c3aed?style=for-the-badge)](./mcp-server/README.md)
 [![Deploy: Docker](https://img.shields.io/badge/Deploy-Docker-2496ed?style=for-the-badge)](./Dockerfile)
 
 [![Build: Docker CI](https://github.com/shy3130/tick-stock-panel/actions/workflows/docker.yml/badge.svg)](https://github.com/shy3130/tick-stock-panel/actions/workflows/docker.yml)
+[![Test: Backend + Frontend](https://github.com/shy3130/tick-stock-panel/actions/workflows/ci.yml/badge.svg)](https://github.com/shy3130/tick-stock-panel/actions/workflows/ci.yml)
 [![GitHub stars](https://img.shields.io/github/stars/shy3130/tick-stock-panel?style=social)](https://github.com/shy3130/tick-stock-panel/stargazers)
 
+**自托管、零运维的 A 股「选股 + 监控 + 回测」量化工作台 —— 核心能力全部开放成接口**
 
-
-
-**自托管、零运维的 A 股「选股 + 监控 + 回测」量化工作台**
-
-`多数据源能力路由` · `分钟级策略执行` · `全时段异动监控` · `AI 对话助手`
+`多数据源能力路由` · `分钟级策略执行` · `全时段异动监控` · `AI 对话助手` · `开放接口 · MCP`
 
 <a href="https://trendshift.io/repositories/64327?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-64327" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/repositories/64327" alt="shy3130%2Ftick-stock-panel | Trendshift" width="250" height="55"/></a>
 <a href="https://trendshift.io/repositories/64327?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-64327" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/64327/daily?language=TypeScript" alt="shy3130%2Ftick-stock-panel | Trendshift" width="250" height="55"/></a>
 
 <br/>
 
-**[✨ 核心功能](#-核心功能)** · **[📸 界面预览](#-界面预览)** · **[🏗️ 技术架构](#️-技术架构)** · **[🚀 快速开始](#-快速开始)** · **[⚙️ 配置](#️-配置)** · **[📚 完整文档](#-完整文档)**
-
-<br/>
-
-
+**[✨ 核心功能](#-核心功能)** · **[🌐 开放能力](#-开放能力open-api--mcp)** · **[📸 界面预览](#-界面预览)** · **[🏗️ 技术架构](#️-技术架构)** · **[⚡ 性能](#-性能)** · **[🚀 快速开始](#-快速开始)** · **[📚 完整文档](#-完整文档)**
 
 </div>
 
@@ -69,6 +63,7 @@
 | 选股、回测、监控各用一套工具,口径对不上 | 全站统一 **enriched 数据口径**:选股 → 回测 → 监控 → 复盘一条链 |
 | 盘中异动靠人盯盘,错过就是错过 | **竞价/盘中/偏移**全时段异动 + 实时弹窗、语音播报、飞书推送 |
 | 想查个数据要在几个页面之间来回点 | **AI 对话助手**:一句话问出全站数据,取数过程逐条可见、可展开核对 |
+| 想基于面板数据做自己的工具/机器人,只能爬页面 | **开放接口 + MCP**:Token 六档权限、61 端点契约化、SSE 事件流,AI 客户端即插即用 |
 | 付费终端贵、云端平台数据出不了本地 | **自托管**:Docker 单容器,数据全部落在本地 Parquet,零运维 |
 
 ## ✨ 核心功能
@@ -142,6 +137,23 @@
 
 </td>
 </tr>
+<tr>
+<td width="33.3%" valign="top">
+
+**🌐 开放接口**<br/>Token 六档权限, 61 端点契约化, 读+写闭环
+
+</td>
+<td width="33.3%" valign="top">
+
+**🔌 MCP 服务器**<br/>12 个工具把面板能力交给任意 AI 客户端
+
+</td>
+<td width="33.3%" valign="top">
+
+**🧠 AI 对话助手**<br/>一句话问全站数据, 工具足迹逐条可核对
+
+</td>
+</tr>
 </table>
 
 <details>
@@ -183,7 +195,7 @@
 **🗄️ 数据与扩展**
 - **数据** Data — 本地数据画像与同步状态(维表/日K/除权/Enriched/指数/ETF/分钟K/财务),盘后管道与历史扩展
 - **扩展分析** (动态菜单) — 把任意第三方/扩展数据字段配成一级菜单,与内置数据同台分析
-- **设置** Settings — 数据源与能力检测(能力路由矩阵、档位徽章)、AI 接口、实时监控、扩展页面、菜单与系统设置
+- **设置** Settings — 数据源与能力检测(能力路由矩阵、档位徽章)、AI 接口、实时监控、扩展页面、开放接口(Token 管理)、菜单与系统设置
 
 **🤖 AI 助手**
 - **AI 对话助手** — 悬浮球 / 侧栏 AI 徽标旁入口 / ⌘K 呼出; 18 个只读工具覆盖个股·大盘·板块·自选·持仓·信号·策略·因子, 逐字流式输出 + 工具调用足迹卡(参数与耗时可展开核对), 每条回答附风险与数据口径提示; 完全解耦的扩展模块, 删除目录即卸载
@@ -191,8 +203,6 @@
 </details>
 
 ---
-
-
 
 ## 📸 界面预览
 
@@ -267,6 +277,35 @@
 
 > ⚠️ 助手是数据分析工具, 不提供买卖指令; 涉及交易决策的问题会转换为客观的技术/财务状态、关键价位、风险因素与条件情景。
 
+---
+
+## 🌐 开放能力(Open API + MCP)
+
+面板的核心能力不只长在页面上 —— **全部开放成受控接口**,外部程序与 AI 客户端平等消费:
+
+```
+AI 客户端 (Claude/ZCode/Cursor…)          外部程序 (脚本/看板/服务)
+        │ MCP stdio                              │ Bearer Token
+        ▼                                        ▼
+  mcp-server (12 工具)                ┌─ 开放网关 ─────────────────┐
+                                      │ 认证 · 六档 scope · 限流    │
+                                      │ 61 端点 · 机器可读契约      │
+                                      │ SSE 事件流 (短期票据)       │
+                                      └────────────┬───────────────┘
+                                                   ▼
+                                     行情 · 扩展数据(读+写) · 策略回测
+                                     市场环境 · 告警 · 模拟盘
+```
+
+| 能力 | 说明 |
+| :--- | :--- |
+| **API Token** | `设置 → 开放接口` 创建,明文只显示一次,SHA-256 哈希存储,吊销立即生效 |
+| **六档 scope** | `read:market` / `read:ext` / `write:ext` / `read:analysis` / `run:backtest` / `paper:trade`,管理面永不开放给 Token |
+| **61 端点契约** | `GET /api/openapi.json?tier=a` 机器可读,Postman/代码生成即用;**契约快照测试 + CI 守护**,开放面变更必须显式确认 |
+| **数据写闭环** | `write:ext` 程序化写入扩展表行数据(与内置数据同台分析),表结构锁死在管理面 |
+| **SSE 事件流** | 60 秒一次性票据订阅实时告警推送,票据只继承 scope 不放大权限 |
+| **MCP 服务器** | 12 个精选工具,按 Token scope 暴露;模拟盘交易刻意不交给 AI |
+| **示例与文档** | [examples/open-api](./examples/open-api/README.md) 四个零依赖可运行示例 · [docs/features.md → 开放接口](./docs/features.md) · [开放平台设计方案](./docs/open-platform-plan.md) |
 
 ---
 
@@ -276,6 +315,12 @@
 
 ```mermaid
 flowchart TB
+    subgraph OPEN["开放层 · Token + MCP"]
+        direction LR
+        M1["MCP 服务器<br/>(AI 客户端)"] ~~~ M2["外部程序 / 脚本"]
+        M3(["开放网关: 认证 · 六档 scope · 限流 · 契约"])
+    end
+
     subgraph DATA["数据源层 · 插件化"]
         direction LR
         D1["TickFlow SDK"] ~~~ D2["fuyao<br/>同花顺 REST"] ~~~ D3[""] ~~~ D4["YAML 自定义源"] ~~~ D5["+ 更多插件…"]
@@ -286,7 +331,7 @@ flowchart TB
         R(["多数据集 · 按能力独立路由 · 档位探测"])
     end
 
-    subgraph STORE["存储层"]
+    subgraph STORE["存储层 · 文件型, 零外部依赖"]
         direction LR
         ST1[("Parquet 分区表")] ~~~ ST2[("DuckDB")] ~~~ ST3[("JSON 按日缓存")]
     end
@@ -303,7 +348,7 @@ flowchart TB
 
     subgraph SVC["应用层 · FastAPI"]
         direction LR
-        S1["REST · SSE"] ~~~ S2["监控引擎"] ~~~ S3["任务调度"] ~~~ S4["交易日探针"]
+        S1["REST · SSE"] ~~~ S2["监控引擎"] ~~~ S3["任务调度"] ~~~ S4["交易日探针"] ~~~ S5["事件总线"]
     end
 
     subgraph FE["呈现层 · React 18"]
@@ -313,9 +358,12 @@ flowchart TB
 
     subgraph EXT["二次开发与扩展 · 贯穿各层的插槽"]
         direction LR
-        X1["自定义策略"] ~~~ X2["自定义信号"] ~~~ X3["扩展分析页面"] ~~~ X4["AI 接口"] ~~~ X5["AI 对话助手"]
+        X1["自定义策略"] ~~~ X2["自定义信号"] ~~~ X3["扩展分析页面"] ~~~ X4["扩展数据表"] ~~~ X5["AI 对话助手"]
     end
 
+    M1 --- M3
+    M2 --- M3
+    M3 --- SVC
     DATA --- ROUTE
     ROUTE --- STORE
     STORE --- CALC
@@ -324,6 +372,7 @@ flowchart TB
     SVC --- FE
     FE ~~~ EXT
 
+    classDef open fill:#f5f3ff,stroke:#8b5cf6,color:#4c1d95,stroke-width:2px
     classDef fe fill:#eef2ff,stroke:#6366f1,color:#312e81
     classDef svc fill:#ecfeff,stroke:#06b6d4,color:#164e63
     classDef res fill:#fff7ed,stroke:#f97316,color:#7c2d12
@@ -334,8 +383,10 @@ flowchart TB
     classDef route fill:#faf5ff,stroke:#8b5cf6,color:#6b21a8,stroke-width:2px
     classDef ext fill:#f8fafc,stroke:#94a3b8,color:#334155,stroke-dasharray:5 4
 
+    class M1,M2 open
+    class M3 route
     class F1,F2,F3 fe
-    class S1,S2,S3,S4 svc
+    class S1,S2,S3,S4,S5 svc
     class G1,G2,G3 res
     class C1,C2 calc
     class ST1,ST2,ST3 store
@@ -344,6 +395,7 @@ flowchart TB
     class R route
     class X1,X2,X3,X4,X5 ext
 
+    style OPEN fill:#f5f3ff,stroke:#c4b5fd,color:#4c1d95,stroke-dasharray:7 5
     style FE fill:#f5f3ff,stroke:#c7d2fe,color:#3730a3
     style SVC fill:#ecfeff,stroke:#a5f3fc,color:#155e75
     style RES fill:#fff7ed,stroke:#fed7aa,color:#9a3412
@@ -353,6 +405,10 @@ flowchart TB
     style DATA fill:#fdf2f8,stroke:#fbcfe8,color:#9d174d
     style EXT fill:#f8fafc,stroke:#94a3b8,color:#334155,stroke-dasharray:7 5
 ```
+
+### 核心域 / 扩展域边界
+
+按「数据与语义的归属 + 依赖箭头方向」划分(而非页面外观):**核心域**(数据底座 / 订阅锚点 / 策略与回测 / 环境数据生产 / 监控推送管道 / 扩展数据存储 / 认证配置)保留在主程序;**扩展域**页面是核心数据的消费端,可由二开的扩展页面平行替换而不伤核心 —— 设置 → 菜单设置里每页带 `核心/扩展` 标注。详见 [docs/open-platform-plan.md](./docs/open-platform-plan.md)。
 
 ### 关键机制
 
@@ -364,7 +420,23 @@ flowchart TB
 | **非路由数据集直连** | 龙虎榜/盘前风向标/交易日历等 fuyao 专有能力不进路由矩阵,由独立服务直连消费——按日 JSON 缓存(历史不可变)、交易日回退、四态降级 |
 | **回测执行隔离** | 回测在 spawn worker 子进程运行,持久 run ID,刷新/切页重连不丢任务;子进程结果消息经锁保护回传 |
 | **分层缓存** | enriched 读取时现算指标(存储仅 15 列基础数据,现算 68 列指标与信号)+ 进程内快照缓存;扩展字段按日分区快照,页面即配即用 |
+| **开放网关** | Token 通道与面板密码会话并行互不影响:认证 → 六档 scope 校验 → 每 Token 滑动窗口限流(默认 120 次/分,O(1) 内存)→ 放行;管理面(数据同步/表结构/设置)永不开放给 Token |
+| **事件总线** | 进程内发布/订阅(慢消费者丢旧保新,广播失败不反噬主流程),告警落盘唯一入口已挂接;SSE 流按票据 scope 过滤,票据一次性 60 秒过期 |
 | **完全解耦扩展** | 后端 `app/custom/<包>/` 启动时自动发现、注册独立路由(版本不符或 setup 失败即隔离跳过), 前端 `src/custom/*/extension.tsx` 构建时自动挂载到插槽; 删除目录即整体卸载, 零核心文件修改 —— **AI 对话助手**即该机制的参考实现 |
+
+### ⚡ 性能
+
+| 场景 | 表现 | 靠什么 |
+| :--- | :--- | :--- |
+| 全市场策略扫描 | 毫秒级 | Polars 列式引擎 + enriched 预计算,谓词下推过滤 |
+| 指标与信号 | 只存 15 列基础数据,现算 68 列指标 | 分层缓存:存储最小化,读取零冗余,写入即失效 |
+| 盘后管道 | 增量分区,只算新交易日 | enriched 按日分区 + 指标流水线增量帧 |
+| 实时行情 | 自选优先、全市场按档位分流 | 交易日探针,节假日自动停轮,零无效请求 |
+| 回测 | 子进程隔离不卡主服务,刷新重连不丢任务 | spawn worker + 持久 run ID + 重活并发闸 |
+| 开放 API | 61 端点 · 每 Token 120 次/分 · 限流 O(1) 内存 | 进程内滑动窗口网关,零外部依赖 |
+| 事件推送 | 告警落盘即广播,亚秒级到流 | 进程内事件总线 + SSE(0.5s 轮询间隔) |
+| 部署与兼容 | 单容器零外部数据库(Parquet + DuckDB 文件型) · 新老 CPU 双内核 | polars rtcompat 兼容内核,运行时自动探测 |
+| 质量保障 | **2400+ 测试全绿(约 100 秒跑完)** · 开放契约快照守护 | GitHub Actions CI(后端全量 + 前端构建) |
 
 ### 技术栈
 
@@ -375,6 +447,7 @@ flowchart TB
 | **回测** | 自研仓位模拟引擎(T+1/费用/滑点/分钟回放)· vectorbt(部分路径) |
 | **数据源** | [TickFlow](https://tickflow.org/auth/register?ref=V3KDKGXPEA) 官方 SDK · fuyao(同花顺 REST) · 插件化扩展( 示例插件 · YAML 自定义源) |
 | **AI**(可选) | ![OpenAI兼容](https://img.shields.io/badge/OpenAI兼容-412991?logo=openai&logoColor=white) DeepSeek / 通义 / Ollama 等 · 策略生成 / 报告 / **对话助手**(助手依赖工具调用能力, 需 OpenAI 兼容接口) |
+| **MCP** | [mcp-server](./mcp-server/README.md)(官方 SDK 2.x, stdio) — 12 工具按 scope 暴露,权限裁决复用开放网关 |
 | **前端** | ![React 18](https://img.shields.io/badge/React_18-61DAFB?logo=react&logoColor=black) ![Vite](https://img.shields.io/badge/Vite-646CFF?logo=vite&logoColor=white) ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?logo=typescript&logoColor=white) ![Tailwind](https://img.shields.io/badge/Tailwind-06B6D4?logo=tailwindcss&logoColor=white) Tanstack Query · [Lightweight Charts](https://www.tradingview.com/lightweight-charts/)(TradingView 开源) · ![ECharts](https://img.shields.io/badge/ECharts-AA344D?logo=apacheecharts&logoColor=white) · dnd-kit |
 | **部署** | ![Docker](https://img.shields.io/badge/Docker_单容器-2496ED?logo=docker&logoColor=white) 两阶段构建,前端 dist 拷进后端镜像 |
 
@@ -473,6 +546,7 @@ cp .env.example .env       # 按需填 TICKFLOW_API_KEY(留空 = None 模式)
 4. **回测**页选策略 + 区间 → 看净值 / 夏普 / 交易明细(SSE 实时进度),结果可导出 CSV、存候选一键复测
 5. **监控中心**配规则,盘中实时弹窗 + 持久化记录;**异动监控**覆盖竞价/盘中/偏移全时段
 6. 配好 AI Key 后,**悬浮球 / ⌘K** 呼出 **AI 对话助手**,直接问「今天市场怎么样」「我的自选表现如何」
+7. 想接自己的程序?**设置 → 开放接口**建个 Token,照着 [examples/open-api](./examples/open-api/README.md) 十分钟跑通第一个脚本;AI 玩家直接配 [MCP](./mcp-server/README.md)
 
 ---
 
@@ -500,7 +574,8 @@ PORT=3018                      # 服务端口
 | 6      | 个股分析(专用日 K + 9 类关键价位 + AI 四维分析)                    | ✅    |
 | **v0.2** | 因子挖掘全链路 · 市场阶段与主线识别 · 异动监控 · 数据源插件化     | ✅    |
 | **v0.3** | 能力路由矩阵 · fuyao 数据源(财务/龙虎榜/风向标) · 分钟策略与回测 · 交易日探针 · 全时段异动中心 · 回测导出与候选复测 | ✅ |
-| **AI 助手** | 对话式数据问答: 18 个只读工具覆盖全站页面 · 逐字流式 + 工具足迹卡 · 完全解耦扩展模块(本分支开发中) | 🚧 |
+| **AI 助手** | 对话式数据问答: 18 个只读工具覆盖全站页面 · 逐字流式 + 工具足迹卡 · 完全解耦扩展模块 | ✅ |
+| **v0.3.2 开放能力版** | API Token + 六档 scope 网关 · 61 端点契约(快照+CI 守护) · 扩展数据读写闭环 · SSE 事件流 · MCP 服务器 · 核心/扩展域边界标注 | 🚧 0.3.2 分支 |
 | **v2** | Webhook 推送· 板块异动 · 早晚报 · 全市场竞价采集 · 更多扩展        | 🚧    |
 
 ---
@@ -511,7 +586,10 @@ PORT=3018                      # 服务端口
 | :------------------------------------------------------------------------------------------------- | :------------------------------------------------------------------- |
 | [docs/deployment.md](./docs/deployment.md)                                                         | 部署方式(Dev / Docker / GH Actions)、老 CPU 兼容、更新代码、访问密码 |
 | [docs/configuration.md](./docs/configuration.md)                                                   | 所有 `.env` 配置项详解(数据源、AI、服务、密码、数据目录)             |
-| [docs/features.md](./docs/features.md)                                                             | 各功能模块详细说明(选股/指标/回测/监控/个股分析/数据扩展)            |
+| [docs/features.md](./docs/features.md)                                                             | 各功能模块详细说明(选股/指标/回测/监控/个股分析/数据扩展/开放接口)   |
+| [docs/open-platform-plan.md](./docs/open-platform-plan.md)                                         | 开放平台设计:核心域/扩展域边界、Token 体系、Tier 契约与分期路线      |
+| [mcp-server/README.md](./mcp-server/README.md)                                                     | MCP 服务器配置(AI 客户端接入)与工具清单                             |
+| [examples/open-api](./examples/open-api/README.md)                                                 | 开放接口可运行示例(行情/写入/回测/事件流)                            |
 | [docs/custom-data-source.md](./docs/custom-data-source.md)                                         | 自定义数据源接入、能力路由契约、YAML 配置与 mock 联调示例            |
 | [docs/strategy.md](./docs/strategy.md)                                                             | 策略体系(25 内置策略 + 三种扩展方式 + 文件结构)                      |
 | [docs/strategy-iteration.md](./docs/strategy-iteration.md)                                     | AI 策略迭代协议:台账 / 证据包 / 门槛判定 / 提示词卡片                |
@@ -545,8 +623,6 @@ PORT=3018                      # 服务端口
 
 </div>
 
-
-
 ---
 
 ## ⚠️ 免责声明
@@ -566,7 +642,6 @@ PORT=3018                      # 服务端口
 ## 社区
 
 本开源项目已链接并认可 [LINUX DO 社区](https://linux.do)。
-
 
 ---
 

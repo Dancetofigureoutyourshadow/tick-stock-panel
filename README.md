@@ -367,6 +367,17 @@ flowchart LR
 
 面板的核心能力不只长在页面上 —— **全部开放成受控接口**,外部程序与 AI 客户端平等消费:
 
+<table>
+  <tr>
+    <td width="50%" align="center"><b>设置 → 开放接口 · Token 管理</b><br/><sub>明文只显示一次,六档 scope 按需授予</sub></td>
+    <td width="50%" align="center"><b>设置 → 菜单设置 · 架构标注</b><br/><sub>每页核心/扩展徽标,悬停看归属原因</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="./screenshots/开放接口.png" alt="开放接口 Token 管理"></td>
+    <td width="50%"><img src="./screenshots/菜单架构标注.png" alt="菜单核心/扩展架构标注"></td>
+  </tr>
+</table>
+
 | 能力 | 说明 |
 | :--- | :--- |
 | **API Token** | `设置 → 开放接口` 创建,明文只显示一次,SHA-256 哈希存储,吊销立即生效 |

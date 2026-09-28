@@ -4,7 +4,7 @@
 
 <br/>
 
-[![个人开源](https://img.shields.io/badge/%E4%B8%AA%E4%BA%AA%E4%BA%BA%E5%BC%80%E6%BA%90-green?style=for-the-badge&labelColor=red)](https://github.com/shy3130/tick-stock-panel)
+[![个人开源](https://img.shields.io/badge/%E4%B8%AA%E4%BA%BA%E5%BC%80%E6%BA%90-green?style=for-the-badge&labelColor=red)](https://github.com/shy3130/tick-stock-panel)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow?style=for-the-badge)](./LICENSE)
 [![Engine: Polars](https://img.shields.io/badge/Engine-Polars-6f42c1?style=for-the-badge)](https://pola.rs/)
 [![Open API](https://img.shields.io/badge/Open_API-61_%E7%AB%AF%E7%82%B9-00b386?style=for-the-badge)](./docs/open-platform-plan.md)

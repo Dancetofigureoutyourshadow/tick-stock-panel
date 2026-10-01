@@ -347,6 +347,16 @@ class EnrichedPublication:
     def commit(self) -> str | None:
         if not self._changed:
             return None
+        if not self._publishing:
+            # 本次是同一发布对象的重复提交: 上一次 commit 已落盘并复位
+            # _publishing, 标记也回到了 ready (ready payload 不含
+            # publication_id)。写入方会把一个发布对象复用到多个分区
+            # (如 ETF enriched 按完整本地历史一次写 245+ 个交易日分区),
+            # 其中内容无变化的分区会直接走到这里 —— 此时没有任何待提交
+            # 内容, 必须幂等返回, 否则会误判为 "ownership lost" 并打断
+            # 整批写入。
+            self._changed = False
+            return None
         path = _marker_path(self.data_dir, self.asset_type)
         with _exclusive_generation_lock(self.data_dir, self.asset_type):
             current = _read_marker(path)
@@ -357,6 +367,11 @@ class EnrichedPublication:
             generation = uuid.uuid4().hex
             _write_marker(path, _ready_payload(generation))
         self._publishing = False
+        # 待发布内容已全部落盘, 复位脏标记: 多日期分区写入复用同一发布对象,
+        # 无变化分区会再调 commit() (空提交) — 不复位会以过期脏标记命中
+        # ownership 校验而误抛 "ownership was lost" (Issue #417)。
+        # 之后的写入会经 _claim_or_verify 重新认领并再次置位。
+        self._changed = False
         return generation
 
     def _claim_or_verify(self) -> None:

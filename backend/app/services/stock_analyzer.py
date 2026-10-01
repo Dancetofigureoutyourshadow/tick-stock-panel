@@ -17,11 +17,13 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import AsyncIterator
+from datetime import timedelta
 from pathlib import Path
 
 import polars as pl
 
 from app.indicators.levels import compute_levels, summarize_levels
+from app.market_time import cn_today
 from app.services.financial_sync import get_financial_df
 
 logger = logging.getLogger(__name__)
@@ -41,9 +43,7 @@ def _load_kline(repo, symbol: str) -> pl.DataFrame:
 
     repo: KlineRepository;走内存缓存,性能可控。
     """
-    from datetime import date, timedelta
-
-    end = date.today()
+    end = cn_today()
     start = end - timedelta(days=_KLINE_WINDOW * 2)  # 多取一些保证交易日够
     # 按资产类型分流: ETF/指数走独立 enriched 存储 (无财务数据, 提示词已有兜底)
     df = repo.get_daily_asset(repo.resolve_asset_type(symbol), symbol, start, end)
@@ -157,6 +157,10 @@ _SYSTEM_PROMPT = """你是一位拥有 15 年 A 股一线研究经验的技术�
 > 📌 财务面分析能力正在接入中。当前未同步该标的的财务报表,基本面维度暂无法评估。
 > 技术面分析不依赖财务数据,以下结论依然有效;待财务数据同步后可补充本维度。
 
+**当用户消息中标注了该标的为 ETF 时**,本节请输出:
+> 📌 该标的为场内 ETF,无上市公司财务报表,基本面/财务面不适用公司盈利质量框架。
+> 请仅基于价量与关键价位做技术分析,不要编造 ROE/营收等数字,也不要写成「财务接入中」。
+
 **绝对不要**在无数据时编造 ROE / 增速等数字。
 
 ### 5. 📰 消息面(价量异动推断)
@@ -191,6 +195,35 @@ _SYSTEM_PROMPT = """你是一位拥有 15 年 A 股一线研究经验的技术�
 # 用户消息构建
 # ================================================================
 
+def _paper_position_part(positions: list[dict], close: float | None, raw_close: float | None) -> str:
+    """虚拟持仓上下文 (V3): 模拟盘持有该标的时注入提示词, 让 AI 结合仓位给建议。
+
+    positions 为多账户列表 [{account_id, qty, avg_cost}, ...] (V2 账户隔离),
+    只收 qty>0 的账户, 逐账户一行; 全空则返回空串 (不注入"空仓"之类误导性表述)。
+    浮盈用 raw 口径: 持仓 avg_cost 是不复权 raw 成本, 与前复权 close 混算会在
+    除权后产生虚假盈亏, 故优先用 raw_close (缺列时退化用 close 并接受口径误差)。
+    """
+    lines: list[str] = []
+    for item in positions or []:
+        qty = item.get("qty") or 0
+        avg_cost = item.get("avg_cost") or 0
+        if qty <= 0 or avg_cost <= 0:
+            continue
+        line = f"账户 {item.get('account_id') or 'default'}: 持仓 {qty} 股, 平均成本 {avg_cost:.3f} 元 (不复权)"
+        ref = raw_close if (raw_close is not None and raw_close > 0) else close
+        if ref is not None and ref > 0:
+            line += f", 现价 {ref:.2f} 元, 浮动盈亏 {(ref / avg_cost - 1) * 100:+.2f}%"
+        lines.append(line)
+    if not lines:
+        return ""
+    return (
+        "\n以下是该标的在模拟盘 (虚拟账户) 的当前持仓:\n"
+        + "\n".join(lines)
+        + "\n请在结论中结合该虚拟持仓状态给出持有/减仓/加仓的可执行参考,"
+        "并明确这是基于模拟盘虚拟持仓的建议。\n"
+    )
+
+
 def _build_user_prompt(
     kline_tail: list[dict],
     fins: dict[str, list[dict]],
@@ -199,10 +232,12 @@ def _build_user_prompt(
     symbol: str,
     focus: str,
     asset_type: str = "stock",
+    paper_positions: list[dict] | None = None,
+    raw_close: float | None = None,
 ) -> str:
-    """构建用户消息:标的 + 价位摘要 + 技术指标 JSON + 财务摘要 + 关注点。
+    """构建用户消息:标的 + 价位摘要 + 技术指标 JSON + 财务摘要 + 关注点 (+ 虚拟持仓)。
 
-    asset_type 用于区分无财务数据时的文案:指数无财务是常态,不走 Free 文案。
+    asset_type 用于区分无财务数据时的文案:指数/ETF 无财务是常态,不走 Free 文案。
     """
     parts: list[str] = [
         f"标的标准代码: {symbol}",
@@ -231,6 +266,14 @@ def _build_user_prompt(
             "在基本面/财务面维度给出\"接入中\"的友好提示,不要编造数据;"
             "消息面维度基于价量异动推断即可。)",
         ])
+    elif asset_type == "etf":
+        parts.extend([
+            "",
+            "(该标的为 ETF: 场内基金无上市公司财务报表、股本与涨跌停口径。"
+            "请按系统提示词第 4 节的说明,在基本面/财务面维度明确这是 ETF 常态,"
+            "不要编造公司财务数字,也不要写成「财务接入中」;"
+            "消息面维度基于价量异动推断即可。)",
+        ])
     else:
         parts.extend([
             "",
@@ -242,6 +285,9 @@ def _build_user_prompt(
     focus_instruction = build_focus_instruction(focus, report_name="个股分析报告")
     if focus_instruction:
         parts.extend(["", focus_instruction])
+    paper_part = _paper_position_part(paper_positions or [], close, raw_close)
+    if paper_part:
+        parts.extend(["", paper_part])
     return "\n".join(parts)
 
 
@@ -296,8 +342,9 @@ async def analyze_stock_stream(
     levels = compute_levels(df)
     close = float(df.tail(1)["close"][0]) if "close" in df.columns else None
 
-    # 3. 财务(辅助)
-    fins = _load_financials(data_dir, symbol)
+    # 3. 财务(辅助)。ETF/指数无公司报表, 跳过扫描, 由提示词走对应常态文案。
+    asset_type = repo.resolve_asset_type(symbol)
+    fins = {} if asset_type in {"etf", "index"} else _load_financials(data_dir, symbol)
 
     # 4. meta
     yield json.dumps({
@@ -312,9 +359,24 @@ async def analyze_stock_stream(
     try:
         from app.services.ai_provider import stream_ai_text
 
+        # 虚拟持仓上下文 (V3): 逐账户 (V2 多账户) 收集持有该标的的持仓注入
+        # (任何异常静默跳过, 不影响分析)。
+        paper_positions: list[dict] = []
+        try:
+            from app.strategy import paper as paper_trading
+            for acc_id in paper_trading.list_account_ids(data_dir):
+                pos = paper_trading.load_positions(data_dir, account_id=acc_id).get(symbol)
+                if pos and (pos.get("qty") or 0) > 0:
+                    paper_positions.append({"account_id": acc_id, **pos})
+        except Exception as e:  # noqa: BLE001
+            logger.warning("读取模拟盘持仓失败 (跳过注入): %s", e)
+        # 浮盈口径用 raw: 持仓成本不复权, 与前复权 close 混算会在除权后失真
+        raw_close = float(df.tail(1)["raw_close"][0]) if "raw_close" in df.columns else None
+
         kline_tail = _clean_rows(df, _KLINE_KEEP_COLS)
         user_prompt = _build_user_prompt(kline_tail, fins, levels, close, symbol, focus,
-                                         asset_type=repo.resolve_asset_type(symbol))
+                                         asset_type=asset_type, paper_positions=paper_positions,
+                                         raw_close=raw_close)
         got_content = False
         async for delta in stream_ai_text(
             [

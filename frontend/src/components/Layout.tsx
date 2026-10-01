@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, Suspense } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, Suspense, type ReactNode } from 'react'
 import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { motion } from 'framer-motion'
@@ -16,35 +16,19 @@ import {
   useQuoteStatus,
   useVersion,
 } from '@/lib/useSharedQueries'
+import { useUpdateCheck } from '@/lib/updateCheck'
 import {
   useToggleRealtimeQuotes,
 } from '@/lib/useSharedMutations'
 import { QK } from '@/lib/queryKeys'
 import {
-  Siren,
-  Star,
-  ScanSearch,
-  History,
-  Sigma,
-  FileText,
   Settings,
   DatabaseZap,
-  Database,
   Loader2,
-  LayoutDashboard,
   Tags,
-  TrendingUp,
-  Flame,
   BarChart3,
-  Gauge,
   Sparkles,
-  Layers2,
-  Layers3,
-  Zap,
-  Landmark,
-  RadioTower,
   CheckCircle2,
-  BookOpenCheck,
   ChevronRight,
   ChevronDown,
   Sun,
@@ -56,6 +40,28 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
 } from 'lucide-react'
+import {
+  IconDashboard,
+  IconWatchlist,
+  IconStrategy,
+  IconFactors,
+  IconBacktest,
+  IconStockFocus,
+  IconLadder,
+  IconConcept,
+  IconIndustry,
+  IconFinancials,
+  IconMonitor,
+  IconRegime,
+  IconAlert,
+  IconLots,
+  IconPaper,
+  IconSignals,
+  IconReview,
+  IconIndices,
+  IconData,
+  type BrandIconProps,
+} from './BrandIcons'
 import { Logo } from './Logo'
 import { api, type CapabilityMatrix, type IndexQuote } from '@/lib/api'
 import { cn } from '@/lib/cn'
@@ -84,24 +90,25 @@ export const CORE_INDEXES = [
 type CoreIndex = (typeof CORE_INDEXES)[number]
 
 const nav = [
-  { to: '/',                label: '看板',     icon: LayoutDashboard },
-  { to: '/watchlist',  label: '自选',   icon: Star },
-  { to: '/screener',   label: '策略',   icon: ScanSearch },
-  { to: '/factors',    label: '因子', icon: Sigma },
-  { to: '/backtest',   label: '回测', icon: History },
-  { to: '/stock-analysis',    label: '个股分析', icon: TrendingUp },
-  { to: '/limit-ladder', label: '连板梯队', icon: Flame },
-  { to: '/concept-analysis', label: '概念分析', icon: Layers3 },
-  { to: '/industry-analysis', label: '行业分析', icon: Landmark },
-  { to: '/financials', label: '财务分析', icon: FileText },
-  { to: '/monitor', label: '监控中心', icon: RadioTower },
-  { to: '/regime', label: '市场环境', icon: Gauge },
-  { to: '/abnormal', label: '异动监控', icon: Siren },
-  { to: '/lots',       label: '持仓账户', icon: Layers2 },
-  { to: '/signals',    label: '信号库',   icon: Zap },
-  { to: '/review',      label: '复盘',   icon: BookOpenCheck },
-  { to: '/indices', label: '指数', icon: BarChart3 },
-  { to: '/data',       label: '数据',   icon: Database },
+  { to: '/',                 label: '看板',     icon: IconDashboard },
+  { to: '/watchlist',        label: '自选',     icon: IconWatchlist },
+  { to: '/screener',         label: '策略',     icon: IconStrategy },
+  { to: '/factors',          label: '因子',     icon: IconFactors },
+  { to: '/backtest',         label: '回测',     icon: IconBacktest },
+  { to: '/stock-analysis',   label: '个股分析', icon: IconStockFocus },
+  { to: '/limit-ladder',     label: '连板梯队', icon: IconLadder },
+  { to: '/concept-analysis', label: '概念分析', icon: IconConcept },
+  { to: '/industry-analysis', label: '行业分析', icon: IconIndustry },
+  { to: '/financials',       label: '财务分析', icon: IconFinancials },
+  { to: '/monitor',          label: '监控中心', icon: IconMonitor },
+  { to: '/regime',           label: '市场环境', icon: IconRegime },
+  { to: '/abnormal',         label: '异动监控', icon: IconAlert },
+  { to: '/lots',             label: '持仓账户', icon: IconLots },
+  { to: '/paper',            label: '模拟盘',   icon: IconPaper },
+  { to: '/signals',          label: '信号库',   icon: IconSignals },
+  { to: '/review',           label: '复盘',     icon: IconReview },
+  { to: '/indices',          label: '指数',     icon: IconIndices },
+  { to: '/data',             label: '数据',     icon: IconData },
 ] as const
 
 /** 亮/暗主题切换 — 状态存 localStorage, 生效见 lib/theme.ts */
@@ -329,7 +336,7 @@ function AIConfigBadge({ configured, model }: { configured?: boolean; model?: st
       <span className="pointer-events-none absolute inset-y-1.5 left-0 w-[2px] rounded-full bg-purple-400/50 transition-colors group-hover:bg-purple-400" />
       <Sparkles className="h-3.5 w-3.5 shrink-0 text-muted group-hover:text-purple-400 transition-colors" />
       {configured ? (
-        <span className="truncate text-[11px] font-medium text-secondary group-hover:text-foreground transition-colors">
+        <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-secondary group-hover:text-foreground transition-colors">
           {model || '已接入模型'}
         </span>
       ) : (
@@ -352,6 +359,9 @@ export function Layout() {
   const { data: settingsState } = useSettings()
   const { data: matrix } = useCapabilityMatrix()
   const { data: versionData } = useVersion()
+  // 更新检查 (单例 store): 启动静默查一次 GitHub Releases, 供左下角版本号徽标
+  const update = useUpdateCheck()
+  const hasUpdate = update.status === 'found'
   const { data: prefs } = usePreferences()
   // 数据源列表 (用于实时行情状态显示当前数据源名称)
   const { data: dataSources } = useQuery({
@@ -543,7 +553,8 @@ export function Layout() {
   }, [alertsTotal])
 
   // 合并内置页面 + 可见的扩展分析菜单
-  type NavItem = { to: string; label: string; icon: typeof Gauge; badge?: string }
+  type NavIcon = (props: BrandIconProps) => ReactNode
+  type NavItem = { to: string; label: string; icon: NavIcon; badge?: string }
   const analysisNav: NavItem[] = (analysisMenus?.items ?? [])
     .filter(m => m.visible)
     .map(m => ({ to: `/analysis/${m.id}`, label: m.label, icon: m.icon === 'tags' ? Tags : BarChart3 }))
@@ -1015,7 +1026,35 @@ export function Layout() {
                   {!railMode && version && (
                     <span className="ml-auto font-mono text-[10px] text-muted/50 select-none shrink-0">
                       {version}
+                      {hasUpdate && update.info && (
+                        <span
+                          role="button"
+                          tabIndex={0}
+                          title={`发现新版本 ${update.info.latest}，点击前往检查更新`}
+                          onClick={(e) => {
+                            e.preventDefault()
+                            e.stopPropagation()
+                            navigate('/settings?tab=system')
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault()
+                              e.stopPropagation()
+                              navigate('/settings?tab=system')
+                            }
+                          }}
+                          className="ml-1.5 inline-flex cursor-pointer items-center rounded-full bg-accent px-1.5 py-px text-[9px] font-semibold leading-none text-white transition-colors hover:bg-accent/90"
+                        >
+                          NEW
+                        </span>
+                      )}
                     </span>
+                  )}
+                  {railMode && hasUpdate && (
+                    <span
+                      className="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full bg-accent shadow-[0_0_6px_rgba(59,130,246,0.8)]"
+                      title="发现新版本"
+                    />
                   )}
                 </>
               )}

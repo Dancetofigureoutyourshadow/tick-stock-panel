@@ -16,6 +16,8 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
+from app.market_time import cn_today
+
 # 工具名常量 (与 build_tool_schemas 里 function.name 一一对应)
 LIST_FACTORS = "list_factors"
 LIST_STRATEGIES = "list_strategies"
@@ -211,7 +213,8 @@ def run_backtest(
     from app.backtest.worker import make_worker_task, run_worker_task
     from app.services.heavy_job_limiter import shared_heavy_job_limiter
 
-    end_date = date.fromisoformat(end) if end else date.today()
+    # 缺省结束日用北京日期; 服务器本地 date.today() 会在 UTC/美西主机少取一天。
+    end_date = date.fromisoformat(end) if end else cn_today()
     start_date = (
         date.fromisoformat(start) if start else end_date - timedelta(days=_DEFAULT_BACKTEST_DAYS)
     )
@@ -273,7 +276,15 @@ async def execute_tool(
             if not strategy_id:
                 return {"ok": False, "error": "run_backtest 缺少 strategy_id"}
             if engine is not None and not engine.has(strategy_id):
-                return {"ok": False, "error": f"策略 {strategy_id} 不存在"}
+                # 附带可用 id, 模型一次即可自行修正(先列再选), 不必再来回试探
+                try:
+                    available = ", ".join(
+                        str(s.get("id")) for s in engine.list_strategies()[:12] if s.get("id")
+                    )
+                except Exception:  # 列举失败不影响错误本身
+                    available = ""
+                hint = f"; 可用策略: {available}" if available else "; 可先用 list_strategies 查询"
+                return {"ok": False, "error": f"策略 {strategy_id} 不存在{hint}"}
             result = await asyncio.to_thread(
                 run_backtest,
                 data_dir,

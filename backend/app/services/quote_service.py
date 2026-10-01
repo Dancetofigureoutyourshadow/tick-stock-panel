@@ -46,6 +46,7 @@ SOURCE_LABELS = {
     "market": "异动", "ladder": "连板梯队", "sector": "板块",
     "volume_delta": "放量", "abnormal": "异动", "date": "日期提醒",
     "portfolio": "持仓账户",
+    "paper": "模拟盘",
 }
 
 # final 定版确认容差: 快照时间戳允许早于边界 5s 内 (供应商时间戳精度不一)
@@ -300,7 +301,9 @@ class QuoteService:
         if self._thread:
             self._thread.join(timeout=10)
             self._thread = None
-        self._save_enabled(False)
+        # 此处不持久化关闭: lifespan shutdown (容器停止/重启) 也调用 stop,
+        # 持久化 False 会让每次重启后实时行情都变关闭、需手动再开。
+        # 持久化语义归 disable() (用户主动关闭)。
         logger.info("行情服务已停止")
 
     def enable(self) -> bool:
@@ -326,6 +329,7 @@ class QuoteService:
     def disable(self) -> None:
         """关闭自动行情。"""
         self.stop()
+        self._save_enabled(False)
         logger.info("行情服务已关闭")
 
     # ================================================================
@@ -1355,6 +1359,42 @@ class QuoteService:
             if rule_events:
                 self._maybe_send_webhook(rule_events, engine)
 
+            # 模拟盘钩子: 与监控评估同频 —— ① 用同一份实时快照撮合 pending 即时单;
+            # ② rule_events 喂给自动跟单规则触发自动下单。逐账户执行 (账户间规则与订单隔离)。
+            # 即时撮合仅股票 (ETF 即时单在下单时已转次日开盘); 独立 try ——
+            # 模拟盘任何异常只留痕, 不得影响监控告警链路。
+            if stock_ready and self._app_state is not None:
+                try:
+                    from app.strategy import paper as paper_trading
+                    from app.strategy import paper_auto
+                    data_dir = self._app_state.repo.store.data_dir
+                    snapshot = dict(zip(
+                        enriched_today["symbol"].to_list(),
+                        enriched_today["raw_close"].to_list(),
+                        strict=False,
+                    ))
+                    paper_events: list[dict] = []
+                    for acc_id in paper_trading.list_account_ids(data_dir):
+                        paper_events.extend(
+                            paper_trading.evaluate_intraday(data_dir, snapshot, account_id=acc_id))
+                        if rule_events:
+                            created = paper_auto.on_rule_events(data_dir, rule_events, account_id=acc_id)
+                            paper_events.extend(paper_auto.auto_order_events(created, account_id=acc_id))
+                    # 成交/自动跟单下单推送 (V3): 复用监控中心既有管道 —— SSE toast /
+                    # 语音 (前端按 source 拼文案) / 系统通知 / alert_store 留痕 /
+                    # Webhook。全部静默降级。
+                    if paper_events:
+                        self._broadcast_alerts(paper_events)
+                        try:
+                            from app.services import alert_store
+                            alert_store.append_many(data_dir, paper_events)
+                        except Exception as e:  # noqa: BLE001
+                            logger.warning("模拟盘成交留痕失败: %s", e)
+                        self._maybe_send_system_notifications(paper_events)
+                        self._maybe_send_paper_webhook(paper_events)
+                except Exception as e:
+                    logger.warning("模拟盘钩子失败 (不影响监控): %s", e)
+
         except Exception as e:  # noqa: BLE001
             logger.warning("监控评估失败: %s", e)
 
@@ -1702,6 +1742,43 @@ class QuoteService:
                 logger.info("Webhook 已提交 %d 条 (异步投递, 按渠道独立投递, 失败记 WARNING)", enqueued)
         except Exception as e:  # noqa: BLE001
             logger.warning("Webhook 提交异常 (不影响告警主流程): %s", e)
+
+    def _maybe_send_paper_webhook(self, events: list[dict]) -> None:
+        """模拟盘成交 → 已配置的飞书/企业微信/自定义 Webhook (异步投递, 失败静默)。
+
+        与监控规则的按规则勾选不同: 成交事件无规则载体, 渠道地址已配置即投递。
+        模拟盘成交低频 (手动 + cooldown 规则), 刷屏风险低。
+        """
+        try:
+            from app import secrets_store
+            from app.services import preferences, webhook_adapter
+
+            feishu_url = preferences.get_feishu_webhook_url()
+            feishu_secret = preferences.get_feishu_webhook_secret()
+            wecom_url = preferences.get_wecom_webhook_url()
+            custom_url = preferences.get_custom_webhook_url()
+            custom_secret = secrets_store.get_custom_webhook_secret()
+            if not any((feishu_url, wecom_url, custom_url)):
+                return
+
+            enqueued = 0
+            for ev in events:
+                body = f"{ev.get('symbol', '')} {ev.get('message', '')}".strip()
+                if feishu_url:
+                    _WEBHOOK_EXECUTOR.submit(
+                        webhook_adapter.send_feishu, feishu_url, "模拟盘成交", body, feishu_secret)
+                    enqueued += 1
+                if wecom_url:
+                    _WEBHOOK_EXECUTOR.submit(webhook_adapter.send_wecom, wecom_url, "模拟盘成交", body)
+                    enqueued += 1
+                if custom_url:
+                    _WEBHOOK_EXECUTOR.submit(
+                        webhook_adapter.send_custom, custom_url, "模拟盘成交", body, "paper_fill", ev, custom_secret)
+                    enqueued += 1
+            if enqueued:
+                logger.info("模拟盘 Webhook 已提交 %d 条 (异步投递, 失败记 WARNING)", enqueued)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("模拟盘 Webhook 提交异常 (不影响主流程): %s", e)
 
     def _maybe_send_system_notifications(self, all_alerts: list[dict]) -> None:
         """把告警转发到操作系统通知中心 (由 preferences 开关控制)。

@@ -1277,6 +1277,142 @@ export interface PortfolioBuyPreview {
   items: PortfolioBuyPreviewItem[]
 }
 
+// ===== Paper (虚拟账户/模拟盘) =====
+/** 多账户: 追加 ?account= 查询参数 (缺省账户由后端 default 兜底)。 */
+function accUrl(base: string, account?: string): string {
+  if (!account) return base
+  return `${base}${base.includes('?') ? '&' : '?'}account=${encodeURIComponent(account)}`
+}
+
+export interface PaperAccount {
+  id: string
+  name?: string
+  initial_cash: number
+  cash: number
+  commission_pct: number
+  stamp_tax_pct: number
+  slippage_bps: number
+  queue_limit_orders?: boolean
+  status: 'active' | 'frozen'
+  created_at: string
+}
+
+export interface PaperAccountSummary {
+  id: string
+  name: string
+  status: 'active' | 'frozen'
+  initial_cash?: number
+  cash?: number
+  latest_nav?: number | null
+  created_at?: string
+}
+
+/** 多账户横向对比行 (GET /api/paper/compare): 概览 + 回合统计 + 定版净值 */
+export interface PaperCompareRow {
+  account: string
+  name: string
+  status: 'active' | 'frozen'
+  initial_cash: number
+  fees: { commission_pct: number; stamp_tax_pct: number; slippage_bps: number }
+  total: number
+  cash: number
+  market_value: number
+  total_pnl: number
+  pnl_pct: number | null
+  rounds: number
+  win_rate: number
+  profit_loss_ratio: number | null
+  avg_holding_days: number
+  realized_pnl: number
+  max_drawdown: number | null
+  nav: Array<{ date: string; nav: number }>
+}
+
+export interface PaperHolding {
+  symbol: string
+  asset_type: string
+  qty: number
+  avg_cost: number
+  last_price: number
+  market_value: number
+  pnl: number
+  pnl_pct: number
+  available_qty: number
+}
+
+export interface PaperNavItem {
+  date: string
+  cash: number
+  mv: number
+  nav: number
+  benchmark_close?: number
+}
+
+export interface PaperOverview {
+  initialized: boolean
+  account_id?: string
+  account_name?: string
+  status?: 'active' | 'frozen'
+  queue_limit_orders?: boolean
+  cash?: number
+  market_value?: number
+  total?: number
+  total_pnl?: number
+  initial_cash?: number
+  estimating?: boolean
+  holdings?: PaperHolding[]
+  fees?: { commission_pct: number; stamp_tax_pct: number; slippage_bps: number }
+}
+
+export interface PaperOrder {
+  id: string
+  symbol: string
+  asset_type: string
+  side: 'buy' | 'sell'
+  qty: number
+  order_type: 'market' | 'next_open' | 'close'
+  status: 'pending' | 'filled' | 'cancelled' | 'expired'
+  ref_price?: number | null
+  postponed: number
+  source: string
+  created_at: string
+  filled_at?: string | null
+  fill_price?: number | null
+  fees?: number | null
+  reason?: string | null
+}
+
+export interface PaperAutoRule {
+  id: string
+  name: string
+  match_kind: 'strategy' | 'rule'
+  match_id: string
+  side: 'buy' | 'sell'
+  size_mode: 'fixed_amount' | 'pct_equity'
+  size_value: number
+  order_type: 'market' | 'next_open' | 'close'
+  cooldown_days: number
+  enabled: boolean
+  created_at: string
+}
+
+export interface PaperFill {
+  seq: number
+  ts: string
+  date: string
+  order_id: string | null
+  symbol: string
+  asset_type: string
+  side: 'buy' | 'sell' | 'corp_action'
+  qty?: number
+  price?: number
+  fee?: number
+  kind?: 'fill' | 'corp_action'
+  factor?: number
+  qty_before?: number
+  cost_before?: number
+}
+
 export interface VDBasicFilter {
   price_min?: number | null                 // 股价下限 (元)
   price_max?: number | null                 // 股价上限 (元)
@@ -1469,6 +1605,29 @@ export interface GroupStat {
   max_drawdown: number
   sharpe: number
   win_rate: number
+}
+
+/** 回测候选 (candidates): 回测报告的持久化标量摘要; metrics 单位为小数 (0.052 = 5.2%) */
+export interface BacktestCandidate {
+  id: string
+  kind: 'factor' | 'strategy'
+  name: string
+  source_id: string
+  metrics: Partial<{
+    total_return: number
+    annual_return: number
+    max_drawdown: number
+    sharpe: number
+    sortino: number
+    win_rate: number
+    n_trades: number
+    profit_factor: number
+    avg_return: number
+    median_return: number
+  }>
+  data_as_of: string | null
+  status: 'pending' | 'validated' | 'rejected'
+  created_at: string
 }
 
 export interface FactorBacktestResult {
@@ -1907,6 +2066,7 @@ export interface SettingsState {
   ai_user_agent: string
   ai_max_output_tokens?: number
   ai_context_window?: number
+  ai_round_checkpoint?: number
 }
 
 /** 保存 TickFlow Key 的响应(先探后存) */
@@ -2059,6 +2219,16 @@ export interface WecomBotStatus {
   last_error: string
 }
 
+/** API Token 记录 (管理视图, 不含哈希) */
+export interface ApiTokenRecord {
+  id: string
+  name: string
+  scopes: string[]
+  created_at: string
+  last_used_at?: string | null
+  revoked: boolean
+}
+
 export interface Preferences {
   realtime_quotes_enabled: boolean
   watchlist_groups_in_nav: boolean
@@ -2118,6 +2288,8 @@ export interface Preferences {
   webhook_default_channels?: string[]
   nav_order: string[]
   nav_hidden: string[]
+  /** 看板自定义布局; null/缺省 = 未自定义(前端内置默认布局) */
+  dashboard_layout: { v: number; items: Array<{ i: string; t: string; x: number; y: number; w: number; h: number; p?: Record<string, string> }> } | null
   screener_auto_run: boolean
   minute_intraday_refresh: boolean
   minute_intraday_refresh_interval: number
@@ -2299,8 +2471,8 @@ export const api = {
     ),
 
   /** 保存 AI 配置 */
-  saveAiSettings: (ai: { provider?: string; base_url?: string; api_key?: string; model?: string; reasoning_effort?: string; codex_command?: string; codex_reasoning_effort?: string; user_agent?: string; max_output_tokens?: number; context_window?: number }) =>
-    request<{ ok: boolean; ai_provider?: string; ai_model?: string; ai_openai_model?: string; ai_reasoning_effort?: string; ai_codex_model?: string; ai_codex_command?: string; ai_codex_reasoning_effort?: string; ai_configured?: boolean; ai_max_output_tokens?: number; ai_context_window?: number }>('/api/settings/ai', {
+  saveAiSettings: (ai: { provider?: string; base_url?: string; api_key?: string; model?: string; reasoning_effort?: string; codex_command?: string; codex_reasoning_effort?: string; user_agent?: string; max_output_tokens?: number; context_window?: number; round_checkpoint?: number }) =>
+    request<{ ok: boolean; ai_provider?: string; ai_model?: string; ai_openai_model?: string; ai_reasoning_effort?: string; ai_codex_model?: string; ai_codex_command?: string; ai_codex_reasoning_effort?: string; ai_configured?: boolean; ai_max_output_tokens?: number; ai_context_window?: number; ai_round_checkpoint?: number }>('/api/settings/ai', {
       method: 'POST',
       body: JSON.stringify(ai),
     }),
@@ -2308,6 +2480,26 @@ export const api = {
   /** 一键清空 AI 配置(保留自定义 UA) */
   clearAiSettings: () =>
     request<{ ok: boolean }>('/api/settings/ai', { method: 'DELETE' }),
+
+  /** 赞助商(RunningHub)模型列表(后端代理, 规避其网关按 Origin 过滤) */
+  sponsorModels: () =>
+    request<{ models: string[] }>('/api/settings/ai/sponsor-models'),
+
+  // ===== API Token 管理 (开放层; 仅 UI 会话可达) =====
+  apiTokensList: () =>
+    request<{ tokens: ApiTokenRecord[] }>('/api/settings/api-tokens'),
+
+  /** 创建 Token — 明文只在本次响应出现一次 */
+  apiTokenCreate: (name: string, scopes: string[]) =>
+    request<{ token: ApiTokenRecord; plaintext: string }>('/api/settings/api-tokens', {
+      method: 'POST',
+      body: JSON.stringify({ name, scopes }),
+    }),
+
+  apiTokenRevoke: (id: string) =>
+    request<{ status: string; id: string }>(`/api/settings/api-tokens/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    }),
 
   preferences: () => request<Preferences>('/api/settings/preferences'),
   dataSources: () => request<DataSourcesResponse>('/api/settings/data-sources'),
@@ -2614,6 +2806,12 @@ export const api = {
     request<{ nav_hidden: string[] }>('/api/settings/preferences/nav-hidden', {
       method: 'PUT',
       body: JSON.stringify({ nav_hidden }),
+    }),
+  /** 保存看板自定义布局; layout=null 恢复默认布局 */
+  saveDashboardLayout: (layout: Preferences['dashboard_layout']) =>
+    request<{ dashboard_layout: Preferences['dashboard_layout'] }>('/api/settings/preferences/dashboard-layout', {
+      method: 'PUT',
+      body: JSON.stringify({ layout }),
     }),
   updateInstrumentsSchedule: (hour: number, minute: number) =>
     request<{ hour: number; minute: number }>('/api/settings/preferences/instruments-schedule', {
@@ -3075,6 +3273,10 @@ export const api = {
 
   backtestStatus: () => request<{ available: boolean }>('/api/backtest/status'),
 
+  /** 策略/因子候选 (回测报告的持久化摘要, 模拟盘对比用) */
+  backtestCandidates: () =>
+    request<{ items: BacktestCandidate[] }>('/api/backtest/candidates'),
+
   backtestRun: (payload: {
     symbols: string[]
     entries: string[]
@@ -3424,17 +3626,29 @@ export const api = {
   analysisMenuDelete: (id: string) =>
     request<{ status: string }>(`/api/analysis-menus/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
-  extDataCreate: (body: { id: string; label: string; mode: 'snapshot' | 'timeseries'; fields: { name: string; dtype: string; label: string }[]; description?: string; symbol_map?: Record<string, string>; code_map?: Record<string, string> }) =>
+  extDataCreate: (body: { id: string; label: string; mode: 'snapshot' | 'timeseries'; fields: { name: string; dtype: string; label: string }[]; description?: string; symbol_map?: Record<string, string>; code_map?: Record<string, string>; market_level?: boolean }) =>
     request<ExtDataConfig>('/api/ext-data', {
       method: 'POST',
       body: JSON.stringify(body),
     }),
 
-  extDataUpdate: (id: string, body: { label?: string; fields?: { name: string; dtype: string; label: string }[]; description?: string }) =>
+  extDataUpdate: (id: string, body: { label?: string; fields?: { name: string; dtype: string; label: string }[]; description?: string; symbol_map?: Record<string, string>; code_map?: Record<string, string>; market_level?: boolean }) =>
     request<ExtDataConfig>(`/api/ext-data/${id}`, {
       method: 'PUT',
       body: JSON.stringify(body),
     }),
+
+  /** 字段取值枚举 (filter 配套): 去重 + 计数, 按出现次数降序 */
+  extDataValues: (id: string, field: string, opts?: { date?: string; start_date?: string; end_date?: string; limit?: number }) => {
+    const qs = new URLSearchParams({ field })
+    if (opts?.date) qs.set('date', opts.date)
+    if (opts?.start_date) qs.set('start_date', opts.start_date)
+    if (opts?.end_date) qs.set('end_date', opts.end_date)
+    if (opts?.limit) qs.set('limit', String(opts.limit))
+    return request<{ id: string; field: string; date: string | null; total: number; distinct: number; values: { value: string | number | null; count: number }[] }>(
+      `/api/ext-data/${id}/values?${qs.toString()}`,
+    )
+  },
 
   extDataDelete: (id: string) =>
     request<{ status: string }>(`/api/ext-data/${id}`, { method: 'DELETE' }),
@@ -3466,6 +3680,11 @@ export const api = {
     time_field?: string | null;
     auth?: ExtPullAuth;
     timeout_seconds?: number;
+    page_param?: string | null;
+    page_size_param?: string | null;
+    page_size?: number;
+    page_start?: number;
+    max_pages?: number;
   }) =>
     request<{ status: string; pull: PullConfig }>(
       `/api/ext-data/${id}/pull`,
@@ -3992,6 +4211,72 @@ export const api = {
   lotDelete: (id: string) =>
     request<{ ok: boolean }>(`/api/lots/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
+  // ===== Paper (虚拟账户/模拟盘: 虚拟资金 + 真实行情价格模拟撮合, 多账户) =====
+  paperAccounts: () =>
+    request<{ accounts: PaperAccountSummary[] }>('/api/paper/accounts'),
+
+  paperOverview: (account?: string) =>
+    request<PaperOverview>(accUrl('/api/paper/overview', account)),
+
+  paperCreateAccount: (body: { initial_cash: number; account_id?: string; name?: string; commission_pct?: number; stamp_tax_pct?: number; slippage_bps?: number; queue_limit_orders?: boolean }) =>
+    request<{ account: PaperAccount }>('/api/paper/account', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  paperSettings: (body: { queue_limit_orders?: boolean; commission_pct?: number; stamp_tax_pct?: number; slippage_bps?: number }, account?: string) =>
+    request<{ account: PaperAccount }>(accUrl('/api/paper/settings', account), {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  paperOrderCreate: (body: { symbol: string; side: 'buy' | 'sell'; qty?: number; amount?: number; order_type: 'market' | 'next_open' | 'close'; ref_price?: number }, account?: string) =>
+    request<{ order: PaperOrder }>(accUrl('/api/paper/orders', account), {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  paperOrders: (status?: string, account?: string) => {
+    const p = new URLSearchParams()
+    if (status) p.set('status', status)
+    if (account) p.set('account', account)
+    const q = p.toString()
+    return request<{ orders: PaperOrder[] }>(`/api/paper/orders${q ? `?${q}` : ''}`)
+  },
+
+  paperOrderCancel: (id: string, account?: string) =>
+    request<{ order: PaperOrder }>(accUrl(`/api/paper/orders/${encodeURIComponent(id)}`, account), { method: 'DELETE' }),
+
+  paperTrades: (account?: string) =>
+    request<{ fills: PaperFill[] }>(accUrl('/api/paper/trades', account)),
+
+  paperNav: (account?: string) =>
+    request<{ nav: Array<{ date: string; cash: number; mv: number; nav: number }> }>(accUrl('/api/paper/nav', account)),
+
+  paperStats: (account?: string) =>
+    request<{ rounds: number; win_rate: number; profit_loss_ratio: number | null; avg_holding_days: number; realized_pnl: number; max_drawdown: number | null }>(accUrl('/api/paper/stats', account)),
+
+  paperCompare: () =>
+    request<{ accounts: PaperCompareRow[] }>('/api/paper/compare'),
+
+  paperFreeze: (frozen: boolean, account?: string) =>
+    request<{ account: PaperAccount }>(accUrl('/api/paper/freeze?frozen=' + frozen, account), { method: 'POST' }),
+
+  paperAutoRules: (account?: string) =>
+    request<{ rules: PaperAutoRule[] }>(accUrl('/api/paper/auto_rules', account)),
+
+  paperAutoRuleCreate: (body: Omit<PaperAutoRule, 'id' | 'created_at'>, account?: string) =>
+    request<{ rule: PaperAutoRule }>(accUrl('/api/paper/auto_rules', account), {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  paperAutoRuleSetEnabled: (id: string, enabled: boolean, account?: string) =>
+    request<{ rule: PaperAutoRule }>(accUrl(`/api/paper/auto_rules/${encodeURIComponent(id)}/enabled?enabled=${enabled}`, account), { method: 'POST' }),
+
+  paperAutoRuleDelete: (id: string, account?: string) =>
+    request<{ ok: boolean }>(accUrl(`/api/paper/auto_rules/${encodeURIComponent(id)}`, account), { method: 'DELETE' }),
+
   /** 模拟触发 ladder 封单监控 (Dev 调试, 不落盘不推送) */
   monitorRuleTestLadder: () =>
     request<{
@@ -4297,6 +4582,16 @@ export interface PullConfig {
   auth?: ExtPullAuth | null
   /** 单次拉取请求超时 (秒), 默认 30 */
   timeout_seconds?: number
+  /** 分页协议 (仅 GET): 页码参数名 (如 "page"), 配置后按页循环拉取 */
+  page_param?: string | null
+  /** 每页条数参数名 (如 "pageSize"), 配合 page_size 一起发送 */
+  page_size_param?: string | null
+  /** 每页条数值 (>0 且配置 page_size_param 才发送); 也用于短页判停 */
+  page_size?: number
+  /** 起始页码 (有的接口从 0 计数), 默认 1 */
+  page_start?: number
+  /** 分页安全上限, 默认 20 (防接口永远返回数据拖死循环) */
+  max_pages?: number
 }
 
 export interface ExtDataBackfillResult {

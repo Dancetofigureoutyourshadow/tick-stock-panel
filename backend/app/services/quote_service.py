@@ -45,7 +45,7 @@ SOURCE_LABELS = {
     "strategy": "策略", "signal": "信号", "price": "价格",
     "market": "异动", "ladder": "连板梯队", "sector": "板块",
     "volume_delta": "放量", "abnormal": "异动", "date": "日期提醒",
-    "portfolio": "持仓账户",
+    "paper_exit": "模拟盘策略退出",
     "paper": "模拟盘",
 }
 
@@ -926,8 +926,7 @@ class QuoteService:
             self._flush_live_enriched(etf_daily_df, etf_quote_extra, asset_type="etf")
         # ---- 指数: 仅有指数监控规则时才写盘 (无规则零成本) ----
         # 指数为按码显式拉取 (部分标的) → merge 不截断分区
-        engine = getattr(self._app_state, "monitor_engine", None) if self._app_state else None
-        if engine and engine.has_asset_rules("index") and self._repo:
+        if self._repo:
             index_daily_df = self._build_daily(index_records)
             if not index_daily_df.is_empty():
                 try:
@@ -1029,6 +1028,7 @@ class QuoteService:
             "symbol", "prev_close", "change_pct", "change_amount",
             "amplitude", "turnover_rate",
         ] if c in df.columns]
+        keep = [c for c in keep if c == "symbol" or df[c].null_count() < len(df)]
         if not keep or "symbol" not in keep:
             return pl.DataFrame()
         out = df.select(keep)
@@ -1283,21 +1283,28 @@ class QuoteService:
                         except Exception as e:  # noqa: BLE001
                             logger.warning("指数监控评估失败 (不影响股票/ETF 告警): %s", e)
 
-                # 持仓账户只过滤并检查当前未平仓批次，不为每批次重跑完整策略选股。
-                portfolio_account = getattr(self._app_state, "portfolio_account", None)
-                if stock_ready and portfolio_account is not None:
+                # 模拟盘持仓退出规则与监控同频评估。每个账户只检查现有持仓批次，
+                # 不重新运行完整策略选股；退出事件由 paper 域负责生成自动卖单或待确认意图。
+                if stock_ready and self._app_state is not None:
                     try:
-                        open_symbols = portfolio_account.open_symbols()
-                        if open_symbols:
+                        from app.strategy import paper as paper_trading
+                        from app.strategy import paper_exit
+                        data_dir = self._app_state.repo.store.data_dir
+                        for acc_id in paper_trading.list_account_ids(data_dir):
+                            open_symbols = set(paper_trading.load_positions(data_dir, acc_id))
+                            if not open_symbols:
+                                continue
                             position_rows = enriched_today.filter(
                                 pl.col("symbol").is_in(open_symbols)
                             ).to_dicts()
-                            rule_events += portfolio_account.evaluate_exit_rules(
+                            rule_events += paper_exit.evaluate(
+                                data_dir,
                                 position_rows,
+                                account_id=acc_id,
                                 trade_date=cn_today().isoformat(),
                             )
                     except Exception as e:  # noqa: BLE001
-                        logger.warning("持仓账户退出规则评估失败 (不影响其他告警): %s", e)
+                        logger.warning("模拟盘持仓退出规则评估失败 (不影响其他告警): %s", e)
 
                 if rule_events:
                     rule_events = self._format_extension_notifications(rule_events)
@@ -1378,7 +1385,10 @@ class QuoteService:
                         paper_events.extend(
                             paper_trading.evaluate_intraday(data_dir, snapshot, account_id=acc_id))
                         if rule_events:
-                            created = paper_auto.on_rule_events(data_dir, rule_events, account_id=acc_id)
+                            # 持仓退出已经由 paper_exit 处理, 不再喂给新建仓/监控跟单规则,
+                            # 避免同一退出事件重复生成卖单。
+                            follow_events = [ev for ev in rule_events if ev.get("source") != "paper_exit"]
+                            created = paper_auto.on_rule_events(data_dir, follow_events, account_id=acc_id)
                             paper_events.extend(paper_auto.auto_order_events(created, account_id=acc_id))
                     # 成交/自动跟单下单推送 (V3): 复用监控中心既有管道 —— SSE toast /
                     # 语音 (前端按 source 拼文案) / 系统通知 / alert_store 留痕 /
@@ -1885,6 +1895,7 @@ class QuoteService:
             if not use_incremental:
                 from datetime import timedelta
                 from app.indicators.pipeline import compute_enriched
+                from app.tickflow.repository import _live_agg_window_start
 
                 logger.info("enriched 全量计算 (live_agg=%s, 上次日期=%s)",
                             "ok" if not live_agg.is_empty() else "空", prev_date)
@@ -1898,7 +1909,8 @@ class QuoteService:
                 ]
                 hist_df = guarded_collect(
                     scan_daily_parquet(daily_glob)
-                    .filter(pl.col("date") >= cutoff)
+                    # Read extra calendar days, then choose the window by trading-day count.
+                    .filter(pl.col("date") >= cutoff - timedelta(days=60))
                     .sort(["symbol", "date"]),
                     priority="background",
                 )
@@ -1907,6 +1919,8 @@ class QuoteService:
 
                 hist_cols = [c for c in ohlcv_cols if c in hist_df.columns]
                 hist_df = hist_df.select(hist_cols).filter(pl.col("date") != today)
+                window_start = _live_agg_window_start(hist_df["date"], today, cutoff)
+                hist_df = hist_df.filter(pl.col("date") >= window_start)
                 daily_ohlcv = daily_df.select([c for c in ohlcv_cols if c in daily_df.columns])
                 full_df = pl.concat([hist_df, daily_ohlcv], how="diagonal_relaxed")
                 full_df = full_df.sort(["symbol", "date"])

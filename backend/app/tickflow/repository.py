@@ -340,6 +340,7 @@ class DataStore:
         }
         for name, parts in unions.items():
             if not parts:
+                self.db.execute(f"DROP VIEW IF EXISTS {name}")
                 continue
             try:
                 self.db.execute(f"CREATE OR REPLACE VIEW {name} AS " + " UNION ALL BY NAME ".join(parts))
@@ -1609,6 +1610,10 @@ class KlineRepository:
         """按资产类型选择分钟K parquet glob。ETF 分钟数据独立存储于 kline_etf_minute。"""
         return self._etf_minute_glob if asset_type == "etf" else self._minute_glob
 
+    def _minute_has_data(self, asset_type: str) -> bool:
+        dirname = "kline_etf_minute" if asset_type == "etf" else "kline_minute"
+        return any((self.store.data_dir / dirname).rglob("*.parquet"))
+
     def _maybe_adjust_minute(self, df: pl.DataFrame, asset_type: str) -> pl.DataFrame:
         """原始基准标记开启时应用读取时复权投影 (services/minute_adjust 三层架构)。
 
@@ -1630,6 +1635,8 @@ class KlineRepository:
         asset_type: str = "stock",
     ) -> pl.DataFrame:
         """分钟K查询 — Polars scan_parquet + predicate pushdown。"""
+        if not self._minute_has_data(asset_type):
+            return pl.DataFrame()
         try:
             df = guarded_collect(
                 pl.scan_parquet(self._minute_glob_for(asset_type)).filter(
@@ -1654,6 +1661,8 @@ class KlineRepository:
         避免逐只查询的 N 次 I/O。
         """
         if not symbols:
+            return pl.DataFrame()
+        if not self._minute_has_data(asset_type):
             return pl.DataFrame()
         try:
             df = guarded_collect(
@@ -1680,6 +1689,8 @@ class KlineRepository:
         返回列: symbol, datetime, open, high, low, close, volume, amount。
         """
         if not symbols:
+            return pl.DataFrame()
+        if not self._minute_has_data(asset_type):
             return pl.DataFrame()
         try:
             lf = pl.scan_parquet(self._minute_glob_for(asset_type))
@@ -1718,13 +1729,14 @@ class KlineRepository:
         """
         if not symbols or not dates:
             return pl.DataFrame()
-        base = self._etf_minute_glob.rsplit("/", 2)[0] if asset_type == "etf" else self._minute_glob.rsplit("/", 2)[0]
+        dirname = "kline_etf_minute" if asset_type == "etf" else "kline_minute"
+        base = self.store.data_dir / dirname
         # 收集存在的分区文件路径, 避免对不存在的文件 scan 报错
         parts: list[str] = []
         for d in dates:
-            p = f"{base}/date={d.isoformat()}/part.parquet"
+            p = base / f"date={d.isoformat()}" / "part.parquet"
             if Path(p).exists():
-                parts.append(p)
+                parts.append(str(p))
         if not parts:
             return pl.DataFrame()
         try:
@@ -2185,17 +2197,45 @@ class KlineRepository:
             "instruments_index": f"{d}/instruments_index/**/*.parquet",
             "instruments_etf": f"{d}/instruments_etf/**/*.parquet",
         }
+        view_dirs = {
+            "kline_daily": "kline_daily",
+            "kline_enriched": "kline_daily_enriched",
+            "kline_index_daily": "kline_index_daily",
+            "kline_index_enriched": "kline_index_enriched",
+            "kline_etf_daily": "kline_etf_daily",
+            "kline_etf_enriched": "kline_etf_enriched",
+            "kline_etf_minute": "kline_etf_minute",
+            "kline_minute": "kline_minute",
+            "adj_factor": "adj_factor",
+            "adj_factor_etf": "adj_factor_etf",
+            "instruments": "instruments",
+            "instruments_index": "instruments_index",
+            "instruments_etf": "instruments_etf",
+        }
         for name, path in views.items():
             try:
                 with self._lock:
-                    self.db.execute(
-                        f"CREATE OR REPLACE VIEW {name} AS "
-                        f"SELECT * FROM read_parquet('{path}', union_by_name=true)"
-                    )
+                    if any((self.store.data_dir / view_dirs[name]).rglob("*.parquet")):
+                        self.db.execute(
+                            f"CREATE OR REPLACE VIEW {name} AS "
+                            f"SELECT * FROM read_parquet('{path}', union_by_name=true)"
+                        )
+                    else:
+                        self.db.execute(f"DROP VIEW IF EXISTS {name}")
             except Exception as e:  # noqa: BLE001
                 logger.warning("rebuild view %s failed: %s", name, e)
         with self._lock:
             self.store._register_unified_views()
+
+    def rebuild_view(self, name: str) -> None:
+        """Rebuild one storage view through the canonical view lifecycle."""
+        if name not in {
+            "kline_daily", "kline_enriched", "kline_index_daily", "kline_index_enriched",
+            "kline_etf_daily", "kline_etf_enriched", "kline_etf_minute", "kline_minute",
+            "adj_factor", "adj_factor_etf", "instruments", "instruments_index", "instruments_etf",
+        }:
+            return
+        self.rebuild_views()
 
     @staticmethod
     def _atomic_write_parquet(df: pl.DataFrame, out: Path) -> None:

@@ -35,6 +35,7 @@ import polars as pl
 from app.services.ext_data import ExtConfigStore
 from app.services.rps_rotation import _load_concept_map_df
 from app.services.stocksdk_board_flow import snapshot as stocksdk_flow_snapshot
+from app.market_time import trading_minutes_elapsed_from_dt
 
 logger = logging.getLogger(__name__)
 
@@ -595,9 +596,9 @@ def _compute(repo, data_dir: Path, kind: str, top: int, bucket_minutes: int, ser
 
     # 对照窗口: 距当前桶约 _RANK_WINDOW_MIN 分钟的最近历史桶
     def _reference_index(index: int) -> int | None:
-        current = per_bucket[index]["bucket"]
+        current = trading_minutes_elapsed_from_dt(per_bucket[index]["bucket"])
         for back in range(index - 1, -1, -1):
-            delta_min = (current - per_bucket[back]["bucket"]).total_seconds() / 60.0
+            delta_min = current - trading_minutes_elapsed_from_dt(per_bucket[back]["bucket"])
             if delta_min >= _RANK_WINDOW_MIN:
                 return back
         return 0 if index > 0 else None  # 不足一小时: 与最早桶比; 首桶无对照

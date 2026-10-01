@@ -842,6 +842,9 @@ def _refresh_views(repo: KlineRepository) -> None:
 
 def _refresh_single_view(repo: KlineRepository, name: str) -> None:
     """刷新单个 DuckDB 视图。"""
+    if hasattr(repo, "rebuild_view"):
+        repo.rebuild_view(name)
+        return
     d = repo.store.data_dir.as_posix()
     paths = {
         "kline_daily": f"{d}/kline_daily/**/*.parquet",

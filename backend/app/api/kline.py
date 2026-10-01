@@ -16,12 +16,23 @@ from fastapi import APIRouter, HTTPException, Query, Request, Response
 from app.db_safe import is_valid_ext_ident
 from app.indicators.pipeline import compute_enriched, compute_enriched_single
 from app.market_time import cn_now, cn_today, in_continuous_session, should_use_live_market_snapshot
-from app.price_limits import is_risk_warning_name, price_limit_pct
+from app.price_limits import is_no_limit_day, is_risk_warning_name, parse_listing_date, price_limit_pct
 from app.services import kline_sync, trading_day
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/kline", tags=["kline"])
+
+
+def _json_safe(obj):
+    """Replace non-finite floats before either JSON response path serializes them."""
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+    if isinstance(obj, dict):
+        return {key: _json_safe(value) for key, value in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_json_safe(value) for value in obj]
+    return obj
 
 
 def _gzip_payload(request: Request, payload: dict, *, pref_key: str) -> dict | Response:
@@ -44,10 +55,11 @@ def _gzip_payload(request: Request, payload: dict, *, pref_key: str) -> dict | R
             compress_on = bool(getter())
         except Exception:  # 偏好读取异常按不压缩返回原样
             compress_on = False
+    payload = _json_safe(payload)
     headers = getattr(request, "headers", None) or {}
     if compress_on and "gzip" in (headers.get("accept-encoding") or ""):
         raw = json.dumps(
-            payload, ensure_ascii=False, separators=(",", ":"), allow_nan=True,
+            payload, ensure_ascii=False, separators=(",", ":"), allow_nan=False,
             default=lambda o: o.isoformat() if hasattr(o, "isoformat") else str(o),
         ).encode()
         if len(raw) > 1024:
@@ -274,27 +286,31 @@ def _get_price_limit_info(
         ),
         "limit_up": None,
         "limit_down": None,
+        "no_limit": False,
         "source": "rule",
     }
-    if trade_date != cn_today():
-        return info
 
+    row: dict | None = None
     try:
         import polars as pl
 
         instruments = repo.get_instruments_asset(asset_type)
         available = [
             column
-            for column in ("symbol", "limit_up", "limit_down")
+            for column in ("symbol", "limit_up", "limit_down", "listing_date")
             if column in instruments.columns
         ]
-        if "symbol" not in available or len(available) == 1:
-            return info
-        hit = instruments.filter(pl.col("symbol") == symbol).select(available).head(1)
-        row = hit.to_dicts()[0] if not hit.is_empty() else None
+        if "symbol" in available and len(available) > 1:
+            hit = instruments.filter(pl.col("symbol") == symbol).select(available).head(1)
+            row = hit.to_dicts()[0] if not hit.is_empty() else None
     except Exception:
-        return info
-    if row is None:
+        row = None
+    if row is not None:
+        listing = parse_listing_date(row.get("listing_date"))
+        if listing is not None and is_no_limit_day(symbol, listing, trade_date):
+            info["no_limit"] = True
+            return info
+    if trade_date != cn_today() or row is None:
         return info
 
     has_authoritative_price = False
@@ -484,9 +500,9 @@ def _latest_live_candle(
         if not qs:
             return None
         df_today, enriched_date = qs.get_enriched_today()
-    elif asset_type == "etf":
+    elif asset_type in {"etf", "index"}:
         df_today, enriched_date = request.app.state.repo.get_enriched_latest_asset(
-            "etf", refresh=refresh_asset,
+            asset_type, refresh=refresh_asset,
         )
     else:
         return None
@@ -495,7 +511,7 @@ def _latest_live_candle(
 
     # 15:30 后实时快照不再是日K权威来源；等待/读取盘后官方日线，不能再用
     # 盘中聚合覆盖完整日K。非交易日同样跳过，避免追加重复蜡烛。
-    if not should_use_live_market_snapshot(enriched_date):
+    if not enriched_date or enriched_date != cn_today():
         return None
 
     # 查找该 symbol 的实时 enriched 行
@@ -1467,8 +1483,8 @@ async def sync_minute_single(request: Request, body: dict):
     if requested_days is not None:
         if isinstance(requested_days, bool) or not isinstance(requested_days, int):
             raise HTTPException(status_code=400, detail="days 必须是整数")
-        if requested_days < 1 or requested_days > 365:
-            raise HTTPException(status_code=400, detail="days 必须在 1 到 365 之间")
+        if requested_days < 1 or requested_days > 30:
+            raise HTTPException(status_code=400, detail="days 必须在 1 到 30 之间")
 
     start_date_raw = body.get("start_date")
     end_date_raw = body.get("end_date")

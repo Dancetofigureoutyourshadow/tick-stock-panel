@@ -5,12 +5,20 @@ from pathlib import Path
 
 import numpy as np
 import polars as pl
+import pytest
 
 from app.backtest.matrix import MatrixComputeCache, build_market_data_matrix
 from app.backtest.regime_alignment import build_regime_scale_series
 from app.strategy.engine import StrategyEngine
 
 ROOT = Path(__file__).resolve().parents[2]
+V2_PATH = ROOT / "generated" / "custom_sequoia_high_tight_flag_v2.py"
+V3_PATH = ROOT / "generated" / "custom_sequoia_high_tight_flag_v3.py"
+
+pytestmark = pytest.mark.skipif(
+    not V2_PATH.exists() or not V3_PATH.exists(),
+    reason="Frozen strategy files are not present in the current worktree",
+)
 
 
 def _load(path: Path):
@@ -62,7 +70,7 @@ def _signals(strategy, panel: pl.DataFrame, **overrides):
 
 
 def test_matrix_derives_turnover_rate_when_enriched_panel_has_float_shares_only():
-    strategy = _load(ROOT / "generated" / "custom_sequoia_high_tight_flag_v3.py")
+    strategy = _load(V3_PATH)
     panel = _rows().drop("turnover_rate").with_columns(
         pl.lit(10_000_000.0).alias("float_shares")
     )
@@ -83,8 +91,8 @@ def test_matrix_derives_turnover_rate_when_enriched_panel_has_float_shares_only(
 
 
 def test_v2_and_v3_load_with_stable_ids_and_defaults():
-    v2 = _load(ROOT / "generated" / "custom_sequoia_high_tight_flag_v2.py")
-    v3 = _load(ROOT / "generated" / "custom_sequoia_high_tight_flag_v3.py")
+    v2 = _load(V2_PATH)
+    v3 = _load(V3_PATH)
 
     assert v2.meta["id"] == "custom_sequoia_high_tight_flag_v2"
     assert v3.meta["id"] == "custom_sequoia_high_tight_flag_v3"
@@ -108,8 +116,8 @@ def test_v2_and_v3_load_with_stable_ids_and_defaults():
 
 
 def test_v3_keeps_v2_entry_and_score_path_identical():
-    v2 = _load(ROOT / "generated" / "custom_sequoia_high_tight_flag_v2.py")
-    v3 = _load(ROOT / "generated" / "custom_sequoia_high_tight_flag_v3.py")
+    v2 = _load(V2_PATH)
+    v3 = _load(V3_PATH)
     params = {
         "momentum_window": 40,
         "min_momentum": 0.45,
@@ -142,7 +150,7 @@ def test_v3_keeps_v2_entry_and_score_path_identical():
 
 
 def test_v3_exit_codes_distinguish_flag_break_and_extension():
-    strategy = _load(ROOT / "generated" / "custom_sequoia_high_tight_flag_v3.py")
+    strategy = _load(V3_PATH)
 
     flag_break = _signals(
         strategy,
@@ -174,7 +182,7 @@ def test_v3_exit_codes_distinguish_flag_break_and_extension():
 
 
 def test_v3_volume_ma_break_requires_price_trend_and_volume_confirmation():
-    strategy = _load(ROOT / "generated" / "custom_sequoia_high_tight_flag_v3.py")
+    strategy = _load(V3_PATH)
     signals = _signals(
         strategy,
         _rows(break_price=150, break_volume=100.0),
@@ -189,7 +197,7 @@ def test_v3_volume_ma_break_requires_price_trend_and_volume_confirmation():
 
 
 def test_v3_signals_do_not_change_when_only_future_bars_change():
-    strategy = _load(ROOT / "generated" / "custom_sequoia_high_tight_flag_v3.py")
+    strategy = _load(V3_PATH)
     baseline = _rows(break_price=150)
     future = baseline.with_columns(
         pl.when(pl.arange(0, pl.len()) >= 56)
@@ -212,7 +220,7 @@ def test_v3_signals_do_not_change_when_only_future_bars_change():
 
 
 def test_v3_parameter_changes_are_not_reused_by_matrix_compute_cache():
-    strategy = _load(ROOT / "generated" / "custom_sequoia_high_tight_flag_v3.py")
+    strategy = _load(V3_PATH)
     market = build_market_data_matrix(
         _rows(),
         field_columns={"amount", "turnover_rate"},

@@ -25,7 +25,7 @@ import { StrategyPoolDialog } from '@/components/screener/StrategyPoolDialog'
 import { StrategyBuilderDialog } from '@/components/screener/StrategyBuilderDialog'
 import { StrategyStoreDialog } from '@/components/screener/StrategyStoreDialog'
 import { CompositeStrategyDialog } from '@/components/screener/CompositeStrategyDialog'
-import { PortfolioBuyDialog } from '@/components/portfolio/PortfolioBuyDialog'
+import { PaperStrategyBuyDialog } from '@/components/paper/PaperStrategyBuyDialog'
 import { ListColumnCustomizer } from '@/components/ListColumnCustomizer'
 import { useTableSort } from '@/components/stock-table/useTableSort'
 import { resolveCandleConfig } from '@/lib/list-columns'
@@ -1322,30 +1322,13 @@ export function Screener() {
         onClose={() => setShowStore(false)}
       />
       {buyTarget && (() => {
-        const ids = symbolStrategyMap.get(buyTarget.symbol) ?? (activeStrategy ? [activeStrategy] : [])
-        const options = ids
-          .map(id => strategyMap.get(id))
-          .filter((strategy): strategy is ScreenerStrategy => !!strategy && strategy.timeframes?.includes('1d') !== false)
-          .map(strategy => ({ id: strategy.id, name: strategy.name }))
-        const scoresByStrategy = Object.fromEntries(ids.map(id => {
-          const cachedRow = effectiveResults?.[id]?.rows.find((row: any) => row.symbol === buyTarget.symbol)
-          const activeRow = id === activeStrategy
-            ? result?.rows.find((row: any) => row.symbol === buyTarget.symbol)
-            : undefined
-          const rawScore = cachedRow?.score ?? activeRow?.score
-          return [id, typeof rawScore === 'number' && Number.isFinite(rawScore) ? rawScore : null]
-        }))
-        return options.length > 0 ? (
-          <PortfolioBuyDialog
+        return (
+          <PaperStrategyBuyDialog
             symbol={buyTarget.symbol}
             name={buyTarget.name ?? ''}
-            score={buyTarget.score ?? null}
-            scoresByStrategy={scoresByStrategy}
-            strategies={options}
-            initialStrategyId={activeStrategy}
             onClose={() => setBuyTarget(null)}
           />
-        ) : null
+        )
       })()}
     </>
   )

@@ -416,7 +416,6 @@ export function RuleEditor({ rule, preset, simple, onClose, onSaved }: Props) {
     ? '分时穿越信号需逐股订阅, 暂不支持自选分组作用域'
     : intradaySupport?.reason
   // 指数: 监控类型仅 signal/price (无涨跌停/策略/封单语义)
-  // date: 由「持仓提醒」页 (批次派生) 生成, 监控中心不手工创建
   const visibleTypes = (options.data?.types ?? []).filter(
     t => t.key !== 'date' && (assetType !== 'index' || t.key === 'signal' || t.key === 'price'),
   )

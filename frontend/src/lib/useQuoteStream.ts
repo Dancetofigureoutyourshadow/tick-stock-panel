@@ -216,9 +216,8 @@ export function useQuoteStream(
               // 实时刷新触发记录列表 + 监控中心徽标
               qc.invalidateQueries({ queryKey: ['alerts'] })
               qc.invalidateQueries({ queryKey: ['alerts-total'] })
-              if (alerts.some(alert => alert.source === 'portfolio')) {
-                qc.invalidateQueries({ queryKey: QK.portfolioPositions })
-                qc.invalidateQueries({ queryKey: QK.portfolioSummary })
+              if (alerts.some(alert => ['paper_exit', 'paper'].includes(alert.source as string))) {
+                qc.invalidateQueries({ queryKey: QK.paperAll })
               }
             }
         } catch {

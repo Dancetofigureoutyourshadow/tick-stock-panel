@@ -19,18 +19,21 @@ const money = (value: number) => Number.isFinite(value)
 /** 从选股页发起的也是手动 Paper 买入，不绑定策略，也不触发策略退出提醒。 */
 export function PaperStrategyBuyDialog({ symbol, name = '', onClose }: PaperManualBuyDialogProps) {
   const qc = useQueryClient()
+  const [account] = useState(() => localStorage.getItem('paper.account') || 'default')
   const [price, setPrice] = useState('')
   const [quantity, setQuantity] = useState('')
   const [removeError, setRemoveError] = useState('')
   const [buyWarningConfirmation, setBuyWarningConfirmation] = useState<string[] | null>(null)
   const preview = useQuery({
-    queryKey: ['paper-manual-buy-preview', symbol],
-    queryFn: () => api.paperBuyPreview({ items: [{ symbol }] }, 'default'),
+    queryKey: ['paper-manual-buy-preview', account, symbol],
+    queryFn: () => api.paperBuyPreview({ items: [{ symbol }] }, account),
     enabled: !!symbol,
     staleTime: 0,
   })
-  const settings = useQuery({ queryKey: QK.paperOverview('default'), queryFn: () => api.paperOverview('default') })
+  const accounts = useQuery({ queryKey: QK.paperAccounts, queryFn: api.paperAccounts, staleTime: 30_000 })
+  const settings = useQuery({ queryKey: QK.paperOverview(account), queryFn: () => api.paperOverview(account) })
   const item = preview.data?.items[0]
+  const accountName = accounts.data?.accounts.find(item => item.id === account)?.name || account
 
   useEffect(() => {
     if (!item) return
@@ -53,7 +56,7 @@ export function PaperStrategyBuyDialog({ symbol, name = '', onClose }: PaperManu
     qc.invalidateQueries({ queryKey: QK.watchlistPerformance })
   }
   const buy = useMutation({
-    mutationFn: () => api.paperStrategyBuy({ symbol, price: Number(price), quantity: Number(quantity) }, 'default'),
+    mutationFn: () => api.paperStrategyBuy({ symbol, price: Number(price), quantity: Number(quantity) }, account),
     onSuccess: result => {
       api.watchlistAdd(symbol).finally(() => {
         invalidate()
@@ -72,15 +75,10 @@ export function PaperStrategyBuyDialog({ symbol, name = '', onClose }: PaperManu
   const priceNumber = Number(price)
   const grossAmount = priceNumber > 0 && qty > 0 ? priceNumber * qty : 0
   const singlePositionCap = Number(preview.data?.single_position_cap ?? 0)
-  const maxTotalPosition = Number(settings.data?.max_total_position ?? 1)
-  const totalAssets = Number(preview.data?.total_assets ?? 0)
-  const maxExposure = totalAssets * maxTotalPosition
-  const projectedExposure = Number(preview.data?.market_value ?? 0) + grossAmount
   const warnings = [
     preview.data?.remaining_slots === 0 || item?.blocked_reason === '持仓名额已满' ? '持仓名额已满' : '',
     item?.blocked_reason === '预算不足一手' ? '当前预算不足一手' : '',
     grossAmount > singlePositionCap && singlePositionCap > 0 ? `买入金额超过单票仓位上限 ¥${money(singlePositionCap)}` : '',
-    projectedExposure > maxExposure && maxExposure >= 0 ? `买入后将超过最大总仓位 ¥${money(maxExposure)}` : '',
     grossAmount + estimate.fee > Number(preview.data?.available_cash ?? 0) ? '买入后可用现金不足' : '',
   ].filter(Boolean)
   const invalid = !(priceNumber > 0) || !(qty > 0) || !Number.isInteger(qty) || qty % 100 !== 0 || !item
@@ -94,6 +92,7 @@ export function PaperStrategyBuyDialog({ symbol, name = '', onClose }: PaperManu
       <Modal onClose={onClose} ariaLabel={`买入 ${symbol}`} panelClassName="w-[94vw] max-w-lg rounded-card border border-border bg-surface shadow-xl">
         <div className="flex items-center justify-between border-b border-border/60 px-5 py-4"><div><div className="text-sm font-medium text-foreground">手动买入并加入自选</div><div className="mt-0.5 text-[11px] text-muted">{symbol}{name ? ` · ${name}` : ''}</div></div><ShoppingCart className="h-4 w-4 text-accent" /></div>
         <div className="space-y-4 px-5 py-4">
+          <div className="text-[11px] text-muted">目标账户: {accountName}</div>
           <div className="rounded-lg border border-border/60 bg-base/50 px-3 py-2 text-[11px] text-muted">本次交易归为手动批次，不绑定策略，不触发策略退出提醒。</div>
           {preview.isLoading ? <div className="rounded-lg border border-dashed border-border px-4 py-6 text-center text-xs text-muted">正在计算建议仓位…</div> : preview.isError ? <div className="rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-xs text-danger">{String((preview.error as Error).message)}</div> : item && <>
             <div className="grid grid-cols-2 gap-3"><label className="space-y-1.5"><span className="text-[11px] text-muted">成交价</span><input value={price} onChange={event => setPrice(event.target.value)} type="number" min="0" step="0.01" className="h-9 w-full rounded-btn border border-border bg-base px-3 text-xs text-foreground" /><span className="block text-[10px] text-muted">{item.price_source === 'latest_close' ? '最新收盘价' : item.price_source === 'missing' ? '行情缺失，请手动填写' : '当前参考价'}</span></label><label className="space-y-1.5"><span className="text-[11px] text-muted">数量（100 股整数倍）</span><input value={quantity} onChange={event => setQuantity(event.target.value)} type="number" min="100" step="100" className="h-9 w-full rounded-btn border border-border bg-base px-3 text-xs text-foreground" /><span className="block text-[10px] text-muted">建议 {item.suggested_qty} 股</span></label></div>

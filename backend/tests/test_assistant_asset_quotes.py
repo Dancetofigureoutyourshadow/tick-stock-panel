@@ -2,7 +2,7 @@
 
 quote_service.get_quotes_compat 只读股票 enriched 缓存; ETF 与指数各有独立缓存
 (repo.get_enriched_latest_asset, 自选页 /api/watchlist/enriched 即按此分流)。
-get_stock_quote / get_watchlist / get_lots 只查股票缓存 → ETF、指数查不到价格:
+get_stock_quote / get_watchlist 只查股票缓存 → ETF、指数查不到价格:
 单查 510300.SH 返回「未匹配到行情」, 自选/持仓里的 ETF 行 close 与 change_pct 全是 null。
 """
 from __future__ import annotations
@@ -153,19 +153,3 @@ async def test_get_watchlist_merges_etf_and_index_prices(monkeypatch: pytest.Mon
     assert rows["510300.SH"]["close"] == 4.12
     assert rows["510300.SH"]["change_pct"] == 0.0098
     assert rows["000300.SH"]["change_pct"] == 0.0056
-
-
-async def test_get_lots_merges_etf_price(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
-    from app.strategy import lots as lots_module
-
-    def fake_load_all(data_dir) -> list[dict[str, Any]]:
-        return [{"symbol": "510300.SH", "qty": 1000, "cost_price": 3.95, "buy_date": "2026-09-01"}]
-
-    monkeypatch.setattr(lots_module, "load_all", fake_load_all)
-    payload = await assistant_tools.execute_assistant_tool("get_lots", {}, _ctx(_AssetRepo(), tmp_path))
-
-    assert payload["ok"] is True
-    row = payload["result"]["rows"][0]
-    assert row["symbol"] == "510300.SH"
-    assert row["close"] == 4.12
-    assert row["change_pct"] == 0.0098

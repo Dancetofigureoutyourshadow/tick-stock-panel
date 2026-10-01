@@ -8,8 +8,8 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import * as echarts from 'echarts'
-import { Banknote, CircleDollarSign, GitCompare, PieChart, Plus, Settings, TrendingUp, Wallet, X } from 'lucide-react'
-import { api, type PaperCompareRow, type PaperFill, type PaperOrder } from '@/lib/api'
+import { Banknote, CircleDollarSign, GitCompare, Pencil, PieChart, Plus, Power, Settings, SlidersHorizontal, Trash2, TrendingUp, Wallet, X } from 'lucide-react'
+import { api, type PaperAutoRule, type PaperCompareRow, type PaperFill, type PaperIntent, type PaperOrder } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
 import { cn } from '@/lib/cn'
 import { fmtPct, priceColorClass } from '@/lib/format'
@@ -30,6 +30,15 @@ const STATUS_LABEL: Record<string, string> = {
   filled: '已成交',
   cancelled: '已撤单',
   expired: '已过期',
+}
+
+const EXIT_REASON_LABEL: Record<string, string> = {
+  stop_loss: '止损',
+  trailing_stop: '移动止损',
+  trailing_take_profit: '移动止盈',
+  take_profit: '止盈',
+  signal: '策略卖点',
+  max_hold: '最大持有期',
 }
 
 function fmtMoney(v: number | null | undefined, digits = 2) {
@@ -624,6 +633,7 @@ function FeeSettingsModal({ accId, fees, queue, onSaved, onClose }: {
   const valid = Number(commissionWan) >= 0 && Number(commissionWan) <= 100
     && Number(stampQian) >= 0 && Number(stampQian) <= 50
     && Number(slippageBps) >= 0 && Number(slippageBps) <= 200
+
   const inputCls = 'mt-1 w-full rounded-btn border border-border bg-base px-2 py-1.5 font-mono text-sm outline-none focus:border-accent/50'
   return (
     <Modal onClose={onClose} labelledBy="fee-settings-title">
@@ -631,7 +641,7 @@ function FeeSettingsModal({ accId, fees, queue, onSaved, onClose }: {
         <div className="flex items-center gap-2">
           <Settings className="h-4 w-4 text-accent" />
           <h3 id="fee-settings-title" className="text-sm font-semibold text-foreground">
-            费用与撮合设置
+            账户费用与撮合设置
             <span className="ml-1.5 font-mono text-[10px] text-muted">{accId}</span>
           </h3>
         </div>
@@ -841,6 +851,7 @@ function AutoRulesPanel({ acc }: { acc: string }) {
   const rulesQ = useQuery({ queryKey: QK.paperAutoRules(acc), queryFn: () => api.paperAutoRules(acc) })
   const rules = rulesQ.data?.rules ?? []
   const [creating, setCreating] = useState(false)
+  const [editing, setEditing] = useState<PaperAutoRule | null>(null)
 
   const invalidate = () => qc.invalidateQueries({ queryKey: QK.paperAutoRules(acc) })
 
@@ -853,45 +864,74 @@ function AutoRulesPanel({ acc }: { acc: string }) {
     onSuccess: invalidate,
   })
 
-  if (creating) {
-    return <AutoRuleForm acc={acc} onDone={() => { setCreating(false); invalidate() }} onCancel={() => setCreating(false)} />
+  if (creating || editing) {
+    return <AutoRuleForm
+      key={editing?.id ?? 'new'}
+      acc={acc}
+      initial={editing ?? undefined}
+      onDone={() => { setCreating(false); setEditing(null); invalidate() }}
+      onCancel={() => { setCreating(false); setEditing(null) }}
+    />
   }
   return (
-    <div className="rounded-card border border-border bg-surface p-4">
-      <div className="flex items-center justify-between">
-        <div className="text-sm font-medium">自动跟单规则</div>
-        <button onClick={() => setCreating(true)} className="flex items-center gap-1 rounded-btn bg-accent/10 px-2.5 py-1 text-xs text-accent transition-colors hover:bg-accent/20">
-          <Plus className="h-3 w-3" /> 新建规则
+    <div className="overflow-hidden rounded-card border border-border bg-surface">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
+        <div className="flex min-w-0 items-start gap-2.5">
+          <div className="mt-0.5 rounded-btn bg-accent/10 p-1.5 text-accent"><SlidersHorizontal className="h-4 w-4" /></div>
+          <div className="min-w-0">
+            <div className="text-sm font-semibold text-foreground">自动跟单规则</div>
+            <div className="mt-0.5 text-[11px] leading-relaxed text-muted">每条规则独立控制仓位上限、成交口径与自动化方式。</div>
+          </div>
+        </div>
+        <button onClick={() => setCreating(true)} className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-btn bg-accent px-3 text-xs font-medium text-white transition-colors hover:bg-accent/90">
+          <Plus className="h-3.5 w-3.5" /> 新建规则
         </button>
       </div>
-      <div className="mt-1 text-[11px] leading-relaxed text-muted">
-        监控规则/策略触发时自动按规则下单 (默认次日开盘成交), 同标的 {`冷却 N 天`}内不重复触发
-      </div>
       {rules.length === 0 ? (
-        <div className="py-8 text-center text-xs text-muted">暂无规则 — 新建一条, 让策略信号自动进入模拟盘</div>
+        <div className="px-4 py-10 text-center">
+          <div className="text-xs font-medium text-secondary">暂无自动跟单规则</div>
+          <div className="mt-1 text-[11px] text-muted">新建规则后，策略信号才会进入当前模拟盘账户。</div>
+        </div>
       ) : (
-        <div className="mt-2 space-y-1">
+        <div className="space-y-2 p-3">
           {rules.map(r => (
-            <div key={r.id} className="flex items-center gap-2 rounded-btn px-2 py-1.5 text-xs transition-colors hover:bg-elevated/40">
-              <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full', r.enabled ? 'bg-bear' : 'bg-muted')} />
-              <span className="w-28 shrink-0 truncate font-medium">{r.name}</span>
-              <span className="w-20 shrink-0 text-muted">{r.match_kind === 'strategy' ? '跟策略' : '跟规则'}</span>
-              <span className="w-32 shrink-0 truncate font-mono text-[11px] text-muted" title={r.match_id}>{r.match_id}</span>
-              <span className={cn('w-8 shrink-0 font-medium', r.side === 'buy' ? 'text-bull' : 'text-bear')}>{r.side === 'buy' ? '买' : '卖'}</span>
-              <span className="w-24 shrink-0 font-mono text-[11px] text-muted">
-                {r.size_mode === 'fixed_amount' ? fmtMoney(r.size_value, 0) : `${r.size_value}% 权益`}
-              </span>
-              <span className="w-16 shrink-0 text-[11px] text-muted">{ORDER_TYPE_LABEL[r.order_type]} · 冷却{r.cooldown_days}天</span>
-              <button
-                onClick={() => toggleM.mutate({ id: r.id, enabled: !r.enabled })}
-                className={cn('ml-auto shrink-0 rounded-btn px-2 py-0.5 text-[10px] transition-colors',
-                  r.enabled ? 'bg-bear/10 text-bear hover:bg-bear/20' : 'bg-elevated text-muted hover:text-secondary')}
-              >
-                {r.enabled ? '停用' : '启用'}
-              </button>
-              <button onClick={() => deleteM.mutate(r.id)} className="shrink-0 rounded p-0.5 text-muted hover:text-danger" title="删除规则">
-                <X className="h-3.5 w-3.5" />
-              </button>
+            <div key={r.id} className="rounded-btn border border-border/80 bg-base/40 p-3 transition-colors hover:border-accent/30 hover:bg-elevated/20">
+              <div className="flex flex-wrap items-start justify-between gap-2.5">
+                <div className="flex min-w-0 items-start gap-2">
+                  <span className={cn('mt-1.5 h-2 w-2 shrink-0 rounded-full', r.enabled ? 'bg-bear shadow-[0_0_0_3px_hsl(var(--bear)/.12)]' : 'bg-muted')} />
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="truncate text-sm font-semibold text-foreground">{r.name}</span>
+                      <span className={cn('rounded-full px-1.5 py-0.5 text-[10px] font-medium', r.enabled ? 'bg-bear/10 text-bear' : 'bg-elevated text-muted')}>{r.enabled ? '运行中' : '已停用'}</span>
+                    </div>
+                    <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted">
+                      <span>{r.match_kind === 'strategy' ? '跟策略' : '跟监控规则'}</span>
+                      <span className="text-border">/</span>
+                      <span className="max-w-[18rem] truncate font-mono" title={r.match_id}>{r.match_id}</span>
+                      <span className={cn('font-medium', r.match_kind === 'strategy' ? 'text-accent' : r.side === 'buy' ? 'text-bull' : 'text-bear')}>{r.match_kind === 'strategy' ? '自动买卖' : r.side === 'buy' ? '买入' : '卖出'}</span>
+                    </div>
+                  </div>
+                </div>
+                <div className="flex shrink-0 items-center gap-1">
+                  <button onClick={() => toggleM.mutate({ id: r.id, enabled: !r.enabled })} className={cn('inline-flex h-7 items-center gap-1 rounded-btn px-2 text-[10px] font-medium transition-colors', r.enabled ? 'bg-bear/10 text-bear hover:bg-bear/20' : 'bg-elevated text-muted hover:text-secondary')} title={r.enabled ? '停用规则' : '启用规则'}>
+                    <Power className="h-3 w-3" /> {r.enabled ? '停用' : '启用'}
+                  </button>
+                  <button onClick={() => setEditing(r)} className="inline-flex h-7 w-7 items-center justify-center rounded-btn border border-border text-muted transition-colors hover:border-accent/40 hover:text-accent" title="编辑规则"><Pencil className="h-3.5 w-3.5" /></button>
+                  <button onClick={() => deleteM.mutate(r.id)} className="inline-flex h-7 w-7 items-center justify-center rounded-btn text-muted transition-colors hover:bg-danger/10 hover:text-danger" title="删除规则"><Trash2 className="h-3.5 w-3.5" /></button>
+                </div>
+              </div>
+              <div className="mt-3 grid grid-cols-2 gap-2 border-t border-border/60 pt-2.5 sm:grid-cols-4">
+                <div><div className="text-[10px] text-muted">本策略总仓位</div><div className="mt-0.5 font-mono text-xs text-foreground">{r.max_total_position}% <span className="font-sans text-[10px] text-muted">权益上限</span></div></div>
+                <div><div className="text-[10px] text-muted">最大持仓</div><div className="mt-0.5 font-mono text-xs text-foreground">{r.max_positions} <span className="font-sans text-[10px] text-muted">只</span></div></div>
+                <div><div className="text-[10px] text-muted">买入权重</div><div className="mt-0.5 text-xs text-foreground">{r.position_sizing === 'score_weight' ? '评分加权' : '等权买入'}</div></div>
+                <div><div className="text-[10px] text-muted">同标的冷却</div><div className="mt-0.5 font-mono text-xs text-foreground">{r.cooldown_days} <span className="font-sans text-[10px] text-muted">天</span></div></div>
+              </div>
+              <div className="mt-2 flex flex-wrap gap-1.5 text-[10px]">
+                <span className="rounded-full bg-elevated px-2 py-0.5 text-muted">建仓 · {r.entry_fill === 'open_t+1' ? '次日开盘' : '信号日收盘'}</span>
+                <span className="rounded-full bg-elevated px-2 py-0.5 text-muted">清仓 · {r.exit_fill === 'open_t+1' ? '次日开盘' : '收盘/即时'}</span>
+                <span className={cn('rounded-full px-2 py-0.5', r.auto_follow_enabled ? 'bg-accent/10 text-accent' : 'bg-warning/10 text-warning')}>跟单 · {r.auto_follow_enabled ? '自动下单' : '手动确认'}</span>
+                {r.match_kind === 'strategy' && <span className={cn('rounded-full px-2 py-0.5', r.auto_exit_enabled ? 'bg-accent/10 text-accent' : 'bg-warning/10 text-warning')}>退出 · {r.auto_exit_enabled ? '自动卖出' : '手动确认'}</span>}
+              </div>
             </div>
           ))}
         </div>
@@ -900,35 +940,57 @@ function AutoRulesPanel({ acc }: { acc: string }) {
   )
 }
 
-function AutoRuleForm({ acc, onDone, onCancel }: { acc: string; onDone: () => void; onCancel: () => void }) {
-  const [name, setName] = useState('')
-  const [matchKind, setMatchKind] = useState<'strategy' | 'rule'>('strategy')
-  const [matchId, setMatchId] = useState('')
-  const [side, setSide] = useState<'buy' | 'sell'>('buy')
-  const [sizeMode, setSizeMode] = useState<'fixed_amount' | 'pct_equity'>('fixed_amount')
-  const [sizeValue, setSizeValue] = useState('10000')
-  const [orderType, setOrderType] = useState<'market' | 'next_open' | 'close'>('next_open')
-  const [cooldown, setCooldown] = useState('5')
+function AutoRuleForm({ acc, initial, onDone, onCancel }: { acc: string; initial?: PaperAutoRule; onDone: () => void; onCancel: () => void }) {
+  const [name, setName] = useState(initial?.name ?? '')
+  const [matchKind, setMatchKind] = useState<'strategy' | 'rule'>(initial?.match_kind ?? 'strategy')
+  const [matchId, setMatchId] = useState(initial?.match_id ?? '')
+  const [side, setSide] = useState<'auto' | 'buy' | 'sell'>(initial?.side ?? 'auto')
+  const [entryFill, setEntryFill] = useState<'close_t' | 'open_t+1'>(initial?.entry_fill ?? 'open_t+1')
+  const [exitFill, setExitFill] = useState<'close_t' | 'open_t+1'>(initial?.exit_fill ?? 'close_t')
+  const [positionSizing, setPositionSizing] = useState<'equal' | 'score_weight'>(initial?.position_sizing ?? 'equal')
+  const [maxPositions, setMaxPositions] = useState(String(initial?.max_positions ?? 10))
+  const [maxTotalPosition, setMaxTotalPosition] = useState(String(initial?.max_total_position ?? 100))
+  const [autoFollow, setAutoFollow] = useState(initial?.auto_follow_enabled ?? true)
+  const [autoExit, setAutoExit] = useState(initial?.auto_exit_enabled ?? false)
+  const [cooldown, setCooldown] = useState(String(initial?.cooldown_days ?? 5))
   const [msg, setMsg] = useState<string | null>(null)
 
   const m = useMutation({
     mutationFn: () =>
-      api.paperAutoRuleCreate({
+      (initial ? api.paperAutoRuleUpdate(initial.id, {
         name: name.trim(),
         match_kind: matchKind,
         match_id: matchId.trim(),
-        side,
-        size_mode: sizeMode,
-        size_value: Number(sizeValue),
-        order_type: orderType,
+        side: matchKind === 'strategy' ? 'auto' : side,
+        entry_fill: entryFill,
+        exit_fill: exitFill,
+        position_sizing: positionSizing,
+        max_positions: Number(maxPositions),
+        max_total_position: Number(maxTotalPosition),
+        auto_follow_enabled: autoFollow,
+        auto_exit_enabled: autoExit,
+        cooldown_days: Number(cooldown),
+        enabled: initial.enabled,
+      }, acc) : api.paperAutoRuleCreate({
+        name: name.trim(),
+        match_kind: matchKind,
+        match_id: matchId.trim(),
+        side: matchKind === 'strategy' ? 'auto' : side,
+        entry_fill: entryFill,
+        exit_fill: exitFill,
+        position_sizing: positionSizing,
+        max_positions: Number(maxPositions),
+        max_total_position: Number(maxTotalPosition),
+        auto_follow_enabled: autoFollow,
+        auto_exit_enabled: autoExit,
         cooldown_days: Number(cooldown),
         enabled: true,
-      }, acc),
+      }, acc)),
     onSuccess: onDone,
     onError: e => setMsg(String((e as Error).message)),
   })
 
-  const valid = name.trim() && matchId.trim() && Number(sizeValue) > 0
+  const valid = name.trim() && matchId.trim() && Number(maxPositions) >= 1 && Number(maxPositions) <= 50 && Number(maxTotalPosition) > 0 && Number(maxTotalPosition) <= 100
 
   // ID 联想: 跟策略 → 策略引擎列表; 跟监控规则 → 监控规则列表。本地按中文名/ID 过滤。
   const strategiesQ = useQuery({
@@ -964,28 +1026,37 @@ function AutoRuleForm({ acc, onDone, onCancel }: { acc: string; onDone: () => vo
   })()
 
   return (
-    <div className="rounded-card border border-border bg-surface p-4">
-      <div className="text-sm font-medium">新建自动跟单规则</div>
-      <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
+    <div className="overflow-hidden rounded-card border border-border bg-surface">
+      <div className="flex items-start gap-2.5 border-b border-border bg-elevated/20 px-4 py-3">
+        <div className="mt-0.5 rounded-btn bg-accent/10 p-1.5 text-accent"><SlidersHorizontal className="h-4 w-4" /></div>
         <div>
-          <label className="text-[11px] text-muted">规则名称</label>
-          <input value={name} onChange={e => setName(e.target.value)} placeholder="如: 跟单前高突破"
-            className="mt-1 w-full rounded-btn border border-border bg-base px-3 py-1.5 text-sm outline-none focus:border-accent/50" />
+          <div className="text-sm font-semibold text-foreground">{initial ? '编辑自动跟单规则' : '新建自动跟单规则'}</div>
+          <div className="mt-0.5 text-[11px] text-muted">规则只作用于当前模拟盘账户。</div>
         </div>
-        <div>
-          <label className="text-[11px] text-muted">跟什么</label>
-          <div className="mt-1 flex gap-1.5">
+      </div>
+      <div className="space-y-5 p-4">
+        <section>
+          <div className="mb-2 flex items-center gap-2 text-[11px] font-semibold text-secondary"><span className="h-4 w-0.5 rounded-full bg-accent" />跟单对象</div>
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+            <div>
+              <label className="text-[11px] text-muted">规则名称</label>
+          <input value={name} onChange={e => setName(e.target.value)} placeholder="如: 跟单前高突破"
+                className="mt-1 w-full rounded-btn border border-border bg-base px-3 py-2 text-sm outline-none transition-colors focus:border-accent/50" />
+            </div>
+            <div>
+              <label className="text-[11px] text-muted">跟什么</label>
+              <div className="mt-1 flex gap-1.5">
             {(['strategy', 'rule'] as const).map(k => (
-              <button key={k} onClick={() => { setMatchKind(k); setMatchId('') }}
-                className={cn('flex-1 rounded-btn border py-1 text-[11px] transition-colors',
+              <button key={k} onClick={() => { setMatchKind(k); setMatchId(''); if (k === 'strategy') setSide('auto'); else if (side === 'auto') setSide('buy') }}
+                    className={cn('flex-1 rounded-btn border py-2 text-[11px] font-medium transition-colors',
                   matchKind === k ? 'border-accent/40 bg-accent/10 text-accent' : 'border-border text-muted hover:text-secondary')}>
                 {k === 'strategy' ? '跟策略' : '跟监控规则'}
               </button>
             ))}
-          </div>
-        </div>
-        <div className="md:col-span-2">
-          <label className="text-[11px] text-muted">{matchKind === 'strategy' ? '策略 (输入中文名 / ID 联想, 留空聚焦看全部)' : '监控规则 (输入名称 / ID 联想)'}</label>
+              </div>
+            </div>
+            <div className="md:col-span-2">
+              <label className="text-[11px] text-muted">{matchKind === 'strategy' ? '策略（输入名称或 ID，可联想）' : '监控规则（输入名称或 ID，可联想）'}</label>
           <SuggestInput
             value={matchId}
             onChange={setMatchId}
@@ -993,61 +1064,110 @@ function AutoRuleForm({ acc, onDone, onCancel }: { acc: string; onDone: () => vo
             onSelect={opt => setMatchId(opt.value)}
             loading={matchKind === 'strategy' ? strategiesQ.isPending : rulesQ.isPending}
             placeholder={matchKind === 'strategy' ? '如: 前高突破 / sg_...' : '如: 高位放量 / mrule_...'}
-            className="mt-1 w-full rounded-btn border border-border bg-base px-3 py-1.5 font-mono text-sm outline-none focus:border-accent/50"
+                className="mt-1 w-full rounded-btn border border-border bg-base px-3 py-2 font-mono text-sm outline-none focus:border-accent/50"
           />
-        </div>
-        <div>
-          <label className="text-[11px] text-muted">方向</label>
-          <div className="mt-1 flex gap-1.5">
+            </div>
+            {matchKind === 'strategy' ? <div className="flex items-start gap-2 rounded-btn border border-accent/20 bg-accent/[0.04] px-3 py-2.5 text-[11px] leading-relaxed text-secondary"><span className="mt-0.5 h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />方向由策略事件决定：买入信号或进入选股结果时买入，卖出信号或移出选股结果时卖出。</div> : <div>
+              <label className="text-[11px] text-muted">方向</label>
+              <div className="mt-1 flex gap-1.5">
             {(['buy', 'sell'] as const).map(sd => (
-              <button key={sd} onClick={() => setSide(sd)}
-                className={cn('flex-1 rounded-btn border py-1 text-[11px] font-medium transition-colors',
-                  side === sd ? (sd === 'buy' ? 'border-bull/50 bg-bull/10 text-bull' : 'border-bear/50 bg-bear/10 text-bear') : 'border-border text-muted')}>
+                  <button key={sd} onClick={() => setSide(sd)} className={cn('flex-1 rounded-btn border py-2 text-[11px] font-medium transition-colors', side === sd ? (sd === 'buy' ? 'border-bull/50 bg-bull/10 text-bull' : 'border-bear/50 bg-bear/10 text-bear') : 'border-border text-muted')}>
                 {sd === 'buy' ? '买入' : '卖出'}
-              </button>
+                  </button>
             ))}
+              </div>
+            </div>}
           </div>
-        </div>
-        <div>
-          <label className="text-[11px] text-muted">仓位</label>
-          <div className="mt-1 flex gap-1.5">
-            <button onClick={() => setSizeMode('fixed_amount')}
-              className={cn('flex-1 rounded-btn border py-1 text-[11px] transition-colors', sizeMode === 'fixed_amount' ? 'border-accent/40 bg-accent/10 text-accent' : 'border-border text-muted')}>固定金额</button>
-            <button onClick={() => setSizeMode('pct_equity')}
-              className={cn('flex-1 rounded-btn border py-1 text-[11px] transition-colors', sizeMode === 'pct_equity' ? 'border-accent/40 bg-accent/10 text-accent' : 'border-border text-muted')}>权益 %</button>
-          </div>
-        </div>
-        <div>
-          <label className="text-[11px] text-muted">{sizeMode === 'fixed_amount' ? '每笔金额 (元)' : '每笔占权益 %'}</label>
-          <input type="number" value={sizeValue} onChange={e => setSizeValue(e.target.value)}
-            className="mt-1 w-full rounded-btn border border-border bg-base px-3 py-1.5 font-mono text-sm outline-none focus:border-accent/50" />
-        </div>
-        <div>
-          <label className="text-[11px] text-muted">订单类型</label>
-          <div className="mt-1 flex gap-1.5">
-            {(['next_open', 'close', 'market'] as const).map(t => (
-              <button key={t} onClick={() => setOrderType(t)}
-                className={cn('flex-1 rounded-btn border py-1 text-[11px] transition-colors',
-                  orderType === t ? 'border-accent/40 bg-accent/10 text-accent' : 'border-border text-muted hover:text-secondary')}>
-                {ORDER_TYPE_LABEL[t]}
-              </button>
-            ))}
-          </div>
-        </div>
-        <div>
-          <label className="text-[11px] text-muted">冷却天数 (同标的)</label>
+        </section>
+        <section className="border-t border-border/70 pt-4">
+          <div className="mb-2 flex items-center gap-2 text-[11px] font-semibold text-secondary"><span className="h-4 w-0.5 rounded-full bg-accent" />成交与仓位</div>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            <label className="text-[11px] text-muted">建仓口径<select value={entryFill} onChange={e => setEntryFill(e.target.value as typeof entryFill)} className="mt-1 w-full rounded-btn border border-border bg-base px-2.5 py-2 text-sm"><option value="open_t+1">次日开盘</option><option value="close_t">信号日收盘</option></select></label>
+            <label className="text-[11px] text-muted">清仓口径<select value={exitFill} onChange={e => setExitFill(e.target.value as typeof exitFill)} className="mt-1 w-full rounded-btn border border-border bg-base px-2.5 py-2 text-sm"><option value="close_t">信号日收盘/即时</option><option value="open_t+1">次日开盘</option></select></label>
+            <label className="text-[11px] text-muted">买入权重<select value={positionSizing} onChange={e => setPositionSizing(e.target.value as typeof positionSizing)} className="mt-1 w-full rounded-btn border border-border bg-base px-2.5 py-2 text-sm"><option value="equal">等权买入</option><option value="score_weight">评分加权</option></select></label>
+            <label className="text-[11px] text-muted">最大持仓数<input type="number" min="1" max="50" value={maxPositions} onChange={e => setMaxPositions(e.target.value)} className="mt-1 w-full rounded-btn border border-border bg-base px-2.5 py-2 font-mono text-sm" /></label>
+            <label className="text-[11px] text-muted">本策略最大总仓位 (%)<input type="number" min="1" max="100" value={maxTotalPosition} onChange={e => setMaxTotalPosition(e.target.value)} className="mt-1 w-full rounded-btn border border-border bg-base px-2.5 py-2 font-mono text-sm" /></label>
+            <div>
+              <label className="text-[11px] text-muted">冷却天数（同标的）</label>
           <input type="number" value={cooldown} onChange={e => setCooldown(e.target.value)}
-            className="mt-1 w-full rounded-btn border border-border bg-base px-3 py-1.5 font-mono text-sm outline-none focus:border-accent/50" />
-        </div>
+                className="mt-1 w-full rounded-btn border border-border bg-base px-2.5 py-2 font-mono text-sm outline-none focus:border-accent/50" />
+            </div>
+          </div>
+        </section>
+        <section className="border-t border-border/70 pt-4">
+          <div className="mb-2 flex items-center gap-2 text-[11px] font-semibold text-secondary"><span className="h-4 w-0.5 rounded-full bg-accent" />自动化方式</div>
+          <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+            <label className="flex cursor-pointer items-center justify-between gap-3 rounded-btn border border-border bg-base px-3 py-2.5 text-xs text-secondary transition-colors has-[:checked]:border-accent/40 has-[:checked]:bg-accent/[0.04]">
+              <span><span className="block font-medium text-foreground">自动跟单</span><span className="mt-0.5 block text-[10px] text-muted">关闭后只生成待确认操作</span></span>
+              <input type="checkbox" checked={autoFollow} onChange={e => setAutoFollow(e.target.checked)} className="h-4 w-4 accent-[hsl(var(--accent))]" />
+            </label>
+            {matchKind === 'strategy' && <label className="flex cursor-pointer items-center justify-between gap-3 rounded-btn border border-border bg-base px-3 py-2.5 text-xs text-secondary transition-colors has-[:checked]:border-accent/40 has-[:checked]:bg-accent/[0.04]">
+              <span><span className="block font-medium text-foreground">策略退出自动卖出</span><span className="mt-0.5 block text-[10px] text-muted">关闭后等待确认再卖出</span></span>
+              <input type="checkbox" checked={autoExit} onChange={e => setAutoExit(e.target.checked)} className="h-4 w-4 accent-[hsl(var(--accent))]" />
+            </label>}
+          </div>
+        </section>
       </div>
-      <div className="mt-3 flex gap-2">
+      <div className="flex flex-col-reverse gap-2 border-t border-border bg-elevated/15 px-4 py-3 sm:flex-row sm:justify-end">
         <button onClick={() => valid && m.mutate()} disabled={!valid || m.isPending}
-          className="flex-1 rounded-btn bg-accent py-2 text-sm font-medium text-white transition-opacity disabled:opacity-40">
-          {m.isPending ? '创建中…' : '创建规则'}
+          className="rounded-btn bg-accent px-5 py-2 text-sm font-medium text-white transition-colors hover:bg-accent/90 disabled:opacity-40 sm:min-w-32">
+          {m.isPending ? '保存中…' : initial ? '保存修改' : '创建规则'}
         </button>
-        <button onClick={onCancel} className="rounded-btn border border-border px-4 py-2 text-sm text-secondary transition-colors hover:text-foreground">取消</button>
+        <button onClick={onCancel} className="rounded-btn border border-border px-5 py-2 text-sm text-secondary transition-colors hover:bg-elevated hover:text-foreground">取消</button>
       </div>
-      {msg && <div className="mt-2 rounded-btn bg-danger/10 px-2 py-1.5 text-[11px] text-danger">{msg}</div>}
+      {msg && <div className="mx-4 mb-3 rounded-btn bg-danger/10 px-2.5 py-2 text-[11px] text-danger">{msg}</div>}
+    </div>
+  )
+}
+
+function IntentsPanel({ acc, intents, onDone }: { acc: string; intents: PaperIntent[]; onDone: () => void }) {
+  const [qtys, setQtys] = useState<Record<string, string>>({})
+  const [types, setTypes] = useState<Record<string, 'market' | 'next_open' | 'close'>>({})
+  const confirmM = useMutation({
+    mutationFn: (intent: PaperIntent) => api.paperIntentConfirm(intent.id, {
+      qty: Number(qtys[intent.id] ?? intent.qty),
+      order_type: types[intent.id] ?? intent.order_type,
+      ref_price: intent.ref_price ?? undefined,
+    }, acc),
+    onSuccess: onDone,
+  })
+  const rejectM = useMutation({
+    mutationFn: (intent: PaperIntent) => api.paperIntentReject(intent.id, '用户拒绝', acc),
+    onSuccess: onDone,
+  })
+  const pending = intents.filter(intent => intent.status === 'pending')
+  return (
+    <div className="rounded-card border border-border bg-surface p-4">
+      <div className="flex items-center justify-between">
+        <div className="text-sm font-medium">待确认操作</div>
+        <span className="text-[10px] text-muted">{pending.length} 条</span>
+      </div>
+      {pending.length === 0 ? <div className="py-5 text-center text-xs text-muted">暂无待确认操作</div> : (
+        <div className="mt-2 space-y-2">
+          {pending.map(intent => {
+            const orderType = types[intent.id] ?? intent.order_type
+            const sourceLabel = intent.automation_source === 'strategy_exit' || intent.source.startsWith('exit:') ? '策略退出' : intent.automation_source === 'auto_follow' || intent.source.startsWith('auto:') ? '自动跟单' : '手动'
+            return <div key={intent.id} className="rounded-btn border border-warning/20 bg-warning/[0.04] p-2 text-xs">
+              <div className="flex items-center gap-2">
+                <span className={cn('font-medium', intent.side === 'buy' ? 'text-bull' : 'text-bear')}>{intent.side === 'buy' ? '买入' : '卖出'}</span>
+                <span className="font-mono">{intent.symbol}</span>
+                <span className="rounded-full bg-warning/10 px-1.5 py-px text-[10px] text-warning">{sourceLabel}</span>
+                <span className="min-w-0 flex-1 truncate text-muted">{intent.reason || intent.source}</span>
+              </div>
+              {(intent.strategy_id || intent.lot_id || intent.exit_reason) && <div className="mt-1 text-[10px] text-muted">{intent.strategy_id && `策略 ${intent.strategy_id}`}{intent.lot_id && ` · 批次 ${intent.lot_id}`}{intent.exit_reason && ` · 原因 ${EXIT_REASON_LABEL[intent.exit_reason] ?? intent.exit_reason}`}</div>}
+              {intent.last_validation_error && <div className="mt-1 rounded border border-danger/20 bg-danger/5 px-2 py-1 text-[10px] text-danger">重新校验失败：{intent.last_validation_error}</div>}
+              <div className="mt-2 flex items-center gap-2">
+                <input type="number" min="100" step="100" value={qtys[intent.id] ?? intent.qty} onChange={e => setQtys(v => ({ ...v, [intent.id]: e.target.value }))} className="w-24 rounded-btn border border-border bg-base px-2 py-1 font-mono text-xs" />
+                <select value={orderType} onChange={e => setTypes(v => ({ ...v, [intent.id]: e.target.value as typeof orderType }))} className="rounded-btn border border-border bg-base px-2 py-1 text-xs">
+                  {(Object.keys(ORDER_TYPE_LABEL) as Array<'market' | 'next_open' | 'close'>).map(type => <option key={type} value={type}>{ORDER_TYPE_LABEL[type]}</option>)}
+                </select>
+                <button onClick={() => confirmM.mutate(intent)} disabled={confirmM.isPending} className="ml-auto rounded-btn bg-accent px-2 py-1 text-[11px] text-white disabled:opacity-40">确认</button>
+                <button onClick={() => rejectM.mutate(intent)} disabled={rejectM.isPending} className="rounded-btn border border-border px-2 py-1 text-[11px] text-muted hover:text-danger">拒绝</button>
+              </div>
+            </div>
+          })}
+        </div>
+      )}
     </div>
   )
 }
@@ -1055,6 +1175,7 @@ function AutoRuleForm({ acc, onDone, onCancel }: { acc: string; onDone: () => vo
 export function Paper() {
   const qc = useQueryClient()
   const [tab, setTab] = useState<'orders' | 'trades'>('orders')
+  const [positionView, setPositionView] = useState<'aggregate' | 'split'>('aggregate')
   const [accId, setAccIdState] = useState(() => localStorage.getItem(ACC_STORAGE_KEY) || 'default')
   // 新建账户草稿 id: 非空 = 正在创建。点「+」只进入草稿态, 不动 accId / localStorage,
   // 取消即丢弃; 旧实现直接把生成的 id 写进 accId, 刷新后卡在无主向导上无法退出。
@@ -1072,6 +1193,7 @@ export function Paper() {
   const tradesQ = useQuery({ queryKey: QK.paperTrades(accId), queryFn: () => api.paperTrades(accId) })
   const navQ = useQuery({ queryKey: QK.paperNav(accId), queryFn: () => api.paperNav(accId) })
   const statsQ = useQuery({ queryKey: QK.paperStats(accId), queryFn: () => api.paperStats(accId) })
+  const intentsQ = useQuery({ queryKey: QK.paperIntents(accId), queryFn: () => api.paperIntents(accId) })
 
   // 'paper' 前缀兜底失效: 覆盖全部账户的全部查询 (订单变动可能影响净值/统计)
   const invalidateAll = () => qc.invalidateQueries({ queryKey: QK.paperAll })
@@ -1082,6 +1204,10 @@ export function Paper() {
   })
   const queueM = useMutation({
     mutationFn: (on: boolean) => api.paperSettings({ queue_limit_orders: on }, accId),
+    onSuccess: invalidateAll,
+  })
+  const continueM = useMutation({
+    mutationFn: (lotId: string) => api.paperContinueHolding(lotId, accId),
     onSuccess: invalidateAll,
   })
 
@@ -1156,13 +1282,13 @@ export function Paper() {
       const s = v == null ? '' : String(v)
       return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
     }
-    const lines = ['日期,代码,方向,数量,成交价,费用,类型,订单号']
+    const lines = ['日期,代码,方向,数量,成交价,费用,类型,来源,订单号']
     for (const f of allFills) {
       lines.push([
         f.date, f.symbol,
         f.kind === 'corp_action' ? '除权' : f.side === 'buy' ? '买入' : '卖出',
         f.qty ?? '', f.price ?? '', f.fee ?? '',
-        f.kind ?? 'fill', f.order_id ?? '',
+        f.kind ?? 'fill', f.automation_source === 'strategy_exit' || f.source?.startsWith('exit:') ? '策略退出' : f.automation_source === 'auto_follow' || f.source?.startsWith('auto:') ? '自动跟单' : '手动', f.order_id ?? '',
       ].map(esc).join(','))
     }
     const blob = new Blob(['\ufeff' + lines.join('\n')], { type: 'text/csv;charset=utf-8' })
@@ -1259,14 +1385,23 @@ export function Paper() {
             </div>
 
             <div className="rounded-card border border-border bg-surface p-4">
-              <div className="text-sm font-medium">当前持仓</div>
+              <div className="flex items-center justify-between">
+                <div className="text-sm font-medium">当前持仓</div>
+                <div className="flex gap-1 rounded-btn border border-border p-0.5 text-[10px]">
+                  {(['aggregate', 'split'] as const).map(view => (
+                    <button key={view} onClick={() => setPositionView(view)} className={cn('rounded px-2 py-1', positionView === view ? 'bg-elevated text-foreground' : 'text-muted hover:text-secondary')}>
+                      {view === 'aggregate' ? '合仓' : '分仓'}
+                    </button>
+                  ))}
+                </div>
+              </div>
               {holdings.length === 0 ? (
                 <div className="py-8 text-center text-xs text-muted">暂无持仓 — 右侧下单或等自动跟单触发</div>
               ) : (
                 <table className="mt-2 w-full text-xs">
                   <thead className="sticky top-0 bg-surface">
                     <tr className="text-left text-[10px] text-muted">
-                      <th className="py-1.5 font-normal">代码</th>
+                      <th className="py-1.5 font-normal">代码 / 策略批次</th>
                       <th className="py-1.5 text-right font-normal">数量</th>
                       <th className="py-1.5 text-right font-normal">可卖(T+1)</th>
                       <th className="py-1.5 text-right font-normal">成本</th>
@@ -1276,19 +1411,17 @@ export function Paper() {
                     </tr>
                   </thead>
                   <tbody className="font-mono">
-                    {holdings.map(h => (
-                      <tr key={h.symbol} className="border-t border-border/50 transition-colors hover:bg-elevated/40">
-                        <td className="py-1.5 font-sans">{h.symbol}</td>
-                        <td className="py-1.5 text-right">{h.qty}</td>
-                        <td className="py-1.5 text-right text-muted">{h.available_qty}</td>
-                        <td className="py-1.5 text-right">{fmtMoney(h.avg_cost, 3)}</td>
-                        <td className="py-1.5 text-right">{fmtMoney(h.last_price, 3)}</td>
-                        <td className="py-1.5 text-right">{fmtMoney(h.market_value, 0)}</td>
-                        <td className={cn('py-1.5 text-right', priceColorClass(h.pnl))}>
-                          {(h.pnl >= 0 ? '+' : '') + fmtMoney(h.pnl, 0)} ({fmtPct(h.pnl_pct / 100)})
-                        </td>
-                      </tr>
-                    ))}
+                    {holdings.flatMap(h => positionView === 'aggregate'
+                      ? [<tr key={h.symbol} className="border-t border-border/50 transition-colors hover:bg-elevated/40">
+                          <td className="py-1.5 font-sans"><div>{h.symbol}</div>{h.groups?.map(group => <div key={`${h.symbol}-${group.owner_type}-${group.strategy_id ?? 'manual'}`} className="mt-0.5 text-[10px] text-muted">{group.strategy_name || group.strategy_id || '手动'} · {group.qty}股 · 成本 {fmtMoney(group.avg_cost, 3)}</div>)}</td>
+                          <td className="py-1.5 text-right">{h.qty}</td><td className="py-1.5 text-right text-muted">{h.available_qty}</td><td className="py-1.5 text-right">{fmtMoney(h.avg_cost, 3)}</td><td className="py-1.5 text-right">{fmtMoney(h.last_price, 3)}</td><td className="py-1.5 text-right">{fmtMoney(h.market_value, 0)}</td>
+                          <td className={cn('py-1.5 text-right', priceColorClass(h.pnl))}>{(h.pnl >= 0 ? '+' : '') + fmtMoney(h.pnl, 0)} ({fmtPct(h.pnl_pct / 100)})</td>
+                        </tr>]
+                      : (h.groups ?? []).map(group => <tr key={`${h.symbol}-${group.owner_type}-${group.strategy_id ?? 'manual'}`} className="border-t border-border/50 transition-colors hover:bg-elevated/40">
+                          <td className="py-1.5 font-sans"><div>{h.symbol} · {group.strategy_name || group.strategy_id || '手动'}</div>{group.lots?.map(lot => <div key={lot.lot_id} className="mt-0.5 flex items-center gap-1 text-[10px] text-muted"><span>{lot.date || '—'} · {lot.qty}股 · {lot.holding_days ?? 0}天{lot.pending_fingerprint ? ` · 待卖 ${lot.pending_fingerprint.split(':')[0]}` : ''}{lot.has_exit_rules ? ' · 有退出规则' : ''}</span>{lot.pending_fingerprint && lot.lot_id && <button onClick={() => continueM.mutate(lot.lot_id!)} className="rounded border border-border px-1 text-[9px] text-secondary hover:text-foreground">继续持有</button>}</div>)}</td>
+                          <td className="py-1.5 text-right">{group.qty}</td><td className="py-1.5 text-right text-muted">{group.available_qty}</td><td className="py-1.5 text-right">{fmtMoney(group.avg_cost, 3)}</td><td className="py-1.5 text-right">{fmtMoney(h.last_price, 3)}</td><td className="py-1.5 text-right">{fmtMoney(group.market_value, 0)}</td>
+                          <td className={cn('py-1.5 text-right', priceColorClass(group.pnl ?? 0))}>{(group.pnl ?? 0) >= 0 ? '+' : ''}{fmtMoney(group.pnl, 0)} ({fmtPct((group.pnl_pct ?? 0) / 100)})</td>
+                        </tr>))}
                   </tbody>
                 </table>
               )}
@@ -1337,6 +1470,9 @@ export function Paper() {
                       <span className="w-24 shrink-0 font-mono">{o.symbol}</span>
                       <span className="w-16 shrink-0 font-mono text-right">{o.qty}</span>
                       <span className="w-16 shrink-0 text-muted">{ORDER_TYPE_LABEL[o.order_type]}</span>
+                      <span className="w-16 shrink-0 rounded-full bg-elevated px-1.5 py-px text-center text-[10px] text-muted">
+                        {o.automation_source === 'strategy_exit' || o.source?.startsWith('exit:') ? '策略退出' : o.automation_source === 'auto_follow' || o.source?.startsWith('auto:') ? '自动跟单' : '手动'}
+                      </span>
                       <span className={cn(
                         'w-16 shrink-0 rounded-full px-1.5 py-px text-center text-[10px] leading-4',
                         o.status === 'filled' ? 'bg-bear/10 text-bear'
@@ -1379,6 +1515,9 @@ export function Paper() {
                           <span className="w-16 shrink-0 text-right">{f.qty}</span>
                           <span className="w-20 shrink-0 text-right">@ {fmtMoney(f.price, 3)}</span>
                           <span className="w-16 shrink-0 text-right text-muted">费 {fmtMoney(f.fee)}</span>
+                          <span className="w-16 shrink-0 rounded-full bg-elevated px-1.5 py-px text-center font-sans text-[10px] text-muted">
+                            {f.automation_source === 'strategy_exit' || f.source?.startsWith('exit:') ? '策略退出' : f.automation_source === 'auto_follow' || f.source?.startsWith('auto:') ? '自动跟单' : '手动'}
+                          </span>
                         </>
                       )}
                     </div>
@@ -1391,6 +1530,7 @@ export function Paper() {
           {/* 右列: 下单 + 自动跟单 + 策略对比 */}
           <div className="space-y-4">
             <OrderForm acc={accId} onDone={invalidateAll} />
+            <IntentsPanel acc={accId} intents={intentsQ.data?.intents ?? []} onDone={invalidateAll} />
             <AutoRulesPanel acc={accId} />
             <CandidateCompareCard paper={{
               total_return_pct: nav.length >= 2 && nav[0].nav > 0 ? (nav[nav.length - 1].nav / nav[0].nav - 1) * 100 : null,

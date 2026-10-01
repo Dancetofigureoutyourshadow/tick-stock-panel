@@ -89,11 +89,48 @@ def _abs_pct(value) -> float | None:
     return value
 
 
-def _order_type(account: dict) -> str:
-    return "market" if account.get("exit_fill", paper.DEFAULT_EXIT_FILL) == "close_t" else "next_open"
+def _rule_for_lot(data_dir: Path, lot: dict, account_id: str) -> dict | None:
+    strategy_id = lot.get("strategy_id")
+    if not strategy_id:
+        return None
+    from app.strategy import paper_auto
+    rules = [
+        rule for rule in paper_auto.load_auto_rules(data_dir, account_id)
+        if rule.get("match_kind") == "strategy" and rule.get("match_id") == strategy_id
+    ]
+    return next((rule for rule in rules if rule.get("enabled", True)), None)
+
+
+def _pending_action(data_dir: Path, lot_id: str, account_id: str) -> tuple[str, dict] | None:
+    for order in paper.load_orders(data_dir, account_id):
+        if order.get("status") == "pending" and order.get("side") == "sell" and str(order.get("target_lot_id") or "") == lot_id:
+            return "order", order
+    for intent in paper_intents.load(data_dir, account_id):
+        if intent.get("status") == "pending" and intent.get("side") == "sell" and str(intent.get("lot_id") or "") == lot_id:
+            return "intent", intent
+    return None
 
 
 def evaluate(
+    data_dir: Path,
+    rows: list[dict],
+    *,
+    account_id: str = paper.DEFAULT_ACCOUNT_ID,
+    trade_date: str,
+    now_ms: int | None = None,
+) -> list[dict]:
+    """并发安全地评估持仓退出规则并创建最多一个动作。"""
+    with paper.PAPER_LOCK:
+        return _evaluate_unlocked(
+            data_dir,
+            rows,
+            account_id=account_id,
+            trade_date=trade_date,
+            now_ms=now_ms,
+        )
+
+
+def _evaluate_unlocked(
     data_dir: Path,
     rows: list[dict],
     *,
@@ -110,8 +147,9 @@ def evaluate(
     events: list[dict] = []
     event_ts = now_ms if now_ms is not None else int(datetime.now(UTC).timestamp() * 1000)
     changed = False
+    # positions.json 的 available_qty 是物化缓存，跨交易日可能过期；退出评估必须按本次交易日重算。
     remaining_available = {
-        symbol: int(position.get("available_qty", 0))
+        symbol: paper._available_of(position, trade_date)
         for symbol, position in positions.items()
     }
     for symbol, position in positions.items():
@@ -129,13 +167,16 @@ def evaluate(
                 continue
             lot_id = str(lot.get("lot_id") or f"{symbol}:{lot.get('date')}:{lot.get('price')}")
             snapshot = lot.get("strategy_snapshot") or {}
+            follow_rule = _rule_for_lot(data_dir, lot, account_id)
             buy_price = _positive(lot.get("price")) or _positive(lot.get("avg_cost")) or close
             item = state.setdefault(lot_id, {
                 "high_water_price": buy_price,
                 "holding_days": 0,
                 "last_evaluated_trade_date": None,
                 "pending_fingerprint": None,
+                "ignored_fingerprint": None,
                 "action_id": None,
+                "last_attempt_trade_date": None,
             })
             old_high = _positive(item.get("high_water_price")) or buy_price
             item["high_water_price"] = max(old_high, high)
@@ -180,11 +221,27 @@ def evaluate(
             if fingerprint is None:
                 item["pending_fingerprint"] = None
                 item["action_id"] = None
+                item["ignored_fingerprint"] = None
+                item["last_attempt_trade_date"] = None
+                continue
+            if fingerprint == item.get("ignored_fingerprint"):
                 continue
             if fingerprint == item.get("pending_fingerprint") and item.get("action_id"):
                 continue
+            if (
+                fingerprint == item.get("pending_fingerprint")
+                and item.get("last_attempt_trade_date") == trade_date
+            ):
+                continue
+            pending_action = _pending_action(data_dir, lot_id, account_id)
+            if pending_action is not None:
+                item["pending_fingerprint"] = fingerprint
+                item["action_id"] = pending_action[1]["id"]
+                changed = True
+                continue
             item["pending_fingerprint"] = fingerprint
             item["action_id"] = None
+            item["last_attempt_trade_date"] = trade_date
             available = min(qty, remaining_available.get(symbol, 0))
             available = paper.normalize_qty(available)
             if available <= 0:
@@ -192,12 +249,20 @@ def evaluate(
             remaining_available[symbol] = max(0, remaining_available.get(symbol, 0) - available)
             source = f"exit:{lot_id}"
             action = None
-            if account.get("auto_exit_enabled", paper.DEFAULT_AUTO_EXIT_ENABLED):
+            auto_exit_enabled = bool(follow_rule and follow_rule.get("auto_exit_enabled", paper.DEFAULT_AUTO_EXIT_ENABLED))
+            exit_fill = follow_rule.get("exit_fill", paper.DEFAULT_EXIT_FILL) if follow_rule else paper.DEFAULT_EXIT_FILL
+            order_type = "market" if exit_fill == "close_t" else "next_open"
+            if auto_exit_enabled:
                 order, error = paper.create_order(
                     data_dir, symbol, "sell", account_id=account_id, qty=available,
-                    order_type="market", ref_price=close, source=source,
+                    order_type=order_type, ref_price=close, source=source,
                     strategy_id=lot.get("strategy_id"), strategy_snapshot=snapshot,
-                    buy_score=lot.get("buy_score"), intent_id=None, target_lot_id=lot_id,
+                    buy_score=lot.get("buy_score"), exit_reason=reason, intent_id=None, target_lot_id=lot_id,
+                    auto_rule_id=follow_rule.get("id") if follow_rule else None,
+                    automation_source="strategy_exit",
+                    strategy_scope_id=lot.get("strategy_id"),
+                    max_positions=follow_rule.get("max_positions") if follow_rule else None,
+                    max_total_position=(float(follow_rule.get("max_total_position", 100)) / 100) if follow_rule else None,
                 )
                 if error:
                     action = {"error": error}
@@ -207,9 +272,14 @@ def evaluate(
             else:
                 intent = paper_intents.create(
                     data_dir, account_id=account_id, symbol=symbol, side="sell", qty=available,
-                    order_type="market", ref_price=close, source=source,
+                    order_type=order_type, ref_price=close, source=source,
                     reason=_REASON_LABELS.get(reason, reason), strategy_id=lot.get("strategy_id"),
-                    strategy_snapshot=snapshot, buy_score=lot.get("buy_score"), lot_id=lot_id,
+                    strategy_snapshot=snapshot, buy_score=lot.get("buy_score"), exit_reason=reason, lot_id=lot_id,
+                    auto_rule_id=follow_rule.get("id") if follow_rule else None,
+                    automation_source="strategy_exit",
+                    strategy_scope_id=lot.get("strategy_id"),
+                    max_positions=follow_rule.get("max_positions") if follow_rule else None,
+                    max_total_position=(float(follow_rule.get("max_total_position", 100)) / 100) if follow_rule else None,
                 )
                 action = intent
                 item["action_id"] = intent["id"]
@@ -225,7 +295,7 @@ def evaluate(
                 "exit_reason": reason,
                 "symbol": symbol,
                 "name": symbol,
-                "message": f"模拟盘持仓触发{_REASON_LABELS.get(reason, reason)}，" + ("已自动下卖单" if account.get("auto_exit_enabled") else "等待确认卖出"),
+                "message": f"模拟盘持仓触发{_REASON_LABELS.get(reason, reason)}，" + ("已自动下卖单" if auto_exit_enabled else "等待确认卖出"),
                 "price": close,
                 "change_pct": row.get("change_pct"),
                 "signals": hit_signals,
@@ -240,11 +310,22 @@ def evaluate(
 
 
 def continue_holding(data_dir: Path, lot_id: str, account_id: str = paper.DEFAULT_ACCOUNT_ID) -> dict | None:
-    state = _load_state(data_dir, account_id)
-    item = state.get(lot_id)
-    if item is None:
-        return None
-    item["pending_fingerprint"] = None
-    item["action_id"] = None
-    _save_state(data_dir, account_id, state)
-    return item
+    with paper.PAPER_LOCK:
+        state = _load_state(data_dir, account_id)
+        item = state.get(lot_id)
+        if item is None:
+            return None
+        for order in paper.load_orders(data_dir, account_id):
+            if order.get("status") == "pending" and order.get("side") == "sell" and str(order.get("target_lot_id") or "") == str(lot_id):
+                order["status"] = "cancelled"
+                order["reason"] = "继续持有"
+                paper.save_order(data_dir, order, account_id)
+        for intent in paper_intents.load(data_dir, account_id):
+            if intent.get("status") == "pending" and intent.get("side") == "sell" and str(intent.get("lot_id") or "") == str(lot_id):
+                paper_intents.resolve(data_dir, intent, "rejected", "继续持有", account_id)
+        item["ignored_fingerprint"] = item.get("pending_fingerprint")
+        item["pending_fingerprint"] = None
+        item["action_id"] = None
+        item["last_attempt_trade_date"] = None
+        _save_state(data_dir, account_id, state)
+        return item

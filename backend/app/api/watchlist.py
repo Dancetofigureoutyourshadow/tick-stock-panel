@@ -1,9 +1,10 @@
 """自选股 API。"""
 from __future__ import annotations
 
-from collections.abc import Callable
 import logging
 import time
+from collections.abc import Callable
+from datetime import UTC, date, datetime
 
 import anyio
 import polars as pl
@@ -11,6 +12,7 @@ from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel
 
 from app.db_safe import is_valid_ext_ident, quote_ident
+from app.market_time import CN_TZ
 from app.price_limits import (
     polars_is_risk_warning_name,
     polars_limit_price,
@@ -348,11 +350,17 @@ def remove_one(
     confirm_open_position: bool = Query(default=False),
 ):
     normalized_symbol = symbol.strip().upper()
-    account = getattr(request.app.state, "portfolio_account", None)
+    from app.strategy import paper
+    data_dir = request.app.state.repo.store.data_dir
+    paper_symbols = {
+        symbol
+        for account_id in paper.list_account_ids(data_dir)
+        for symbol, position in paper.load_positions(data_dir, account_id).items()
+        if position.get("qty", 0) > 0
+    }
     if (
         not confirm_open_position
-        and account is not None
-        and normalized_symbol in account.open_symbols()
+        and normalized_symbol in paper_symbols
     ):
         raise HTTPException(409, "该股票仍有未平仓批次, 请二次确认后再移出自选")
     rows = watchlist.remove(normalized_symbol)
@@ -362,10 +370,17 @@ def remove_one(
 @router.delete("")
 def clear_all(request: Request, confirm_open_positions: bool = Query(default=False)):
     """清空自选列表。"""
-    account = getattr(request.app.state, "portfolio_account", None)
-    if not confirm_open_positions and account is not None:
+    from app.strategy import paper
+    data_dir = request.app.state.repo.store.data_dir
+    if not confirm_open_positions:
+        paper_symbols = {
+            symbol
+            for account_id in paper.list_account_ids(data_dir)
+            for symbol, position in paper.load_positions(data_dir, account_id).items()
+            if position.get("qty", 0) > 0
+        }
         watchlist_symbols = {row["symbol"] for row in watchlist.list_symbols()}
-        if watchlist_symbols.intersection(account.open_symbols()):
+        if watchlist_symbols.intersection(paper_symbols):
             raise HTTPException(409, "自选中仍有未平仓批次, 请二次确认后再清空")
     count = watchlist.clear()
     return {"removed": count}
@@ -427,6 +442,58 @@ _WATCHLIST_COLS = [
 ]
 
 
+def _added_dates_bj(entries: list[dict]) -> dict[str, date]:
+    """Normalize the stored UTC timestamp to its Beijing calendar date."""
+    out: dict[str, date] = {}
+    for entry in entries:
+        raw = entry.get("added_at")
+        if not raw:
+            continue
+        try:
+            dt = datetime.fromisoformat(str(raw))
+        except (ValueError, TypeError):
+            continue
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
+        out[entry["symbol"]] = dt.astimezone(CN_TZ).date()
+    return out
+
+
+def _added_base_closes(
+    repo,
+    added_dates: dict[str, date],
+    stock_symbols: set[str],
+) -> pl.DataFrame:
+    """Return each stock's latest close on or before its watchlist add date."""
+    stock_targets = {s: d for s, d in added_dates.items() if s in stock_symbols}
+    if not stock_targets:
+        return pl.DataFrame()
+    span = repo.get_enriched_history_span()
+    if span is None:
+        return pl.DataFrame()
+    span_start, span_end = span
+    in_range = {s: d for s, d in stock_targets.items() if d >= span_start}
+    if not in_range:
+        return pl.DataFrame()
+    end = min(max(in_range.values()), span_end)
+    start = min(min(in_range.values()), end)
+    hist = repo.get_enriched_range(
+        start, end, symbols=list(in_range), columns=["symbol", "date", "close"]
+    )
+    if hist is None or hist.is_empty():
+        return pl.DataFrame()
+    added = pl.DataFrame(
+        {"symbol": list(in_range), "added_date": list(in_range.values())},
+        schema={"symbol": pl.Utf8, "added_date": pl.Date},
+    )
+    return (
+        hist.join(added, on="symbol", how="inner")
+        .filter(pl.col("date") <= pl.col("added_date"))
+        .group_by("symbol")
+        .agg(pl.col("close").sort_by(pl.col("date")).last().alias("base_close"))
+    )
+
+
 @router.get("/enriched")
 def watchlist_enriched(
     request: Request,
@@ -440,7 +507,8 @@ def watchlist_enriched(
     t0 = time.perf_counter()
 
     repo = request.app.state.repo
-    symbols = [r["symbol"] for r in watchlist.list_symbols()]
+    entries = watchlist.list_symbols()
+    symbols = [r["symbol"] for r in entries]
     if not symbols:
         return {"rows": [], "as_of": None, "elapsed_ms": 0}
 
@@ -539,6 +607,41 @@ def watchlist_enriched(
             .then(polars_limit_price(pl.col("prev_close"), pct, up=False))
             .otherwise(None)
             .alias("limit_down_price"),
+        )
+
+    try:
+        added_at_df = pl.DataFrame(
+            {
+                "symbol": symbols,
+                "added_at": [(r.get("added_at") or None) for r in entries],
+            },
+            schema={"symbol": pl.Utf8, "added_at": pl.Utf8},
+        )
+        with_base = df.join(added_at_df, on="symbol", how="left")
+        base_df = _added_base_closes(repo, _added_dates_bj(entries), set(stock_symbols))
+        if base_df.is_empty():
+            df = with_base.with_columns(pl.lit(None, dtype=pl.Float64).alias("pct_since_added"))
+        else:
+            df = (
+                with_base.join(base_df, on="symbol", how="left")
+                .with_columns(
+                    pl.when(
+                        pl.col("base_close").is_not_null()
+                        & pl.col("base_close").is_finite()
+                        & (pl.col("base_close") > 0)
+                        & pl.col("close").is_not_null()
+                    )
+                    .then(pl.col("close") / pl.col("base_close") - 1.0)
+                    .otherwise(None)
+                    .alias("pct_since_added")
+                )
+                .drop("base_close")
+            )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("watchlist added-date performance calculation skipped: %s", e)
+        df = df.with_columns(
+            pl.lit(None, dtype=pl.Utf8).alias("added_at"),
+            pl.lit(None, dtype=pl.Float64).alias("pct_since_added"),
         )
 
     # 动态 JOIN 扩展数据表

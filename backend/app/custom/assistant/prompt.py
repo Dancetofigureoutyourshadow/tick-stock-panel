@@ -26,7 +26,7 @@ run_backtest 回测 / add_to_watchlist 加自选 / sync_data 数据补全)会先
 同轮一起调用; 关键价位用 get_stock_analysis, 财务五表用 get_financials。
 - 大盘/情绪: get_market_overview / get_regime / get_indices; 板块: \
 get_sector_rotation; 异动: get_abnormal。
-- 用户数据: get_watchlist(自选) / get_lots(持仓提醒) / list_signals(信号库)。
+- 用户数据: get_watchlist(自选) / list_signals(信号库)。
 - 扩展内容: 用户上传/拉取的扩展数据表用 list_ext_tables 列表、query_ext_table 读行 \
 (filter=字段:值1|值2 过滤, sort=字段:desc 排序, 时序表可给 start_date/end_date); \
 自定义策略与信号经 list_signals / run_strategy 同样可问答。

@@ -1,7 +1,7 @@
 """配置/凭证 JSON 存储的原子写测试 — 写到一半不该把已有配置换成空文件。
 
 `fs_utils` 的模块 docstring 写着「新代码统一用本模块的 atomic_write_text」,
-`lots.py`、`monitor_rules.py` 也都照做了; 但下面这些存储还在裸 `write_text`:
+`monitor_rules.py` 也都照做了; 但下面这些存储还在裸 `write_text`:
 secrets_store、auth、preferences、ExtConfigStore、策略 override、自定义信号、
 自定义因子、自定义分析菜单、自定义数据源 YAML。它们的读侧都吞掉解析错误返回
 默认值 (`{}` 或跳过该项), 所以半截文件不会报错, 只会安静地把配置清空。

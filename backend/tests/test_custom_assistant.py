@@ -382,7 +382,7 @@ def test_local_tool_schemas_cover_page_capabilities() -> None:
         "list_factors", "list_strategies", "list_data_capabilities", "run_backtest",
         "get_stock_quote", "get_stock_daily", "get_stock_analysis", "get_financials",
         "get_watchlist", "get_market_overview", "get_indices", "get_sector_rotation",
-        "get_regime", "get_abnormal", "get_lots", "list_signals", "run_strategy",
+        "get_regime", "get_abnormal", "list_signals", "run_strategy",
         "get_factor_values",
     }
     assert expected <= names

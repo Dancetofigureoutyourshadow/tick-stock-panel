@@ -27,10 +27,6 @@ export const QK = {
   watchlistQuotes:      ['watchlist-quotes'] as const,
   watchlistEnriched:    (ext?: string) => ['watchlist-enriched', ext] as const,
   watchlistPerformance: ['watchlist-performance'] as const,
-  portfolioSettings:     ['portfolio-settings'] as const,
-  portfolioSummary:      ['portfolio-summary'] as const,
-  portfolioPositions:    ['portfolio-positions'] as const,
-  portfolioTransactions: ['portfolio-transactions'] as const,
   // 异动边缘总览 (开启监控时才查询, 参数为 min_closeness/limit)
   abnormalOverview:     (minCloseness: number, limit: number) => ['abnormal-overview', minCloseness, limit] as const,
   // 盘中异动信号聚合 (异动监控「盘中」tab)
@@ -112,8 +108,6 @@ export const QK = {
   // Monitor (监控规则 + 触发记录)
   monitorRules:         ['monitor-rules'] as const,
   monitorRuleOptions:   ['monitor-rule-options'] as const,
-  lots:                 ['lots'] as const,
-  lotsKline:            (symbols: string) => ['lots-kline', symbols] as const,
 
   // 模拟盘 (多账户: 键按账户隔离; paperAll 作账户无关失效前缀)
   paperAll:             ['paper'] as const,
@@ -122,6 +116,8 @@ export const QK = {
   paperOverview:        (acc: string) => ['paper', 'overview', acc] as const,
   paperOrders:          (acc: string) => ['paper', 'orders', acc] as const,
   paperTrades:          (acc: string) => ['paper', 'trades', acc] as const,
+  paperIntents:         (acc: string) => ['paper', 'intents', acc] as const,
+  paperTransactions:    (acc: string) => ['paper', 'transactions', acc] as const,
   paperNav:             (acc: string) => ['paper', 'nav', acc] as const,
   paperStats:           (acc: string) => ['paper', 'stats', acc] as const,
   paperCompare:         ['paper', 'compare'] as const,
@@ -160,13 +156,12 @@ export const QK = {
 // 且在 monitor "重算" 窗口内读到空结果, 造成策略列表闪烁 (变 0 → 空失效 → 又出现)。
 
 export const SSE_INVALIDATE_PREFIXES = [
-  // 精确前缀: 只命中自选/持仓页的实时数据 (quotes/enriched/portfolio)。不能用宽泛的 'watchlist' ——
+  // 精确前缀: 只命中自选/模拟盘页的实时数据 (quotes/enriched/paper)。不能用宽泛的 'watchlist' ——
   // 会误伤 ['watchlist'] (自选列表) 和 ['watchlist-groups'] (分组配置, 只随手动操作变化)。
   // 旧设置里的 'watchlist' 单开关由 useQuoteStream 兼容读取。
   'watchlist-quotes',
   'watchlist-enriched',
-  'portfolio-positions',
-  'portfolio-summary',
+  'paper',
   'quote-status',
   'screener-current-prices',
   'index-quotes',

@@ -3,17 +3,22 @@
 多账户: 所有端点接受 ?account=<id> (缺省 "default"); 帐户 ID 校验在域模块。
 
 路由挂载在 app/main.py; 域模块自带进程内写锁, API 层不再加第二把锁
-(镜像 lots API 的跨请求互斥语义, 但锁下沉到域)。
+(锁下沉到 Paper 域模块)。
 """
 from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from app.strategy import paper
+from app.strategy import paper_exit
+from app.strategy import paper_intents
+from app.strategy import config as strategy_config
+from app.services import preferences
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +62,44 @@ class SettingsModel(BaseModel):
     slippage_bps: float | None = None     # 滑点 (5 = 5bps)
 
 
+class CashModel(BaseModel):
+    type: str
+    amount: float
+    note: str = ""
+
+
+class CashReverseModel(BaseModel):
+    note: str = ""
+
+
+class IntentConfirmModel(BaseModel):
+    qty: int | None = None
+    order_type: str | None = None
+    ref_price: float | None = None
+
+
+class IntentRejectModel(BaseModel):
+    reason: str = "用户拒绝"
+
+
+class StrategyBuyItem(BaseModel):
+    symbol: str
+    strategy_id: str | None = None
+    score: float | str | None = None
+    price: float | None = None
+
+
+class StrategyBuyPreviewModel(BaseModel):
+    items: list[StrategyBuyItem]
+
+
+class StrategyBuyModel(BaseModel):
+    symbol: str
+    price: float | None = None
+    quantity: int
+    name: str = ""
+
+
 def _resolve_asset_type(request: Request, symbol: str) -> str:
     repo = getattr(request.app.state, "repo", None)
     try:
@@ -87,6 +130,34 @@ def _last_close(data_dir: Path, symbol: str, asset_type: str) -> float | None:
     if df.is_empty() or df["close"][0] is None:
         return None
     return float(df["close"][0])
+
+
+def _strategy_snapshot(request: Request, strategy_id: str, buy_score: float | str | None) -> dict[str, Any]:
+    try:
+        strategy = request.app.state.strategy_engine.get(strategy_id)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="来源策略不存在或当前不可用") from exc
+    overrides = strategy_config.load_override(request.app.state.repo.store.data_dir, strategy_id)
+
+    def effective(key: str, default: Any) -> Any:
+        return overrides.get(key, default)
+
+    return {
+        "strategy_id": strategy_id,
+        "strategy_name": effective("name", strategy.meta.get("name") or strategy_id),
+        "strategy_version": str(strategy.meta.get("version") or ""),
+        "buy_score": None if buy_score is None else str(buy_score),
+        "params": {item["id"]: item.get("default") for item in strategy.meta.get("params", []) if isinstance(item, dict) and item.get("id")},
+        "entry_signals": list(effective("entry_signals", strategy.entry_signals) or []),
+        "exit_signals": list(effective("exit_signals", strategy.exit_signals) or []),
+        "stop_loss": effective("stop_loss", strategy.stop_loss),
+        "take_profit": effective("take_profit", getattr(strategy, "take_profit", None)),
+        "trailing_stop": effective("trailing_stop", getattr(strategy, "trailing_stop", None)),
+        "trailing_take_profit_activate": effective("trailing_take_profit_activate", getattr(strategy, "trailing_take_profit_activate", None)),
+        "trailing_take_profit_drawdown": effective("trailing_take_profit_drawdown", getattr(strategy, "trailing_take_profit_drawdown", None)),
+        "max_hold_days": effective("max_hold_days", strategy.max_hold_days),
+        "webhook_channels": list(preferences.get_webhook_default_channels()),
+    }
 
 
 @router.get("/accounts")
@@ -131,7 +202,7 @@ def overview(request: Request, account: str = Query(paper.DEFAULT_ACCOUNT_ID)):
     acc = paper.get_account(data_dir, acc_id)
     if acc is None:
         return {"initialized": False, "account_id": acc_id}
-    ov = paper.overview(data_dir, account_id=acc_id)
+    ov = paper_exit.enrich_overview(data_dir, paper.overview(data_dir, account_id=acc_id), acc_id)
     ov["fees"] = {k: acc[k] for k in ("commission_pct", "stamp_tax_pct", "slippage_bps")}
 
     # 盘中实时估算: 从行情服务的当日 enriched 快照取 raw_close (软失败, 降级日线)
@@ -142,12 +213,54 @@ def overview(request: Request, account: str = Query(paper.DEFAULT_ACCOUNT_ID)):
             from app.market_time import cn_today
             if not enriched.is_empty() and enriched_date == cn_today() and ov.get("holdings"):
                 snapshot = dict(zip(enriched["symbol"].to_list(), enriched["raw_close"].to_list(), strict=False))
-                live = paper.overview(data_dir, snapshot, account_id=acc_id)
+                live = paper_exit.enrich_overview(data_dir, paper.overview(data_dir, snapshot, account_id=acc_id), acc_id)
                 live["fees"] = ov["fees"]
                 return live
         except Exception as e:
             logger.warning("paper overview 实时估算失败, 降级日线口径: %s", e)
     return ov
+
+
+@router.post("/buys/preview")
+def preview_strategy_buys(request: Request, body: StrategyBuyPreviewModel, account: str = Query(paper.DEFAULT_ACCOUNT_ID)):
+    data_dir = _data_dir(request)
+    acc_id = _acc(request, account)
+    candidates = []
+    prices: dict[str, float] = {}
+    for item in body.items:
+        symbol = item.symbol.strip().upper()
+        asset_type = _resolve_asset_type(request, symbol)
+        price = item.price if item.price is not None else _last_close(data_dir, symbol, asset_type)
+        snapshot = _strategy_snapshot(request, item.strategy_id, item.score) if item.strategy_id else {}
+        if price is not None:
+            prices[symbol] = price
+        candidates.append({
+            "symbol": symbol,
+            "strategy_id": item.strategy_id,
+            "score": item.score,
+            "price": price,
+            "strategy_snapshot": snapshot,
+        })
+    return paper.preview_buys(data_dir, candidates, prices, acc_id)
+
+
+@router.post("/buys")
+def strategy_buy(request: Request, body: StrategyBuyModel, account: str = Query(paper.DEFAULT_ACCOUNT_ID)):
+    data_dir = _data_dir(request)
+    acc_id = _acc(request, account)
+    symbol = body.symbol.strip().upper()
+    asset_type = _resolve_asset_type(request, symbol)
+    price = body.price if body.price is not None else _last_close(data_dir, symbol, asset_type)
+    if price is None:
+        raise HTTPException(status_code=400, detail="实时价和最新收盘价均不可用")
+    order, err = paper.create_order(
+        data_dir, symbol, "buy", account_id=acc_id, qty=body.quantity,
+        order_type="market", asset_type=asset_type, ref_price=price,
+        source="manual",
+    )
+    if err:
+        raise HTTPException(status_code=400, detail=err)
+    return {"order": order}
 
 
 @router.post("/orders")
@@ -163,6 +276,7 @@ def create_order(request: Request, body: OrderModel, account: str = Query(paper.
         account_id=acc_id,
         qty=body.qty, amount=body.amount,
         order_type=body.order_type, asset_type=asset_type, ref_price=ref_price,
+        source="manual",
     )
     if err:
         raise HTTPException(status_code=400, detail=err)
@@ -193,10 +307,94 @@ def list_trades(request: Request, account: str = Query(paper.DEFAULT_ACCOUNT_ID)
     return {"fills": fills}
 
 
+@router.get("/intents")
+def list_intents(request: Request, account: str = Query(paper.DEFAULT_ACCOUNT_ID)):
+    return {"intents": paper_intents.load(_data_dir(request), _acc(request, account))}
+
+
+@router.post("/intents/{intent_id}/confirm")
+def confirm_intent(
+    request: Request,
+    intent_id: str,
+    body: IntentConfirmModel,
+    account: str = Query(paper.DEFAULT_ACCOUNT_ID),
+):
+    data_dir = _data_dir(request)
+    acc_id = _acc(request, account)
+    intent = paper_intents.get(data_dir, intent_id, acc_id)
+    if intent is None:
+        raise HTTPException(status_code=404, detail="待确认意图不存在")
+    qty = body.qty if body.qty is not None else int(intent["qty"])
+    order_type = body.order_type or intent["order_type"]
+    ref_price = body.ref_price if body.ref_price is not None else intent.get("ref_price")
+    asset_type = _resolve_asset_type(request, intent["symbol"])
+    intent, order, err = paper_intents.confirm(
+        data_dir, intent_id, acc_id, qty=qty, order_type=order_type,
+        ref_price=ref_price, asset_type=asset_type,
+    )
+    if intent is None:
+        raise HTTPException(status_code=404, detail=err or "待确认意图不存在")
+    if order is None:
+        raise HTTPException(status_code=400, detail=err or "意图确认失败")
+    return {"intent": intent, "order": order}
+
+
+@router.post("/intents/{intent_id}/reject")
+def reject_intent(
+    request: Request,
+    intent_id: str,
+    body: IntentRejectModel,
+    account: str = Query(paper.DEFAULT_ACCOUNT_ID),
+):
+    data_dir = _data_dir(request)
+    acc_id = _acc(request, account)
+    intent, err = paper_intents.reject(data_dir, intent_id, acc_id, body.reason)
+    if intent is None:
+        raise HTTPException(status_code=404, detail=err or "待确认意图不存在")
+    if err:
+        raise HTTPException(status_code=400, detail=err)
+    return {"intent": intent}
+
+
+@router.post("/cash")
+def record_cash(request: Request, body: CashModel, account: str = Query(paper.DEFAULT_ACCOUNT_ID)):
+    try:
+        flow = paper.record_cash(_data_dir(request), body.type, body.amount, note=body.note, account_id=_acc(request, account))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"cash_flow": flow}
+
+
+@router.post("/cash/{flow_id}/reverse")
+def reverse_cash(request: Request, flow_id: str, body: CashReverseModel, account: str = Query(paper.DEFAULT_ACCOUNT_ID)):
+    try:
+        flow = paper.reverse_cash(_data_dir(request), flow_id, note=body.note, account_id=_acc(request, account))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"cash_flow": flow}
+
+
+@router.get("/transactions")
+def transactions(request: Request, account: str = Query(paper.DEFAULT_ACCOUNT_ID)):
+    acc_id = _acc(request, account)
+    return {"fills": paper.load_fills(_data_dir(request), acc_id), "cash_flows": paper.load_cash_flows(_data_dir(request), acc_id)}
+
+
+@router.post("/positions/{lot_id}/continue-holding")
+def continue_holding(request: Request, lot_id: str, account: str = Query(paper.DEFAULT_ACCOUNT_ID)):
+    state = paper_exit.continue_holding(
+        _data_dir(request), lot_id, _acc(request, account),
+    )
+    if state is None:
+        raise HTTPException(status_code=404, detail="持仓退出状态不存在")
+    return {"state": state}
+
+
 @router.get("/positions")
 def list_positions(request: Request, account: str = Query(paper.DEFAULT_ACCOUNT_ID)):
     data_dir = _data_dir(request)
-    ov = paper.overview(data_dir, account_id=_acc(request, account))
+    acc_id = _acc(request, account)
+    ov = paper_exit.enrich_overview(data_dir, paper.overview(data_dir, account_id=acc_id), acc_id)
     return {"holdings": ov.get("holdings", []), "initialized": ov.get("initialized", False)}
 
 
@@ -284,10 +482,14 @@ class AutoRuleModel(BaseModel):
     name: str
     match_kind: str                 # strategy / rule
     match_id: str
-    side: str = "buy"
-    size_mode: str = "fixed_amount" # fixed_amount / pct_equity
-    size_value: float
-    order_type: str = "next_open"
+    side: str | None = None
+    entry_fill: str = paper.DEFAULT_ENTRY_FILL
+    exit_fill: str = paper.DEFAULT_EXIT_FILL
+    position_sizing: str = paper.DEFAULT_POSITION_SIZING
+    max_positions: int = paper.DEFAULT_MAX_POSITIONS
+    max_total_position: float = paper.DEFAULT_MAX_TOTAL_POSITION * 100
+    auto_follow_enabled: bool = paper.DEFAULT_AUTO_FOLLOW_ENABLED
+    auto_exit_enabled: bool = paper.DEFAULT_AUTO_EXIT_ENABLED
     cooldown_days: int = 5
     enabled: bool = True
 
@@ -305,6 +507,23 @@ def create_auto_rule(request: Request, body: AutoRuleModel, account: str = Query
         rule = paper_auto.create_auto_rule(_data_dir(request), body.model_dump(), _acc(request, account))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"rule": rule}
+
+
+@router.put("/auto_rules/{rule_id}")
+def update_auto_rule(request: Request, rule_id: str, body: AutoRuleModel, account: str = Query(paper.DEFAULT_ACCOUNT_ID)):
+    from app.strategy import paper_auto
+    data_dir = _data_dir(request)
+    acc_id = _acc(request, account)
+    existing = next((r for r in paper_auto.load_auto_rules(data_dir, acc_id) if r.get("id") == rule_id), None)
+    if existing is None:
+        raise HTTPException(status_code=404, detail=f"规则不存在: {rule_id}")
+    try:
+        rule = paper_auto.update_auto_rule(data_dir, rule_id, body.model_dump(), acc_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    if rule is None:
+        raise HTTPException(status_code=404, detail=f"规则不存在: {rule_id}")
     return {"rule": rule}
 
 

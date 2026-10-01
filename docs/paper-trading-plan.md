@@ -1,6 +1,6 @@
 # 虚拟账户（模拟盘）设计方案
 
-> 状态: 设计稿（未实现）。本文档描述目标形态与实现路径, 供评审与分期开发。
+> 状态: 已实现的 Paper 账户与自动化规则契约。本文档描述当前数据口径与边界。
 > 遵循 [CONTRIBUTING.md](../CONTRIBUTING.md) 的数据口径、插件化与测试矩阵要求。
 
 ## 1. 目标与非目标
@@ -14,13 +14,13 @@
 
 - 不接入券商、不做实盘下单、不提供任何资金通道。
 - 不做高频/tick 级撮合模拟（分钟/快照级足够）。
-- V1 不做多账户并行（数据结构预留, UI 只开放单账户）。
+- 多账户隔离、策略批次持仓、待确认意图和策略退出自动化均属于当前能力。
 
 ## 2. 核心概念与账务模型
 
 | 概念 | 说明 |
 |---|---|
-| Account 账户 | 初始虚拟资金 + 费用参数 + 状态(active/frozen/closed) |
+| Account 账户 | 初始虚拟资金 + 费用参数 + 状态(active/frozen) |
 | Order 订单 | 买/卖意向; 来源 manual / auto(规则触发); 含订单类型与时效 |
 | Fill 成交 | 订单的一次实际成交(价格、数量、费用); **append-only 台账** |
 | Position 持仓 | 由成交台账推导物化(avg_cost、可卖数量), 可随时重建 |
@@ -31,22 +31,24 @@
 
 ## 3. 数据模型与存储
 
-沿用 `app/strategy/lots.py` 的域模块模式: 每实体一个 JSON + `atomic_write_text` 原子写, 目录挂 `data_dir` 下, 跨请求写互斥(镜像 lots API 的 `_write_lock` 与「全部校验通过才落盘」)。
+Paper 使用独立域模块: 每实体一个 JSON/JSONL + `atomic_write_text` 原子写, 目录挂 `data_dir` 下, 所有写入共用 Paper 域锁。
 
 ```
-data/paper/
-  account.json                     # 单账户 V1: id, initial_cash, fees, status, created_at
+data/paper/accounts/{account_id}/
+  account.json                     # 账户资金、费用、冻结状态
   orders/order_{id}.json           # 含 status: pending / filled / cancelled / expired
+  intents/intent_{id}.json         # 待确认操作, 不占用现金/可卖数量
   fills.jsonl                      # append-only 成交台账(每行一笔, 带序号与时间戳)
-  positions.json                   # 物化持仓(可由 fills.jsonl 重建, rebuild 接口兜底)
-  nav/daily.jsonl                  # 每交易日一条定版净值 {date, cash, mv, nav, benchmark_nav}
-  auto_rules/rule_{id}.json        # 自动跟单规则
+  positions.json                   # 物化合单持仓与买入批次(可由 fills.jsonl 重建)
+  position_exit_state.json         # 每批次最高价、持有天数和退出动作状态
+  nav/daily.jsonl                  # 每交易日一条定版净值 {date, cash, mv, nav}
+  auto_rules/arule_{id}.json       # 自动跟单规则
 ```
 
 关键字段口径:
 
 - **价格一律不复权 raw 价**(与真实交易一致); 持仓市值用 `raw_close`。
-- **除权处理**: 日终结算时检测持仓 symbol 当日有除权因子(`adj_factor_etf`/`adj_factor`), 按因子调整数量与成本(送转 → 数量乘因子、成本除因子; 现金分红 → cash 入账), 并记一条 `corporate_action` 冲正成交, 保证净值曲线连续。
+- **除权处理**: 日终结算时检测持仓 symbol 当日有除权因子(`adj_factor_etf`/`adj_factor`), 按因子调整数量与成本(送转 → 数量乘因子、成本除因子), 并记一条 `corp_action` 台账行。
 - **费用**: `commission_pct`(双边, 默认万 2.5, 最低 5 元)、`stamp_tax_pct`(卖出印花税, 默认千 1)、`slippage_bps`(默认 5)——与回测引擎 `app/backtest/engine.py` 的参数名和默认值完全一致, 用户心智一份口径。
 
 ## 4. 撮合规则(金融口径, 必须逐条测试)
@@ -79,14 +81,16 @@ data/paper/
        └─ 异常(缺行情/缺因子) warning 留痕, 不中断管道
 ```
 
-- 自动跟单规则 V1 形态: `{signal_source: 策略id|信号id, side: buy, size_mode: fixed_amount|pct_equity, order_type: next_open, cooldown_days: 5, scope: 自选分组|全信号}`; 触发链路复用信号库/策略扫描的产出事件, 不新增采集。
+- 自动跟单规则当前形态: `{match_kind: strategy|rule, match_id, side, entry_fill, exit_fill, position_sizing: equal|score_weight, max_positions, max_total_position, auto_follow_enabled, auto_exit_enabled, cooldown_days}`。策略规则一条启用规则对应一个策略；不同策略分别计算自己的仓位上限，共用账户现金与成交账本。
+- `auto_follow_enabled` 关闭时，买入/普通监控事件只生成待确认意图；`auto_exit_enabled` 关闭时，策略退出只生成待确认意图。确认时重新校验账户冻结、现金、T+1、涨跌停和策略仓位约束。
+- 买入策略批次保留 `strategy_id`、策略快照和评分；查询按标的合并展示，同时保留策略分组、各自成本线和合并成本线。策略卖出只消费本策略批次；手动卖出不选择策略，按 FIFO 在未被目标策略卖单占用的可卖批次中分配。
 - 语音/推送: 成交与规则触发事件走监控中心既有 SSE + 语音播报 + 飞书通道(新增事件类型, 前端无需新管道)。
 
 ## 6. API 设计(`/api/paper/*`, 薄胶水 + 域模块)
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET / PUT | `/api/paper/account` | 账户详情/费用参数(初始化向导) |
+| GET / POST | `/api/paper/account` | 账户详情/创建账户(初始化向导) |
 | GET | `/api/paper/overview` | 现金 + 持仓(实时估值) + 今日订单/成交 + 盘中估算净值 |
 | POST | `/api/paper/orders` | 手动下单 {symbol, side, qty \| amount, order_type} |
 | GET | `/api/paper/orders` | 订单列表(可按 status 过滤) |
@@ -94,20 +98,25 @@ data/paper/
 | GET | `/api/paper/trades` | 成交台账(分页) |
 | GET | `/api/paper/nav` | 净值序列 + 基准(沪深300 归一化) |
 | GET | `/api/paper/stats` | 回合统计: 胜率/盈亏比/平均持有天数/最大回撤/对比基准 |
-| CRUD | `/api/paper/auto_rules` | 自动跟单规则 |
+| GET | `/api/paper/intents` | 待确认操作 |
+| POST | `/api/paper/intents/{id}/confirm` | 修改数量/订单类型后重新校验并创建 Paper 订单 |
+| POST | `/api/paper/intents/{id}/reject` | 拒绝待确认操作 |
+| POST | `/api/paper/positions/{lot_id}/continue-holding` | 取消该批次待卖动作并抑制当前同一退出触发 |
+| CRUD | `/api/paper/auto_rules` | 自动跟单规则；策略规则编辑后仍保留规则 ID |
 | POST | `/api/paper/rebuild` | 由 fills.jsonl 重建 positions(修复兜底, 管理入口) |
 
-约定: symbol 经 `repo.resolve_asset_type` 区分 stock/etf(镜像 lots API); 资产类型影响涨跌停与最小单位判断。
+约定: symbol 经 `repo.resolve_asset_type` 区分 stock/etf; 资产类型影响涨跌停与最小单位判断。
 
 ## 7. 前端设计
 
 新页面「模拟盘 Paper」(侧边栏一级菜单, 图标 💰/PiggyBank):
 
 - **总览区**: 净值曲线 vs 沪深300(复用 ECharts 组件)、现金/市值/总资产/当日盈亏卡片、盘中估值角标「实时估算, 收盘定版」
-- **持仓表**: 复用 Lots/自选的表格交互——现价(实时)、成本、浮盈、可卖数量、占比; 行内「卖出」按钮
+- **持仓表**: 按标的合并展示现价、成本、浮盈、可卖数量和占比；展开查看手动/策略分组、批次成本、策略退出状态；行内手动卖出不要求选择策略
 - **下单面板**: symbol 搜索 + 数量/金额 + 订单类型; 入口同时嵌到**个股分析页与自选行内**的「虚拟买入」按钮
 - **流水区**: 今日订单/成交、全部成交台账
-- **自动跟单页签**: 规则列表 + 新建(选策略/信号 + 仓位方式 + cooldown)
+- **自动跟单页签**: 规则列表 + 新建/编辑(建仓/清仓口径、等权/评分加权、最大持仓数、策略最大总仓位、自动跟单、策略退出自动卖出、cooldown)
+- **待确认操作**: 可调整数量和订单类型后确认，也可拒绝；失败时显示重新校验原因
 - **统计页签**: 回合明细与汇总(口径与回测报告一致, 降低理解成本)
 
 ## 8. 统计口径(与回测对齐)
@@ -119,7 +128,7 @@ data/paper/
 ## 9. 边界、并发与风控
 
 - **写并发**: 域模块内全局写锁; 盘中 evaluate 与手动下单竞争同一把锁(镜像 mining_manager 的互斥模式)
-- **单账户限制**: 持仓标的数上限(默认 50)防误操作; 单笔金额上限(默认不超过可用现金, 不提供杠杆)
+- **策略限制**: 每条启用策略规则独立限制最大持仓数和本策略占账户权益的最大总仓位；规则只约束自动/策略动作，不改变手动下单入口
 - **冻结**: 账户 frozen 后拒绝新订单, 持仓只读; 保留数据可重建
 - **数据缺失**: 缺行情/缺因子一律留痕 warning + 顺延, 绝不臆造成交价(金融数据错误原则)
 - **回滚**: 停用功能 = 冻结账户 + 隐藏菜单; 数据目录独立(`data/paper/`), 删除即卸载
@@ -131,7 +140,8 @@ data/paper/
 | 撮合域模块 | T+1 解锁、涨跌停拒单、百股取整、最低佣金、印花税单向、滑点方向、停牌顺延与过期、除权数量/成本调整、资金不足拒绝 |
 | 账务 | fills.jsonl 重放 == positions.json(性质测试)、净值 = cash + Σ市值、冲正成交后曲线连续 |
 | 管道挂点 | 盘后结算幂等(重跑同日不重复成交)、非交易日不结算 |
-| 自动规则 | 信号触发生成订单、cooldown 去重、scope 过滤 |
+| 自动规则 | 信号触发生成订单/意图、方向冷却去重、策略仓位上限、规则编辑与多策略隔离 |
+| 意图生命周期 | 并发确认幂等、确认时二次校验、拒绝/继续持有、过期状态留痕 |
 | API 契约 | 下单/撤单/overview 成功与错误响应 |
 | 前端 | `tsc + vite build`; 关键交互本地 dev 目测 |
 
@@ -141,9 +151,9 @@ data/paper/
 
 | 期 | 内容 | 预估 |
 |---|---|---|
-| **V1 核心闭环** | 账户+手动下单(即时/次日开盘/收盘)+撮合域模块+盘后结算+净值曲线+持仓/流水页 | 3-4 个 PR, 约 1.5-2 周 |
-| **V2 自动化** | 自动跟单规则、涨跌停排队可选、多账户、统计页签完整化 | 约 1 周 |
-| **V3 增强** | 成交推送/语音、导出 CSV、与回测报告同构对比页、AI 复盘注入模拟盘数据 | 约 1 周 |
+| **已实现** | 多账户、手动下单、Paper 撮合/结算/净值、自动跟单规则、策略批次退出、待确认意图、推送和对比页 | — |
+| **当前口径** | 待确认意图不自动过期；确认时按当前账户状态重新校验并显示失败原因，用户确认或拒绝后结束 | — |
+| **后续再议** | 更多券商级撮合细节 | — |
 
 V1 交付即有完整价值: 手动跟单信号 → 看实时虚拟净值。
 

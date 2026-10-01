@@ -25,14 +25,12 @@ from app.api import (
     indices,
     intraday,
     kline,
-    lots,
     market_recap,
     mining,
     monitor_rules,
     overview,
     paper,
     pipeline,
-    portfolio,
     regime,
     rps,
     screener,
@@ -56,7 +54,6 @@ from app.jobs import daily_pipeline
 from app.logging_config import build_backend_log_handler
 from app.services.matrix_prewarm_owner import MatrixCachePrewarmOwner
 from app.services.mining_process_lock import MiningProcessLock
-from app.services.portfolio import PortfolioAccount
 from app.services.quote_service import QuoteService
 from app.tickflow import client as tf_client
 from app.tickflow.policy import detect_capabilities
@@ -106,7 +103,6 @@ async def _application_lifespan(app: FastAPI):
     repo = KlineRepository(store)
     app.state.datastore = store
     app.state.repo = repo
-    app.state.portfolio_account = PortfolioAccount(store.data_dir)
     # 自定义/复合因子载入注册表 (P3); 单个失败只跳过该因子 (fail-隔离)
     from app.factors.store import load_into_registry
 
@@ -542,8 +538,6 @@ app.include_router(settings_api.router)
 app.include_router(strategy.router)
 app.include_router(signals.router)
 app.include_router(monitor_rules.router)
-app.include_router(lots.router)
-app.include_router(portfolio.router)
 app.include_router(alerts.router)
 app.include_router(events.router)
 app.include_router(rps.router)

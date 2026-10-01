@@ -123,11 +123,12 @@ def test_auto_rule_intraday_order_waits_for_next_open(data_dir, monkeypatch):
     paper.create_account(data_dir, 1_000_000)
     paper_auto.create_auto_rule(data_dir, {
         "name": "跟策略", "match_kind": "strategy", "match_id": "strat_1",
-        "side": "buy", "size_mode": "fixed_amount", "size_value": 5000,
-        "order_type": "next_open", "cooldown_days": 5,
+        "side": "auto", "entry_fill": "open_t+1", "exit_fill": "close_t",
+        "position_sizing": "equal", "max_positions": 10, "max_total_position": 5,
+        "auto_follow_enabled": True, "auto_exit_enabled": False, "cooldown_days": 5,
     })
     created = paper_auto.on_rule_events(data_dir, [
-        {"source": "strategy", "strategy_id": "strat_1", "symbol": SYM, "price": 10.6},
+        {"source": "strategy", "type": "buy_signal", "strategy_id": "strat_1", "symbol": SYM, "price": 10.6},
     ])
     assert len(created) == 1 and created[0]["order_type"] == "next_open"
 

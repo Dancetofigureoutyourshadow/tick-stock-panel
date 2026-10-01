@@ -33,39 +33,20 @@ def test_account_configuration_and_strategy_buy_http(tmp_path, monkeypatch):
         "initial_cash": 200_000,
         "account_id": "strategy_a",
         "name": "策略账户",
-        "auto_follow_enabled": False,
-        "auto_exit_enabled": True,
-        "entry_fill": "close_t",
-        "exit_fill": "open_t+1",
-        "position_sizing": "score_weight",
-        "max_positions": 4,
-        "max_total_position": 0.75,
     })
     assert created.status_code == 200
     account = created.json()["account"]
-    assert account["auto_follow_enabled"] is False
-    assert account["auto_exit_enabled"] is True
-    assert account["entry_fill"] == "close_t"
-    assert account["exit_fill"] == "open_t+1"
-    assert account["position_sizing"] == "score_weight"
-    assert account["max_positions"] == 4
-    assert account["max_total_position"] == 0.75
+    assert "auto_follow_enabled" not in account
 
     got = client.get("/api/paper/account?account=strategy_a")
     assert got.status_code == 200
     assert got.json()["account"]["id"] == "strategy_a"
 
     updated = client.post("/api/paper/settings?account=strategy_a", json={
-        "auto_follow_enabled": True,
-        "auto_exit_enabled": False,
-        "position_sizing": "score_weight",
-            "max_positions": 2,
-        "max_total_position": 0.9,
+        "queue_limit_orders": True,
     })
     assert updated.status_code == 200
-    assert updated.json()["account"]["auto_follow_enabled"] is True
-    assert updated.json()["account"]["auto_exit_enabled"] is False
-    assert updated.json()["account"]["position_sizing"] == "score_weight"
+    assert updated.json()["account"]["queue_limit_orders"] is True
 
     monkeypatch.setattr(
         paper_api,
@@ -83,7 +64,7 @@ def test_account_configuration_and_strategy_buy_http(tmp_path, monkeypatch):
         ],
     })
     assert preview.status_code == 200
-    assert preview.json()["items"][0]["suggested_qty"] > preview.json()["items"][1]["suggested_qty"]
+    assert preview.json()["items"][0]["suggested_qty"] == preview.json()["items"][1]["suggested_qty"]
 
     buy = client.post("/api/paper/buys?account=strategy_a", json={
         "symbol": "600000.SH",
@@ -129,20 +110,20 @@ def test_intent_confirm_reject_and_revalidation_http(tmp_path):
     client = _client(tmp_path)
     assert client.post("/api/paper/account", json={
         "initial_cash": 100_000,
-        "auto_follow_enabled": False,
     }).status_code == 200
     rule = paper_auto.create_auto_rule(tmp_path, {
         "name": "HTTP 跟单",
         "match_kind": "strategy",
         "match_id": "s1",
-        "side": "buy",
-        "size_mode": "fixed_amount",
-        "size_value": 10_000,
-        "order_type": "next_open",
+        "side": "auto",
+        "entry_fill": "open_t+1", "exit_fill": "close_t",
+        "position_sizing": "equal", "max_positions": 10, "max_total_position": 10,
+        "auto_follow_enabled": False, "auto_exit_enabled": False,
         "cooldown_days": 0,
     })
     intents = paper_auto.on_rule_events(tmp_path, [{
         "source": "strategy",
+        "type": "buy_signal",
         "strategy_id": "s1",
         "symbol": "600000.SH",
         "price": 10,
@@ -167,9 +148,9 @@ def test_intent_confirm_reject_and_revalidation_http(tmp_path):
     assert confirmed.json()["order"]["intent_id"] == intent_id
     assert confirmed.json()["intent"]["status"] == "confirmed"
 
-    paper.update_settings(tmp_path, auto_follow_enabled=False)
     second = paper_auto.on_rule_events(tmp_path, [{
         "source": "strategy",
+        "type": "buy_signal",
         "strategy_id": "s1",
         "symbol": "600001.SH",
         "price": 10,
@@ -187,8 +168,13 @@ def test_positions_continue_holding_and_read_models_http(tmp_path, monkeypatch):
     client = _client(tmp_path)
     assert client.post("/api/paper/account", json={
         "initial_cash": 100_000,
-        "auto_exit_enabled": False,
     }).status_code == 200
+    paper_auto.create_auto_rule(tmp_path, {
+        "name": "策略退出", "match_kind": "strategy", "match_id": "s1", "side": "auto",
+        "entry_fill": "open_t+1", "exit_fill": "close_t", "position_sizing": "equal",
+        "max_positions": 10, "max_total_position": 10, "auto_follow_enabled": True,
+        "auto_exit_enabled": False, "cooldown_days": 0, "enabled": True,
+    })
     paper._append_fill(tmp_path, {
         "seq": 1,
         "ts": "",
@@ -265,14 +251,27 @@ def test_auto_rule_crud_and_freeze_http(tmp_path):
         "match_kind": "rule",
         "match_id": "rule_source",
         "side": "sell",
-        "size_mode": "pct_equity",
-        "size_value": 10,
-        "order_type": "close",
+        "entry_fill": "open_t+1",
+        "exit_fill": "close_t",
+        "position_sizing": "equal",
+        "max_positions": 10,
+        "max_total_position": 10,
+        "auto_follow_enabled": True,
+        "auto_exit_enabled": False,
         "cooldown_days": 3,
     })
     assert created.status_code == 200
     rule_id = created.json()["rule"]["id"]
     assert len(client.get("/api/paper/auto_rules").json()["rules"]) == 1
+    updated = client.put(f"/api/paper/auto_rules/{rule_id}", json={
+        "name": "价格跟单已调整", "match_kind": "rule", "match_id": "rule_source", "side": "sell",
+        "entry_fill": "close_t", "exit_fill": "open_t+1", "position_sizing": "score_weight",
+        "max_positions": 8, "max_total_position": 25, "auto_follow_enabled": False,
+        "auto_exit_enabled": False, "cooldown_days": 2, "enabled": True,
+    })
+    assert updated.status_code == 200
+    assert updated.json()["rule"]["position_sizing"] == "score_weight"
+    assert updated.json()["rule"]["max_total_position"] == 25
     disabled = client.post(f"/api/paper/auto_rules/{rule_id}/enabled?enabled=false")
     assert disabled.status_code == 200 and disabled.json()["rule"]["enabled"] is False
     assert client.delete(f"/api/paper/auto_rules/{rule_id}").json() == {"ok": True}

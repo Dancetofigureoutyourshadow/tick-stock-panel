@@ -1085,8 +1085,8 @@ class MonitorRuleEngine:
             return []
 
         # 2. 根据 type 构建命中集
-        #    元组格式: (event_type, symbol, name, price, pct, signals)
-        hit_rows: list[tuple[str, str, Any, Any, Any, list[str]]] = []
+        #    元组格式: (event_type, symbol, name, price, pct, signals, score, strategy_snapshot)
+        hit_rows: list[tuple[str, str, Any, Any, Any, list[str], Any, dict | None]] = []
 
         rtype = rule.get("type", "signal")
         if rtype == "strategy":
@@ -1101,7 +1101,7 @@ class MonitorRuleEngine:
         else:
             # signal / price / market: 通用条件匹配
             for sym, name, price, pct, hit_sigs in self._match_conditions(scoped, rule):
-                hit_rows.append((rtype, sym, name, price, pct, hit_sigs))
+                hit_rows.append((rtype, sym, name, price, pct, hit_sigs, None, None))
 
         if not hit_rows:
             return []
@@ -1112,7 +1112,7 @@ class MonitorRuleEngine:
         source = rtype
 
         events: list[dict] = []
-        for ev_type, sym, name, price, pct, hit_sigs in hit_rows:
+        for ev_type, sym, name, price, pct, hit_sigs, score, strategy_snapshot in hit_rows:
             # cooldown 键包含事件类型, 同股不同策略事件互不压制。
             is_batch = sym == "_batch"
             key_symbol = f"_{ev_type}_batch" if is_batch else sym
@@ -1154,6 +1154,10 @@ class MonitorRuleEngine:
                 "conditions": list(rule.get("conditions", [])) if rtype != "strategy" else [],
                 "logic": rule.get("logic", "and") if rtype != "strategy" else "and",
             }
+            if score is not None:
+                ev["score"] = score
+            if strategy_snapshot is not None:
+                ev["strategy_snapshot"] = strategy_snapshot
             events.append(ev)
             if self._alert_handler:
                 try:
@@ -1193,7 +1197,7 @@ class MonitorRuleEngine:
 
     def _match_strategy(
         self, df: pl.DataFrame, rule: dict,
-    ) -> list[tuple[str, str, Any, Any, Any, list[str]]]:
+    ) -> list[tuple[str, str, Any, Any, Any, list[str], Any, dict | None]]:
         """策略类型评估: 一次执行同时产出交易信号和结果池变更事件。
 
         返回 [(event_type, symbol, name, price, pct, signals)]
@@ -1375,7 +1379,35 @@ class MonitorRuleEngine:
             "pool_exit": set() if prev_pool is None else prev_pool - current_pool,
         }
 
-        results: list[tuple[str, str, Any, Any, Any, list[str]]] = []
+        # 监控引擎允许注入轻量策略对象（例如测试替身或旧版插件），
+        # 这些对象不一定实现完整 StrategyDef 字段。快照是附加元数据，
+        # 缺少字段时应保留原有事件评估行为并使用安全默认值。
+        strategy_snapshot = {
+            "strategy_id": sid,
+            "strategy_name": overrides.get("name") or sname,
+            "strategy_version": str(s.meta.get("version") or ""),
+            "params": {
+                **{
+                    item["id"]: item.get("default")
+                    for item in s.meta.get("params", [])
+                    if isinstance(item, dict) and item.get("id")
+                },
+                **dict(overrides.get("params") or {}),
+            },
+            "entry_signals": list(overrides.get("entry_signals", getattr(s, "entry_signals", [])) or []),
+            "exit_signals": list(overrides.get("exit_signals", getattr(s, "exit_signals", [])) or []),
+            "stop_loss": overrides.get("stop_loss", getattr(s, "stop_loss", None)),
+            "take_profit": overrides.get("take_profit", getattr(s, "take_profit", None)),
+            "trailing_stop": overrides.get("trailing_stop", getattr(s, "trailing_stop", None)),
+            "trailing_take_profit_activate": overrides.get(
+                "trailing_take_profit_activate", getattr(s, "trailing_take_profit_activate", None),
+            ),
+            "trailing_take_profit_drawdown": overrides.get(
+                "trailing_take_profit_drawdown", getattr(s, "trailing_take_profit_drawdown", None),
+            ),
+            "max_hold_days": overrides.get("max_hold_days", getattr(s, "max_hold_days", None)),
+        }
+        results: list[tuple[str, str, Any, Any, Any, list[str], Any, dict | None]] = []
         signal_map = {
             "buy_signal": {
                 str(hit["symbol"]): list(hit.get("signals") or [])
@@ -1410,7 +1442,7 @@ class MonitorRuleEngine:
                     for symbol in symbol_list
                     for signal in signal_map.get(event_type, {}).get(symbol, [])
                 })
-                results.append((event_type, "_batch", message, None, None, hit_signals))
+                results.append((event_type, "_batch", message, None, None, hit_signals, None, strategy_snapshot))
                 continue
             for symbol in symbol_list:
                 row = row_map.get(symbol, {})
@@ -1422,6 +1454,8 @@ class MonitorRuleEngine:
                     row.get("close"),
                     row.get("change_pct"),
                     signal_map.get(event_type, {}).get(symbol, []),
+                    row.get("score", result.scores.get(symbol)),
+                    strategy_snapshot,
                 ))
 
         return results
@@ -1766,7 +1800,7 @@ class MonitorRuleEngine:
         op=比较: 字段中文名 + 操作符 + 值 (如 "涨跌幅≥5")
         logic: and → "且", or → "或"
         resolver: 自定义信号名解析器 (默认 _signal_cn_name); 引擎内传
-            self._signal_label 以解析 csg_/csgi_ 用户命名, 外部 (lots.py) 不传。
+            self._signal_label 以解析 csg_/csgi_ 用户命名。
         """
         conds = conditions if conditions is not None else list(rule.get("conditions", []))
         if not conds:

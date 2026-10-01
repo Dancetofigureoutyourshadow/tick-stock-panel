@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Trash2, RefreshCw, Star, X, Search, LayoutGrid, List, Rows3, BarChart3, Settings2, Plus, Check, Filter, Eye, EyeOff, Minus, ChevronsUp, Clock, RotateCcw, FileUp, FolderOpen, FolderMinus, FolderPlus } from 'lucide-react'
-import { api, ApiError, type KlineRow, type MinuteKlineRow, type PortfolioPosition, type WatchlistGroup, type WatchlistGroupColor } from '@/lib/api'
+import { api, ApiError, type KlineRow, type MinuteKlineRow, type PaperHolding, type PaperLot, type WatchlistGroup, type WatchlistGroupColor } from '@/lib/api'
 import { fetchMinuteBatchIncremental } from '@/lib/minuteBatchIncremental'
 import { QK } from '@/lib/queryKeys'
 import { storage } from '@/lib/storage'
@@ -467,16 +467,16 @@ function RealtimeDot({ title = '实时监控中' }: { title?: string }) {
   )
 }
 
-interface PortfolioAggregate {
+interface PaperAggregate {
   quantity: number
   averageCost: number
   unrealizedPnl: number
   strategyNames: string[]
   status: 'holding' | 'pending_sell' | 'no_exit_rules'
-  batches: PortfolioPosition[]
+  batches: PaperLot[]
 }
 
-function PortfolioInline({ value, expanded, onToggle }: { value?: PortfolioAggregate; expanded: boolean; onToggle: () => void }) {
+function PaperInline({ value, expanded, onToggle }: { value?: PaperAggregate; expanded: boolean; onToggle: () => void }) {
   if (!value) return null
   const statusLabel = value.status === 'pending_sell' ? '待卖出' : value.status === 'no_exit_rules' ? '无退出规则' : '持有中'
   const statusClass = value.status === 'pending_sell'
@@ -493,7 +493,7 @@ function PortfolioInline({ value, expanded, onToggle }: { value?: PortfolioAggre
       <span className="max-w-48 truncate text-muted" title={value.strategyNames.join('、')}>{value.strategyNames.join('、')}</span>
     </div>
     {expanded && <div className="mt-1 space-y-1 rounded border border-border/60 bg-base/80 p-1.5">
-      {value.batches.map(batch => <div key={batch.id} className="flex flex-wrap gap-x-2 text-muted"><span>{batch.buy_trade_date}</span><span>{batch.source_strategy_name}</span><span>{batch.remaining_qty}股</span><span>成本¥{batch.remaining_cost}</span><span className={priceColorClass(Number(batch.unrealized_pnl))}>{Number(batch.unrealized_pnl) >= 0 ? '+' : ''}¥{batch.unrealized_pnl}</span></div>)}
+      {value.batches.map(batch => <div key={batch.lot_id} className="flex flex-wrap gap-x-2 text-muted"><span>{batch.date}</span><span>{batch.strategy_id || '手动'}</span><span>{batch.qty}股</span><span>成本¥{batch.price ?? '—'}</span>{batch.pending_fingerprint && <span className="text-warning">待卖</span>}</div>)}
     </div>}
   </div>
 }
@@ -565,7 +565,7 @@ const StockCard = React.memo(function StockCard({
   onToggleMember: (symbol: string, groupId: string, member: boolean) => void
   groupChangePending: boolean
 }) {
-  const [portfolioExpanded, setPortfolioExpanded] = useState(false)
+  const [paperExpanded, setPaperExpanded] = useState(false)
   const board = boardTag(r.symbol)
   const price = r.rt_price ?? r.close
   const pct = r.rt_pct ?? r.change_pct
@@ -673,7 +673,7 @@ const StockCard = React.memo(function StockCard({
           </span>
         </div>
 
-        <PortfolioInline value={r._portfolio} expanded={portfolioExpanded} onToggle={() => setPortfolioExpanded(value => !value)} />
+        <PaperInline value={r._paper} expanded={paperExpanded} onToggle={() => setPaperExpanded(value => !value)} />
 
         {/* 第三行: 指标 */}
         <div className="flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-[10px] text-muted leading-relaxed">
@@ -905,9 +905,9 @@ export function Watchlist() {
   })
 
   // 账户批次独立查询，不把会计计算塞回原行情/表现接口。
-  const portfolioPositions = useQuery({
-    queryKey: QK.portfolioPositions,
-    queryFn: () => api.portfolioPositions(),
+  const paperOverview = useQuery({
+    queryKey: QK.paperOverview('default'),
+    queryFn: () => api.paperOverview('default'),
   })
 
   const symbols = enriched.data?.rows?.map((r: any) => r.symbol) ?? []
@@ -1320,45 +1320,44 @@ export function Watchlist() {
     () => new Map((performance.data?.rows ?? []).map(row => [row.symbol, row])),
     [performance.data?.rows],
   )
-  const portfolioBySymbol = useMemo(() => {
-    const groups = new Map<string, PortfolioPosition[]>()
-    for (const position of portfolioPositions.data?.positions ?? []) {
-      const batches = groups.get(position.symbol)
-      if (batches) batches.push(position)
-      else groups.set(position.symbol, [position])
+  const paperBySymbol = useMemo(() => {
+    const groups = new Map<string, PaperHolding>()
+    for (const position of paperOverview.data?.holdings ?? []) {
+      groups.set(position.symbol, position)
     }
-    const result = new Map<string, PortfolioAggregate>()
-    for (const [symbol, batches] of groups) {
-      const quantity = batches.reduce((sum, batch) => sum + batch.remaining_qty, 0)
-      const totalCost = batches.reduce((sum, batch) => sum + Number(batch.remaining_cost), 0)
-      const unrealizedPnl = batches.reduce((sum, batch) => sum + Number(batch.unrealized_pnl), 0)
+    const result = new Map<string, PaperAggregate>()
+    for (const [symbol, holding] of groups) {
+      const batches = holding.lots ?? []
+      const quantity = holding.qty
+      const totalCost = quantity * holding.avg_cost
+      const unrealizedPnl = holding.pnl
       result.set(symbol, {
         quantity,
         averageCost: quantity > 0 ? totalCost / quantity : 0,
         unrealizedPnl,
-        strategyNames: Array.from(new Set(batches.map(batch => batch.source_strategy_name))),
-        status: batches.some(batch => batch.status === 'pending_sell')
+        strategyNames: Array.from(new Set(batches.map(batch => batch.strategy_id || '手动'))),
+        status: batches.some(batch => batch.pending_fingerprint)
           ? 'pending_sell'
-          : batches.some(batch => !batch.has_exit_rules) ? 'no_exit_rules' : 'holding',
+          : batches.some(batch => batch.has_exit_rules === false) ? 'no_exit_rules' : 'holding',
         batches,
       })
     }
     return result
-  }, [portfolioPositions.data?.positions])
+  }, [paperOverview.data?.holdings])
   const rows = useMemo(
     () => (enriched.data?.rows ?? []).map((row: any) => {
       const item = performanceBySymbol.get(row.symbol)
-      const portfolio = portfolioBySymbol.get(row.symbol)
-      if (!item) return { ...row, _portfolio: portfolio }
+      const paper = paperBySymbol.get(row.symbol)
+      if (!item) return { ...row, _paper: paper }
       return {
         ...row,
         watchlist_added_at: item.added_at,
         watchlist_base_price: item.base_price,
         watchlist_base_time: item.base_time,
-        _portfolio: portfolio,
+        _paper: paper,
       }
     }),
-    [enriched.data?.rows, performanceBySymbol, portfolioBySymbol],
+    [enriched.data?.rows, performanceBySymbol, paperBySymbol],
   )
   const groupBySymbol = useMemo(
     () => new Map(listEntries.map(entry => [entry.symbol, entry.group_ids ?? []])),
@@ -2143,10 +2142,10 @@ export function Watchlist() {
                           )}
                         </div>
                         </div>
-                        <PortfolioInline
-                          value={r._portfolio}
-                          expanded={expandedCells.has(`${r.symbol}::portfolio`)}
-                          onToggle={() => handleToggleExpand(`${r.symbol}::portfolio`)}
+                        <PaperInline
+                          value={r._paper}
+                          expanded={expandedCells.has(`${r.symbol}::paper`)}
+                          onToggle={() => handleToggleExpand(`${r.symbol}::paper`)}
                         />
                       </div>
                     </td>

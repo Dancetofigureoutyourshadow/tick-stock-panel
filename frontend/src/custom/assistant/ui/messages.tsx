@@ -100,7 +100,6 @@ const TOOL_LABELS: Record<string, string> = {
   get_sector_rotation: '查询板块轮动',
   get_regime: '查询市场环境',
   get_abnormal: '查询异动监控',
-  get_lots: '查询持仓提醒',
   list_signals: '检索信号库',
   run_strategy: '执行选股策略',
   get_factor_values: '查询因子排名',

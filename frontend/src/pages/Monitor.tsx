@@ -25,7 +25,7 @@ import { usePreferences, useQuoteStatus } from '@/lib/useSharedQueries'
 const TYPE_LABEL: Record<string, string> = {
   signal: '信号', price: '价格/涨跌', market: '市场异动', strategy: '策略监控', sector: '板块监控',
   abnormal: '异动监控', volume_delta: '轮询放量', date: '日期提醒',
-  position_exit: '持仓退出', portfolio: '持仓账户',
+  position_exit: '持仓退出', paper_exit: '模拟盘退出',
 }
 
 /** 严重级别 → 左侧色条 + 图标 */
@@ -43,7 +43,7 @@ const SOURCE_BADGE_STYLE: Record<string, string> = {
   abnormal: 'bg-orange-500/10 text-orange-500 border-orange-500/20 dark:text-orange-400',
   volume_delta: 'bg-rose-500/10 text-rose-400 border-rose-500/20 dark:text-rose-300',
   date:     'bg-violet-500/10 text-violet-500 border-violet-500/20 dark:text-violet-300',
-  portfolio: 'bg-warning/10 text-warning border-warning/20',
+  paper_exit: 'bg-warning/10 text-warning border-warning/20',
 }
 
 /**
@@ -817,9 +817,6 @@ function RulesList({ rulesQuery, onEdit }: {
                   <span className={cn('shrink-0 rounded px-1.5 py-0.5 text-[9px] font-semibold', SOURCE_BADGE_STYLE[r.type] ?? 'bg-elevated text-muted')}>
                     {TYPE_LABEL[r.type]}
                   </span>
-                  {r.lot_id && (
-                    <span className="shrink-0 rounded px-1.5 py-0.5 text-[9px] font-semibold bg-emerald-400/10 text-emerald-500" title="由持仓账户的「旧批次」区域托管，请在那里修改或删除">旧批次</span>
-                  )}
                   {r.asset_type === 'index' && (
                     <span className="shrink-0 rounded px-1.5 py-0.5 text-[9px] font-semibold bg-sky-500/10 text-sky-400">指数</span>
                   )}
@@ -858,15 +855,7 @@ function RulesList({ rulesQuery, onEdit }: {
                   {!r.enabled && <span className="shrink-0 text-[9px] text-secondary">· 停用</span>}
                 </div>
                 <div className="flex items-center gap-0.5 shrink-0">
-                  {r.lot_id ? (
-                    <span
-                      className="inline-flex items-center rounded-md border border-border/60 bg-elevated/60 px-1.5 py-0.5 text-[9px] text-secondary"
-                      title="由持仓账户的「旧批次」区域生成并托管；启停、修改或删除请回到该区域"
-                    >
-                      批次托管
-                    </span>
-                  ) : (
-                    <>
+                  <>
                       <button
                         onClick={() => toggleEnabled(r)}
                         title={r.enabled ? '停用' : '启用'}
@@ -902,8 +891,7 @@ function RulesList({ rulesQuery, onEdit }: {
                           <Trash2 className="h-3.5 w-3.5" />
                         </button>
                       )}
-                    </>
-                  )}
+                  </>
                 </div>
               </div>
 

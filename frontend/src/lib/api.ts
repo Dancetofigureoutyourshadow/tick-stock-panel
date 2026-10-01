@@ -1159,122 +1159,6 @@ export interface MonitorRule {
   // date 类型 (日期提醒): 纯日历窗口, 无行情 conditions
   remind_date?: string | null   // YYYY-MM-DD
   lead_days?: number            // 提前 N 天进入提醒窗口
-  lot_id?: string               // 由「持仓提醒」页生成的规则, 托管在批次页 (监控中心只读)
-}
-
-// 批次登记 (薄批次, 页面名"持仓提醒") — 只作监控规则生成的载体, 不做任何会计
-export interface Lot {
-  id: string
-  symbol: string
-  qty: number
-  cost_price: number
-  buy_date?: string | null
-  target_pct: number
-  stop_pct: number
-  remind_date?: string | null
-  lead_days: number
-  created_at?: string
-}
-
-export interface PortfolioSettings {
-  max_positions: number
-  max_total_position: string
-  commission_rate: string
-  stamp_tax_rate: string
-}
-
-export interface PortfolioSummary {
-  available_cash: string
-  market_value: string
-  total_assets: string
-  net_deposits: string
-  realized_pnl: string
-  unrealized_pnl: string
-  total_pnl: string
-}
-
-export interface PortfolioPosition {
-  id: string
-  symbol: string
-  name: string
-  buy_price: string
-  bought_qty: number
-  remaining_qty: number
-  available_qty: number
-  cost_basis: string
-  remaining_cost: string
-  current_price: string | null
-  prev_close?: string | null
-  change_pct?: number | null
-  change_amount?: string | null
-  price_source?: 'realtime' | 'latest_close' | 'missing'
-  market_value: string
-  unrealized_pnl: string
-  source_strategy_id: string
-  source_strategy_name: string
-  source_strategy_version: string
-  buy_score: string | null
-  strategy_snapshot: Record<string, any>
-  status: 'holding' | 'pending_sell' | 'closed'
-  pending_reason: string | null
-  pending_at: string | null
-  has_exit_rules: boolean
-  high_water_price: string
-  buy_trade_date: string
-  buy_time: string
-  holding_days: number
-  realized_pnl: string
-  closed_at: string | null
-}
-
-export interface PortfolioTrade {
-  id: string
-  position_id: string
-  side: 'buy' | 'sell'
-  symbol: string
-  price: string
-  quantity: number
-  gross_amount: string
-  commission: string
-  stamp_tax: string
-  cash_delta: string
-  realized_pnl: string | null
-  trade_date: string
-  created_at: string
-}
-
-export interface PortfolioCashFlow {
-  id: string
-  type: 'deposit' | 'withdrawal' | 'reversal'
-  amount: string
-  cash_delta: string
-  reverses_id: string | null
-  note: string
-  created_at: string
-}
-
-export interface PortfolioBuyPreviewItem {
-  symbol: string
-  score: string
-  weight: string
-  price: string
-  price_source: 'realtime' | 'latest_close' | 'manual' | 'missing'
-  suggested_budget: string
-  suggested_qty: number
-  estimated_fee: string
-  estimated_cash_required: string
-  blocked_reason: string | null
-  has_exit_rules: boolean
-}
-
-export interface PortfolioBuyPreview {
-  available_cash: string
-  market_value: string
-  total_assets: string
-  total_budget: string
-  single_position_cap: string
-  remaining_slots: number
-  items: PortfolioBuyPreviewItem[]
 }
 
 // ===== Paper (虚拟账户/模拟盘) =====
@@ -1338,6 +1222,43 @@ export interface PaperHolding {
   pnl: number
   pnl_pct: number
   available_qty: number
+  groups?: PaperPositionGroup[]
+  lots?: PaperLot[]
+}
+
+export interface PaperPositionGroup {
+  owner_type: 'strategy' | 'manual'
+  strategy_id?: string | null
+  strategy_name?: string | null
+  qty: number
+  available_qty: number
+  avg_cost: number
+  cost_amount: number
+  market_value?: number
+  pnl?: number
+  pnl_pct?: number
+  has_exit_rules?: boolean
+  pending_lots?: Array<{ lot_id?: string; reason?: string | null }>
+  lots?: PaperLot[]
+}
+
+export interface PaperLot {
+  lot_id?: string
+  date?: string
+  qty: number
+  price?: number
+  strategy_id?: string | null
+  strategy_snapshot?: Record<string, unknown>
+  buy_score?: number | string | null
+  source?: string | null
+  automation_source?: 'manual' | 'auto_follow' | 'strategy_exit' | null
+  auto_rule_id?: string | null
+  strategy_scope_id?: string | null
+  cost_amount?: number
+  high_water_price?: number
+  holding_days?: number
+  pending_fingerprint?: string | null
+  has_exit_rules?: boolean
 }
 
 export interface PaperNavItem {
@@ -1375,11 +1296,58 @@ export interface PaperOrder {
   ref_price?: number | null
   postponed: number
   source: string
+  automation_source?: 'manual' | 'auto_follow' | 'strategy_exit' | null
   created_at: string
   filled_at?: string | null
   fill_price?: number | null
   fees?: number | null
   reason?: string | null
+  strategy_id?: string | null
+  strategy_snapshot?: Record<string, unknown>
+  buy_score?: number | string | null
+  exit_reason?: string | null
+  intent_id?: string | null
+  auto_rule_id?: string | null
+  strategy_scope_id?: string | null
+  max_positions?: number | null
+  max_total_position?: number | null
+  target_lot_id?: string | null
+}
+
+export interface PaperIntent {
+  id: string
+  account_id: string
+  symbol: string
+  side: 'buy' | 'sell'
+  qty: number
+  order_type: 'market' | 'next_open' | 'close'
+  ref_price?: number | null
+  source: string
+  automation_source?: 'manual' | 'auto_follow' | 'strategy_exit' | null
+  reason?: string | null
+  strategy_id?: string | null
+  strategy_snapshot?: Record<string, unknown>
+  lot_id?: string | null
+  exit_reason?: string | null
+  auto_rule_id?: string | null
+  strategy_scope_id?: string | null
+  max_positions?: number | null
+  max_total_position?: number | null
+  status: 'pending' | 'confirmed' | 'rejected' | 'expired'
+  created_at: string
+  resolved_at?: string | null
+  resolution_reason?: string | null
+  last_validation_error?: string | null
+}
+
+export interface PaperCashFlow {
+  id: string
+  type: 'deposit' | 'withdrawal' | 'reversal'
+  amount: number
+  cash_delta: number
+  reverses_id?: string
+  note?: string
+  created_at: string
 }
 
 export interface PaperAutoRule {
@@ -1387,10 +1355,14 @@ export interface PaperAutoRule {
   name: string
   match_kind: 'strategy' | 'rule'
   match_id: string
-  side: 'buy' | 'sell'
-  size_mode: 'fixed_amount' | 'pct_equity'
-  size_value: number
-  order_type: 'market' | 'next_open' | 'close'
+  side: 'auto' | 'buy' | 'sell'
+  entry_fill: 'close_t' | 'open_t+1'
+  exit_fill: 'close_t' | 'open_t+1'
+  position_sizing: 'equal' | 'score_weight'
+  max_positions: number
+  max_total_position: number
+  auto_follow_enabled: boolean
+  auto_exit_enabled: boolean
   cooldown_days: number
   enabled: boolean
   created_at: string
@@ -1411,6 +1383,12 @@ export interface PaperFill {
   factor?: number
   qty_before?: number
   cost_before?: number
+  source?: string | null
+  automation_source?: 'manual' | 'auto_follow' | 'strategy_exit' | null
+  exit_reason?: string | null
+  auto_rule_id?: string | null
+  strategy_scope_id?: string | null
+  target_lot_id?: string | null
 }
 
 export interface VDBasicFilter {
@@ -2315,7 +2293,7 @@ export interface MonitorExtFieldItem {
   hiddenIndices?: number[]
 }
 export interface StrategyAlertEvent {
-  source: 'strategy' | 'depth' | 'portfolio'
+  source: 'strategy' | 'depth' | 'paper' | 'paper_exit'
   type: string
   strategy_id?: string
   symbol?: string
@@ -4146,71 +4124,6 @@ export const api = {
   monitorRuleDelete: (id: string) =>
     request<{ ok: boolean }>(`/api/monitor-rules/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
-  // ===== Local strategy portfolio account =====
-  portfolioSettings: () =>
-    request<PortfolioSettings>('/api/portfolio/settings'),
-  portfolioSettingsUpdate: (payload: Partial<PortfolioSettings>) =>
-    request<PortfolioSettings>('/api/portfolio/settings', {
-      method: 'PUT', body: JSON.stringify(payload),
-    }),
-  portfolioSummary: () =>
-    request<PortfolioSummary>('/api/portfolio/summary'),
-  portfolioPositions: (includeClosed = false) =>
-    request<{ positions: PortfolioPosition[] }>(
-      `/api/portfolio/positions${includeClosed ? '?include_closed=true' : ''}`,
-    ),
-  portfolioTransactions: () =>
-    request<{ trades: PortfolioTrade[]; cash_flows: PortfolioCashFlow[] }>(
-      '/api/portfolio/transactions',
-    ),
-  portfolioCash: (payload: { type: 'deposit' | 'withdrawal'; amount: string; note?: string }) =>
-    request<{ cash_flow: PortfolioCashFlow }>('/api/portfolio/cash', {
-      method: 'POST', body: JSON.stringify(payload),
-    }),
-  portfolioCashReverse: (id: string, note = '') =>
-    request<{ cash_flow: PortfolioCashFlow }>(
-      `/api/portfolio/cash/${encodeURIComponent(id)}/reverse`,
-      { method: 'POST', body: JSON.stringify({ note }) },
-    ),
-  portfolioBuyPreview: (payload: {
-    items: Array<{ symbol: string; strategy_id: string; score?: number | string | null; price?: number | string | null }>
-  }) => request<PortfolioBuyPreview>('/api/portfolio/buys/preview', {
-    method: 'POST', body: JSON.stringify(payload),
-  }),
-  portfolioBuy: (payload: {
-    symbol: string; strategy_id: string; buy_score?: number | string | null
-    price?: number | string | null; quantity: number; name?: string
-    watchlist_group_id?: string | null
-    confirm_buy_warnings?: boolean
-  }) => request<{ position: PortfolioPosition; trade: PortfolioTrade }>(
-    '/api/portfolio/buys', { method: 'POST', body: JSON.stringify(payload) },
-  ),
-  portfolioSell: (positionId: string, payload: {
-    price?: number | string | null; quantity?: number | null
-    remove_from_watchlist?: boolean
-  }) => request<{ position: PortfolioPosition; trade: PortfolioTrade }>(
-    `/api/portfolio/positions/${encodeURIComponent(positionId)}/sell`,
-    { method: 'POST', body: JSON.stringify(payload) },
-  ),
-  portfolioContinueHolding: (positionId: string) =>
-    request<{ position: PortfolioPosition }>(
-      `/api/portfolio/positions/${encodeURIComponent(positionId)}/continue-holding`,
-      { method: 'POST' },
-    ),
-
-  // ===== Lots (批次登记, 页面名"持仓提醒"; 保存/删除自动同步监控规则) =====
-  lotsList: () =>
-    request<{ lots: Lot[] }>('/api/lots'),
-
-  lotSave: (lot: Lot) =>
-    request<{ ok: boolean; lot: Lot }>('/api/lots', {
-      method: 'POST',
-      body: JSON.stringify(lot),
-    }),
-
-  lotDelete: (id: string) =>
-    request<{ ok: boolean }>(`/api/lots/${encodeURIComponent(id)}`, { method: 'DELETE' }),
-
   // ===== Paper (虚拟账户/模拟盘: 虚拟资金 + 真实行情价格模拟撮合, 多账户) =====
   paperAccounts: () =>
     request<{ accounts: PaperAccountSummary[] }>('/api/paper/accounts'),
@@ -4236,6 +4149,16 @@ export const api = {
       body: JSON.stringify(body),
     }),
 
+  paperBuyPreview: (body: { items: Array<{ symbol: string; strategy_id?: string; score?: number | string | null; price?: number | null }> }, account?: string) =>
+    request<{ available_cash: number; market_value: number; total_assets: number; total_budget: number; single_position_cap: number; remaining_slots: number; items: Array<{ symbol: string; strategy_id?: string; score: number; price: number; price_source?: string; suggested_budget: number; suggested_qty: number; blocked_reason: string | null; has_exit_rules: boolean }> }>(accUrl('/api/paper/buys/preview', account), {
+      method: 'POST', body: JSON.stringify(body),
+    }),
+
+  paperStrategyBuy: (body: { symbol: string; price?: number; quantity: number }, account?: string) =>
+    request<{ order: PaperOrder }>(accUrl('/api/paper/buys', account), {
+      method: 'POST', body: JSON.stringify(body),
+    }),
+
   paperOrders: (status?: string, account?: string) => {
     const p = new URLSearchParams()
     if (status) p.set('status', status)
@@ -4249,6 +4172,35 @@ export const api = {
 
   paperTrades: (account?: string) =>
     request<{ fills: PaperFill[] }>(accUrl('/api/paper/trades', account)),
+
+  paperIntents: (account?: string) =>
+    request<{ intents: PaperIntent[] }>(accUrl('/api/paper/intents', account)),
+
+  paperIntentConfirm: (id: string, body: { qty?: number; order_type?: 'market' | 'next_open' | 'close'; ref_price?: number }, account?: string) =>
+    request<{ intent: PaperIntent; order: PaperOrder }>(accUrl(`/api/paper/intents/${encodeURIComponent(id)}/confirm`, account), {
+      method: 'POST', body: JSON.stringify(body),
+    }),
+
+  paperIntentReject: (id: string, reason = '用户拒绝', account?: string) =>
+    request<{ intent: PaperIntent }>(accUrl(`/api/paper/intents/${encodeURIComponent(id)}/reject`, account), {
+      method: 'POST', body: JSON.stringify({ reason }),
+    }),
+
+  paperCash: (body: { type: 'deposit' | 'withdrawal'; amount: number; note?: string }, account?: string) =>
+    request<{ cash_flow: PaperCashFlow }>(accUrl('/api/paper/cash', account), {
+      method: 'POST', body: JSON.stringify(body),
+    }),
+
+  paperCashReverse: (id: string, note = '冲正', account?: string) =>
+    request<{ cash_flow: PaperCashFlow }>(accUrl(`/api/paper/cash/${encodeURIComponent(id)}/reverse`, account), {
+      method: 'POST', body: JSON.stringify({ note }),
+    }),
+
+  paperTransactions: (account?: string) =>
+    request<{ fills: PaperFill[]; cash_flows: PaperCashFlow[] }>(accUrl('/api/paper/transactions', account)),
+
+  paperContinueHolding: (lotId: string, account?: string) =>
+    request<{ state: { holding_days: number; high_water_price: number } }>(accUrl(`/api/paper/positions/${encodeURIComponent(lotId)}/continue-holding`, account), { method: 'POST' }),
 
   paperNav: (account?: string) =>
     request<{ nav: Array<{ date: string; cash: number; mv: number; nav: number }> }>(accUrl('/api/paper/nav', account)),
@@ -4268,6 +4220,12 @@ export const api = {
   paperAutoRuleCreate: (body: Omit<PaperAutoRule, 'id' | 'created_at'>, account?: string) =>
     request<{ rule: PaperAutoRule }>(accUrl('/api/paper/auto_rules', account), {
       method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  paperAutoRuleUpdate: (id: string, body: Omit<PaperAutoRule, 'id' | 'created_at'>, account?: string) =>
+    request<{ rule: PaperAutoRule }>(accUrl(`/api/paper/auto_rules/${encodeURIComponent(id)}`, account), {
+      method: 'PUT',
       body: JSON.stringify(body),
     }),
 

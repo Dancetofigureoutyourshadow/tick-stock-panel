@@ -40,7 +40,7 @@ interface Props {
   navList?: NavItem[]
   /** 切股回调: 收到目标 symbol/name, 由调用方更新预览状态 */
   onNavigate?: (symbol: string, name?: string) => void
-  /** Optional business overlays, such as portfolio B/S trades and average cost. */
+  /** Optional business overlays, such as Paper trades and average cost. */
   markers?: ChartMarker[]
   intradayMarkers?: IntradayChartMarker[]
   priceLines?: ChartPriceLine[]

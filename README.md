@@ -1,6 +1,8 @@
 <div align="center">
 
-# 📈 TSP · A股智能量化工作台
+# <picture><source media="(prefers-color-scheme: dark)" srcset="brand/logo-dark-title.svg"><img src="brand/logo-title.svg" width="30" alt="TSP Logo"></picture> TSP · A股智能量化工作台
+
+[![官网](https://img.shields.io/badge/%E5%AE%98%E7%BD%91-tsp.shy313.com-2563eb?style=for-the-badge&logo=googlechrome&logoColor=white&labelColor=1d4ed8)](https://tsp.shy313.com/)
 
 <br/>
 
@@ -406,6 +408,9 @@ flowchart TB
 
 面板的核心能力不只长在页面上 —— **全部开放成受控接口**,外部程序与 AI 客户端平等消费:
 
+> 🌐 **开放平台门户已上线 → [tsp.shy313.com](https://tsp.shy313.com/)**
+> 浏览 TSP 全部功能 · 注册账户 · 邀请好友 · 创建 API Key · 在线调用开放接口,一个入口直达。
+
 <table>
   <tr>
     <td width="50%" align="center"><b>设置 → 开放接口 · Token 管理</b><br/><sub>明文只显示一次,六档 scope 按需授予</sub></td>
@@ -491,6 +496,8 @@ docker run -d --name tsp -p 3018:3018 -v ${PWD}/data:/app/data ghcr.io/shy3130/t
 ```
 
 **打开 <http://localhost:3018> 即可使用** · 多架构镜像(linux/amd64 · arm64)由 CI 自动发布,本地无需 Python / Node
+
+**还没决定要不要部署?** 先逛逛 **[官网 tsp.shy313.com](https://tsp.shy313.com/)** —— 功能总览 · 账户注册 · API Key 管理
 
 </div>
 

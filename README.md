@@ -2,8 +2,6 @@
 
 # <picture><source media="(prefers-color-scheme: dark)" srcset="brand/logo-dark-title.svg"><img src="brand/logo-title.svg" width="30" alt="TSP Logo"></picture> TSP · A股智能量化工作台
 
-[![官网](https://img.shields.io/badge/%E5%AE%98%E7%BD%91-tsp.shy313.com-2563eb?style=for-the-badge&logo=googlechrome&logoColor=white&labelColor=1d4ed8)](https://tsp.shy313.com/)
-
 <br/>
 
 [![个人开源](https://img.shields.io/badge/%E4%B8%AA%E4%BA%BA%E5%BC%80%E6%BA%90-green?style=for-the-badge&labelColor=red)](https://github.com/shy3130/tick-stock-panel)
@@ -17,6 +15,8 @@
 [![GitHub stars](https://img.shields.io/github/stars/shy3130/tick-stock-panel?style=social)](https://github.com/shy3130/tick-stock-panel/stargazers)
 
 **自托管 · 零运维 · 核心能力全部开放成接口的 A 股量化工作台**
+
+[![官网](https://img.shields.io/badge/%E5%AE%98%E7%BD%91-tsp.shy313.com-8B5CF6?style=for-the-badge&labelColor=181717&logo=googlechrome&logoColor=white)](https://tsp.shy313.com/)
 
 `选股` · `回测` · `监控` · `因子挖掘` · `AI 助手` · `Open API` · `MCP`
 

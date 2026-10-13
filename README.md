@@ -491,6 +491,8 @@ cp .env.example .env       # 按需填 TICKFLOW_API_KEY(留空 = None 模式)
 <summary><b>🍎 macOS 安装注意事项(点开查看)</b></summary>
 
 - **仅支持 Apple Silicon(M 系列芯片)**,暂无 Intel 版本。
+- **数据位置**:用户数据(API Key、AI 配置、自选、行情数据)存放在 `~/Library/Application Support/TSP`,**升级替换 TSP.app 不会丢失**。
+- **≤ v0.3.6 老用户升级须知**:旧版把数据存在 App 包内部(`TSP.app/Contents/MacOS/data`),直接用新 App 替换会把旧数据一起移入废纸篓。升级前请先备份该目录;若已替换,可从废纸篓把旧 `TSP.app` 拖出并取出 `Contents/MacOS/data`,恢复进新 App 同位置后启动一次,程序会自动把数据迁移到上述安全位置。
 - 打开 dmg 后,请先把 **TSP.app 拖入「应用程序(Applications)」再运行**;不要直接在 dmg 挂载窗口里双击运行 —— 挂载卷是只读的,会导致启动即退出。
 - 首次打开会被 macOS Gatekeeper 拦截(安装包暂未做开发者签名与公证):前往 **系统设置 → 隐私与安全性**,下滑到「已阻止使用 "TSP"」→ 点 **仍要打开**,再按提示确认一次。
 - 若提示 **「"TSP" 已损坏,无法打开」**,或完成上一步后仍一闪退出:打开「终端」执行下面的命令,然后再启动(`xattr` 为 macOS 自带命令,作用是移除下载文件上的隔离标记,不会改动系统设置):

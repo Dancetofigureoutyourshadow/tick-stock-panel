@@ -246,69 +246,9 @@
 
 > **双通道并行**:面板走密码会话,外部走 Token 网关 —— 互不影响、互不挤占限流。核心域 8 个域是数据与语义的所有者;扩展域 5 条通道只消费契约,零核心改动。
 
-```mermaid
-flowchart TB
-    subgraph CLIENTS["🖥️ 消费端"]
-        direction LR
-        UI["面板 UI<br/>React · 19 页面"]
-        MCP["MCP 服务器<br/>12 工具 · scope 联动"]
-        APPC["外部程序<br/>脚本 · 看板"]
-    end
-
-    GW{{"开放网关<br/>Token · 六档 scope<br/>限流 120/min · 65 端点契约"}}
-
-    API["应用层 · ⚡ FastAPI<br/>REST · SSE 事件流"]
-
-    subgraph BODY[""]
-        direction LR
-        subgraph CORE["⬛ 核心域 — 数据与语义的所有者 (8 个)"]
-            direction TB
-            S1[("① 数据底座<br/>能力路由 · 插件化数据源<br/>Parquet · DuckDB")]
-            S2["② 计算与执行<br/>指标流水线(存15现算68列)<br/>策略 · 因子 · 回测 · 挖掘"]
-            S3["③ 事件与开放<br/>监控引擎 · 事件总线 · SSE"]
-            S1 -->|"enriched 口径"| S2
-            S2 -->|"信号 · 事件"| S3
-        end
-        subgraph EXT["🧩 扩展域 — 5 条通道 · 只消费契约, 可整体替换/移除"]
-            direction TB
-            X1["数据源插件<br/>TickFlow / fuyao / TdxQuant"]
-            X2["扩展数据表<br/>两级拉取 · 读+写"]
-            X3["自定义策略<br/>与信号"]
-            X4["页面扩展<br/>11 官方页单文件 + 运行时页面包"]
-            X5["custom 后端模块<br/>★ AI 助手参考实现"]
-        end
-    end
-
-    UI -->|"密码会话"| API
-    MCP -->|"Bearer + scope"| GW
-    APPC -->|"Bearer + scope"| GW
-    GW -->|"契约放行"| API
-    API ==>|"数据与语义"| CORE
-    EXT ==>|"只消费开放契约 · 零核心改动"| CORE
-
-    classDef client fill:#eef2ff,stroke:#6366f1,color:#312e81
-    classDef gate fill:#faf5ff,stroke:#8b5cf6,color:#6b21a8,stroke-width:2px
-    classDef svc fill:#ecfeff,stroke:#06b6d4,color:#164e63
-    classDef fdn fill:#ecfdf5,stroke:#10b981,color:#064e3b
-    classDef cmp fill:#f0f9ff,stroke:#0ea5e9,color:#0c4a6e
-    classDef pdc fill:#fffbeb,stroke:#f59e0b,color:#78350f
-    classDef ext fill:#f8fafc,stroke:#94a3b8,color:#334155,stroke-dasharray:5 4
-    classDef star fill:#fffbeb,stroke:#d97706,color:#78350f,stroke-width:2px
-
-    class UI,MCP,APPC client
-    class GW gate
-    class API svc
-    class S1 fdn
-    class S2 cmp
-    class S3 pdc
-    class X1,X2,X3,X4 ext
-    class X5 star
-
-    style CLIENTS fill:#f5f3ff,stroke:#c4b5fd,stroke-width:1.5px,color:#4c1d95
-    style BODY fill:transparent,stroke:transparent
-    style CORE fill:#f8fafc,stroke:#334155,stroke-width:2px,color:#0f172a
-    style EXT fill:#fefce8,stroke:#a16207,stroke-width:1.5px,stroke-dasharray:7 4,color:#713f12
-```
+<div align="center">
+  <img src="./assets/architecture.svg" width="920" alt="TSP 架构总览 — 网关居中的开放单体: 消费端双通道接入, 核心域 8 域拥有数据与语义, 扩展域 5 通道只消费契约">
+</div>
 
 ### 核心域 / 扩展域边界
 
@@ -640,16 +580,16 @@ PORT=3018                      # 服务端口
 
 <sub>作者精力有限,优先响应赞助回馈,希望理解 📈</sub>
 
-    </td>
-    <td align="center" width="50%">
+</td>
+<td align="center" width="50%">
 
-<sub>欢迎加入交流群,一起讨论交流 · 个人维护了一些个性化接口统一公布在群公告</sub>
+<sub>欢迎加入交流群,一起讨论交流</sub>
 
 <br/>
 
-<img src="./community-qr-code.jpg" alt="交流群二维码 · 个人维护的个性化接口见群公告" height="240" />
+<img src="./community-qr-code.jpg" alt="交流群二维码" height="240" />
 
-    </td>
+</td>
   </tr>
 </table>
 

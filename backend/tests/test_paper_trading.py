@@ -293,9 +293,9 @@ def test_position_symbol_cap(tmp_path, monkeypatch):
             "kind": "fill",
         })
     paper._materialize(tmp_path)
-    # 手动下单不使用策略持仓上限
+    # 新开仓第 51 只 → 拒
     _, err = paper.create_order(tmp_path, "601999.SH", "buy", qty=100, ref_price=10.0)
-    assert err is None
+    assert "上限" in err
     # 加仓已有持仓 → 放行
     ok, err = paper.create_order(tmp_path, "600000.SH", "buy", qty=100, ref_price=10.0)
     assert err is None and ok["status"] == "pending"
@@ -397,14 +397,10 @@ def _auto_rule(**overrides) -> dict:
         "name": "跟单测试",
         "match_kind": "strategy",
         "match_id": "strat_1",
-        "side": "auto",
-        "entry_fill": "open_t+1",
-        "exit_fill": "close_t",
-        "position_sizing": "equal",
-        "max_positions": 10,
-        "max_total_position": 5.0,
-        "auto_follow_enabled": True,
-        "auto_exit_enabled": False,
+        "side": "buy",
+        "size_mode": "fixed_amount",
+        "size_value": 5000.0,
+        "order_type": "next_open",
         "cooldown_days": 5,
         "enabled": True,
     }
@@ -418,8 +414,8 @@ def test_auto_rule_crud_and_validation(tmp_path):
         paper_auto.create_auto_rule(tmp_path, _auto_rule(name=""))
     with pytest.raises(ValueError, match="match_kind"):
         paper_auto.create_auto_rule(tmp_path, _auto_rule(match_kind="xxx"))
-    with pytest.raises(ValueError, match="100"):
-        paper_auto.create_auto_rule(tmp_path, _auto_rule(max_total_position=150))
+    with pytest.raises(ValueError, match="不能超过 100"):
+        paper_auto.create_auto_rule(tmp_path, _auto_rule(size_mode="pct_equity", size_value=150))
     rule = paper_auto.create_auto_rule(tmp_path, _auto_rule())
     assert rule["id"].startswith("arule_")
     assert len(paper_auto.load_auto_rules(tmp_path)) == 1
@@ -437,11 +433,11 @@ def test_auto_trigger_matches_strategy_event(tmp_path, monkeypatch):
     _cap_account(tmp_path)
     paper_auto.create_auto_rule(tmp_path, _auto_rule())
 
-    ev = {"source": "strategy", "type": "buy_signal", "strategy_id": "strat_1", "rule_id": "r1",
+    ev = {"source": "strategy", "strategy_id": "strat_1", "rule_id": "r1",
           "symbol": SYM, "price": 10.0}
     orders = paper_auto.on_rule_events(tmp_path, [ev])
     assert len(orders) == 1
-    assert orders[0]["qty"] == 4900       # 5%权益=5000元, 预留买入费用后取整
+    assert orders[0]["qty"] == 500        # 5000 元 / 10 元 → 500 股
     assert orders[0]["source"].startswith("auto:")
     assert orders[0]["order_type"] == "next_open"
 
@@ -456,7 +452,6 @@ def test_auto_trigger_matches_strategy_event(tmp_path, monkeypatch):
     for o in orders_loaded:
         o["created_at"] = "2026-09-18T10:00:00+08:00"
         paper.save_order(tmp_path, o)
-    paper.cancel_order(tmp_path, orders[0]["id"])
     orders2 = paper_auto.on_rule_events(tmp_path, [ev])
     assert len(orders2) == 1
 
@@ -478,7 +473,7 @@ def test_auto_rule_disabled_not_triggered(tmp_path):
     from app.strategy import paper_auto
     _cap_account(tmp_path)
     rule = paper_auto.create_auto_rule(tmp_path, _auto_rule(enabled=False))
-    ev = {"source": "strategy", "type": "buy_signal", "strategy_id": "strat_1", "symbol": SYM, "price": 10.0}
+    ev = {"source": "strategy", "strategy_id": "strat_1", "symbol": SYM, "price": 10.0}
     assert paper_auto.on_rule_events(tmp_path, [ev]) == []
     paper_auto.set_enabled(tmp_path, rule["id"], True)
     assert len(paper_auto.on_rule_events(tmp_path, [ev])) == 1
@@ -614,6 +609,32 @@ def test_account_id_validation_blocks_traversal(tmp_path):
             paper.get_account(tmp_path, bad)
         with _pytest.raises(ValueError):
             paper.create_account(tmp_path, 100.0, account_id=bad)
+
+
+def test_legacy_single_account_layout_migrates(tmp_path, monkeypatch):
+    """旧版 data/paper/* 单账户布局首次访问自动迁移到 accounts/default/。"""
+    monkeypatch.setattr(paper, "_MIGRATION_DONE", False)
+    legacy = tmp_path / "paper"
+    legacy.mkdir()
+    (legacy / "account.json").write_text(
+        __import__("json").dumps({
+            "id": "default", "initial_cash": 800000.0, "cash": 750000.0,
+            "commission_pct": 0.00025, "stamp_tax_pct": 0.001, "slippage_bps": 5.0,
+            "status": "active", "created_at": "2026-09-01T10:00:00",
+        }, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (legacy / "orders").mkdir()
+    (legacy / "orders" / "order_x.json").write_text("{}", encoding="utf-8")
+
+    acc = paper.get_account(tmp_path)
+    assert acc is not None and acc["cash"] == 750000.0
+    # 物理迁移到位
+    assert (tmp_path / "paper" / "accounts" / "default" / "account.json").exists()
+    assert (tmp_path / "paper" / "accounts" / "default" / "orders" / "order_x.json").exists()
+    assert not (legacy / "account.json").exists()
+    # 幂等: 重复访问不报错
+    assert paper.get_account(tmp_path)["cash"] == 750000.0
 
 
 # ── V3 补全: 结算成交留痕 / 自动跟单下单事件 ──────────

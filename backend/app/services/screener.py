@@ -16,17 +16,12 @@ from pathlib import Path
 import polars as pl
 
 from app.parquet import scan_enriched_parquet
-from app.market_time import (
-    cn_today,
-    is_after_official_daily_cutoff,
-    should_use_live_market_snapshot,
-)
 from app.tickflow.repository import KlineRepository
 
 logger = logging.getLogger(__name__)
 
 # 常用指标 (MA5/10/20、BOLL(20)、量比等) 的近似最小暖机窗口。
-# 用于没有精确回看需求的场景 (自定义 SQL 选股、盘后管道) 的数据充足性提示 (#303);
+# 用于没有精确回看需求的场景 (自定义 SQL 筛选、盘后管道) 的数据充足性提示 (#303);
 # 策略运行用 engine.required_history_bars 的精确值。
 MIN_INDICATOR_WARMUP_DAYS = 30
 
@@ -89,12 +84,7 @@ class ScreenerService:
         """
         # 优先使用 repo 最新日缓存
         cache, cache_date = self.repo.get_enriched_latest_asset(self.asset_type)
-        if (
-            cache is not None
-            and not cache.is_empty()
-            and cache_date == target_date
-            and should_use_live_market_snapshot(cache_date)
-        ):
+        if cache is not None and not cache.is_empty() and cache_date == target_date:
             df = cache
             # JOIN instruments
             df_i = self.repo.get_instruments_asset(self.asset_type)
@@ -104,13 +94,8 @@ class ScreenerService:
                     df = df.join(df_i.select(inst_cols), on="symbol", how="left")
             return df
 
-        # 盘后定版的最新日必须读持久化分区，不能再命中包含盘中快照的历史缓存。
-        force_persisted_latest = (
-            target_date == cn_today() and is_after_official_daily_cutoff()
-        )
-
         # 尝试从 repo 级预计算历史缓存中提取目标日期 (仅 stock: 该缓存为股票专用)
-        if self.asset_type == "stock" and not force_persisted_latest:
+        if self.asset_type == "stock":
             cached_hist = self.repo.get_enriched_history(target_date, 1)
             if cached_hist is not None and not cached_hist.is_empty() and "date" in cached_hist.columns:
                 df = cached_hist.filter(pl.col("date") == target_date)
@@ -124,7 +109,7 @@ class ScreenerService:
                             df = df.join(df_i.select(inst_cols), on="symbol", how="left")
                     return df
 
-        # 历史日期: 从 parquet 读取基础数据, 即时计算指标 (慢路径)
+        # 历史日期: 从 parquet 读取 14 列, 即时计算指标 (慢路径)
         enriched_dir = self.repo.store.data_dir / self._enriched_dirname
         ds = target_date.isoformat()
         target_parquet = enriched_dir / f"date={ds}" / "part.parquet"
@@ -225,7 +210,7 @@ class ScreenerService:
         # turnover_rate 是 enriched 存储列, 必须随行透传: 否则即时计算后该列
         # 丢失, 自定义 SQL 用它做条件会 Binder Error 被吞成空结果 (#187)
         read_cols = ["symbol", "date", "open", "high", "low", "close", "volume",
-                     "amount", "prev_close", "change_pct", "raw_close", "raw_high", "raw_low", "turnover_rate"]
+                     "amount", "raw_close", "raw_high", "raw_low", "turnover_rate"]
 
         try:
             lf = (
@@ -317,7 +302,7 @@ class ScreenerService:
         enriched_dir = self.repo.store.data_dir / self._enriched_dirname
         # 同 _compute_enriched_full: turnover_rate 存储列随行透传 (#187)
         read_cols = ["symbol", "date", "open", "high", "low", "close", "volume",
-                     "amount", "prev_close", "change_pct", "raw_close", "raw_high", "raw_low", "turnover_rate"]
+                     "amount", "raw_close", "raw_high", "raw_low", "turnover_rate"]
 
         try:
             lf = (
@@ -354,17 +339,12 @@ class ScreenerService:
         # 按交易日计数: 从数据里实际存在的交易日序列取最后 lookback_days 个交易日,
         # 不能用 timedelta(days=N) (自然日), 否则周末/节假日会让窗口偏少, 与回测不一致。
         if "date" in df_full.columns:
-            # df_full 通常已按 target_date 截断; 这里仍显式锚定目标日,
-            # 避免未来日期进入窗口后改变历史回选的起点。
-            trading_dates = df_full.filter(pl.col("date") <= target_date)["date"].unique().sort()
+            trading_dates = df_full["date"].unique().sort()
             if len(trading_dates) > lookback_days:
                 lookback_start = trading_dates[-(lookback_days + 1)]
             else:
                 lookback_start = trading_dates[0]
-            df_full = df_full.filter(
-                (pl.col("date") >= lookback_start)
-                & (pl.col("date") <= target_date)
-            )
+            df_full = df_full.filter(pl.col("date") >= lookback_start)
 
         df_full = df_full.sort(["symbol", "date"])
 
@@ -373,10 +353,15 @@ class ScreenerService:
                     target_date, lookback_days, elapsed, len(df_full))
 
         _history_cache[cache_key] = (now, df_full)
+        # TTL 先清一轮; 仍超上限时按最旧无条件淘汰 — 否则两分钟内出现 >10 个
+        # 不同 (asset_type, date, lookback) 键时全部新鲜、零逐出, 数 GB 宽帧驻留
         if len(_history_cache) > 10:
             expired = [k for k, (ts, _) in _history_cache.items() if now - ts > _HISTORY_CACHE_TTL]
             for k in expired:
                 del _history_cache[k]
+            while len(_history_cache) > 10:
+                oldest = min(_history_cache, key=lambda k: _history_cache[k][0])
+                del _history_cache[oldest]
 
         return df_full
 
@@ -388,7 +373,7 @@ class ScreenerService:
         limit: int = 30,
         pool: list[str] | None = None,
     ) -> ScreenerResult:
-        """自定义 SQL 条件选股。
+        """自定义 SQL 条件筛选。
 
         先通过 Polars 即时计算完整指标, 再用 DuckDB 做 SQL WHERE 过滤。
         kline_enriched DuckDB 视图只有基础存储列, 不能直接用于指标过滤。
@@ -552,9 +537,9 @@ class ScreenerService:
     def coverage_warnings(self, as_of: date, *, required_bars: int | None = None) -> list[str]:
         """数据充足性提示 (#303): enriched 覆盖不足时返回用户可读警告, 充足返回 []。
 
-        空库首跑只拉到 1 个交易日时, 均线/动量/量比等指标暖机不足, 选股会静默
+        空库首跑只拉到 1 个交易日时, 均线/动量/量比等指标暖机不足, 策略会静默
         全 0 — 这里把"数据不够"显式说出来。required_bars 缺省用通用暖机窗口
-        (自定义 SQL 选股); 策略运行传 engine.required_history_bars 的精确值。
+        (自定义 SQL 筛选); 策略运行传 engine.required_history_bars 的精确值。
         available 为 0 时 enriched 为空, 上层 latest_date 已 400, 不重复提示。
         """
         available = enriched_history_days(self.repo.store.data_dir, self.asset_type, as_of)
@@ -565,6 +550,6 @@ class ScreenerService:
             return []
         return [
             f"本地数据仅覆盖 {available} 个交易日, 低于本次计算所需约 {need} 天暖机窗口 — "
-            "指标可能失真或全部落空 (选股 0 命中)。建议先全量回填日K并重算指标 "
+            "指标可能失真或全部落空 (策略命中 0)。建议先全量回填日K并重算指标 "
             "(数据页「日K批量同步」, 符号需带交易所后缀)"
         ]

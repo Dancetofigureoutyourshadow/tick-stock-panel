@@ -198,10 +198,6 @@ def _server_candidates() -> list[tuple[str, int]]:
 def availability() -> tuple[bool, str]:
     if importlib.util.find_spec("mootdx") is None:
         return False, "未安装 mootdx, 请安装插件 requirements.txt"
-    try:
-        from mootdx.quotes import Quotes  # noqa: F401
-    except Exception as exc:
-        return False, f"mootdx 导入失败: {exc}"
     # Import success only proves that the wrapper is installed.  TDX nodes can
     # still accept TCP connections while returning an empty/short response.
     # Reuse the same quote validation as the realtime provider so the plugin

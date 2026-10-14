@@ -102,7 +102,7 @@ class DepthService:
     def boot_check(self) -> None:
         """启动补跑: 当天 depth5 文件不存在则 finalize 一次; 已存在则恢复内存缓存。"""
         if not self._has_capability():
-            logger.info("depth sealed: 无 DEPTH5_BATCH 能力, 跳过启动补跑")
+            logger.info("depth sealed: %s 不可用, 跳过启动补跑", self._capability_label())
             return
         today = cn_today()
         if self._persisted_for_date(today):
@@ -212,7 +212,7 @@ class DepthService:
         返回 {"ok": bool, "count": int, "msg": str}
         """
         if not self._has_capability():
-            return {"ok": False, "count": 0, "msg": "无五档盘口能力(需 Pro+)"}
+            return {"ok": False, "count": 0, "msg": f"{self._capability_label()} 不可用"}
         try:
             self._fetch_and_seal(persist=True)  # 落盘, 刷新页面不丢
             with self._lock:
@@ -241,20 +241,26 @@ class DepthService:
         persist=True: 盘后定版, 写 depth5 parquet
         persist=False: 盘中轮询, 只更新内存缓存
 
-        全程持 _fetch_lock: 请求线程 (run_once)、轮询线程、finalize 不会交叉写 parquet。
+        网络拉取在 _fetch_lock 外执行 (SDK 批量最坏数秒, 全程持锁会让请求线程
+        run_once/轮询/finalize 互相阻塞); 锁内只做 sealed 计算与缓存替换/落盘,
+        parquet 写串行化语义不变。
         """
-        with self._fetch_lock:
-            self._fetch_and_seal_locked(persist)
-
-    def _fetch_and_seal_locked(self, persist: bool = False) -> None:
-        """_fetch_and_seal 的实际逻辑, 须在持有 _fetch_lock 时调用。"""
-        if not self._repo:
+        prepared = self._fetch_depth_snapshot()
+        if prepared is None:
             return
+        depth_data, syms_up, syms_down, enriched_date = prepared
+        with self._fetch_lock:
+            self._seal_locked(depth_data, syms_up, syms_down, enriched_date, persist)
+
+    def _fetch_depth_snapshot(self):
+        """锁外阶段: 读 enriched 涨跌停名单 + 批量拉取 depth (网络调用不进锁)。"""
+        if not self._repo:
+            return None
 
         # 只读 enriched 内存缓存(线程安全, 避免和 quote_service 写盘竞态)
         enriched, enriched_date = self._repo.get_enriched_latest()
         if enriched.is_empty():
-            return
+            return None
 
         # 筛涨跌停名单(用 fill_null 防止列缺失)
         syms_up: list[str] = []
@@ -271,14 +277,17 @@ class DepthService:
         all_syms = list(dict.fromkeys(syms_up + syms_down))  # 去重保序
         if not all_syms:
             logger.debug("depth sealed: 当日无涨跌停股, 跳过")
-            return
+            return None
 
         # 拉 depth(涨跌停一次拉, 按 capset batch 切片)
         depth_data = self._call_depth_batch(all_syms)
         if not depth_data:
             logger.warning("depth sealed: depth.batch 返回空")
-            return
+            return None
+        return depth_data, syms_up, syms_down, enriched_date
 
+    def _seal_locked(self, depth_data, syms_up, syms_down, enriched_date, persist) -> None:
+        """_fetch_and_seal 的计算/缓存/落盘阶段, 须在持有 _fetch_lock 时调用。"""
         up_set = set(syms_up)
         down_set = set(syms_down)
         now_perf = time.perf_counter()
@@ -323,8 +332,30 @@ class DepthService:
             self._persist(enriched_date)
 
     def _call_depth_batch(self, symbols: list[str]) -> dict:
-        """调 tf.depth.batch, 按 capset 的 batch 切片 + 节流。返回 {symbol: MarketDepth}。"""
+        """按独立五档路由取数; 所有 provider 共用分片限速且失败不跨源回退。"""
         from app.services import preferences
+
+        provider_name = preferences.get_depth5_data_provider()
+        if provider_name == "tickflow":
+            from app.data_providers.registry import get_provider
+
+            provider = get_provider("tickflow")
+        else:
+            from app.data_providers import custom as custom_sources
+
+            try:
+                if not custom_sources.provider_has_dataset(provider_name, "depth5"):
+                    logger.warning("depth provider %s 未声明 depth5, 跳过本轮", provider_name)
+                    return {}
+                provider = custom_sources.get_provider(provider_name)
+            except Exception as e:
+                logger.warning("depth provider %s 解析失败, 跳过本轮: %s", provider_name, e)
+                return {}
+
+        fetch_depth = getattr(provider, "get_depth5", None) or getattr(provider, "get_depth_batch", None)
+        if not callable(fetch_depth):
+            logger.warning("depth provider %s 未实现 get_depth_batch, 跳过本轮", provider_name)
+            return {}
 
         capset = self._get_capset()
         limit = resolve_limit(capset, Cap.DEPTH5_BATCH, default_batch=100, default_rpm=30)
@@ -338,8 +369,9 @@ class DepthService:
         if custom_provider is not None:
             provider_name = getattr(custom_provider, "name", "custom")
             fetch = getattr(custom_provider, "get_depth5", None)
-            if not callable(fetch):
-                fetch = getattr(custom_provider, "get_depth_batch", None)
+            if callable(fetch):
+                return fetch(symbols)
+            fetch = getattr(custom_provider, "get_depth_batch", None)
             for i, chunk in enumerate(chunks):
                 sleep_between_batches(i, limit.rpm, default_interval=2.0)
                 try:
@@ -358,7 +390,7 @@ class DepthService:
         for i, chunk in enumerate(chunks):
             sleep_between_batches(i, limit.rpm, default_interval=2.0)
             try:
-                data = tf_provider.get_depth5(chunk)
+                data = fetch_depth(chunk)
                 if isinstance(data, dict):
                     result.update(data)
                 else:
@@ -655,14 +687,23 @@ class DepthService:
     # ================================================================
 
     def _has_capability(self) -> bool:
-        from app.services import preferences
+        """五档能力是否可用 — 以【生效源】为准, 与取数路径 (_call_depth_batch) 同口径。
 
-        selected_provider = preferences.get_depth5_data_provider()
-        if selected_provider != "tickflow":
-            return self._custom_depth5_provider() is not None
-        capset = self._get_capset()
-        from app.tickflow.capabilities import Cap
-        return capset.has(Cap.DEPTH5_BATCH)
+        不能只看 TickFlow 档位: 五档路由到声明了 depth5 的插件 (如 tdxquant) 时,
+        TickFlow 档位无关; 反之路由到 TickFlow 但档位不足时, 插件声明不该算数。
+        本轮修复前此处只查 capset, 导致「五档已切到插件但启动补跑被跳过」。
+        """
+        if self._custom_depth5_provider() is not None:
+            return True
+        from app.data_providers.capabilities import capability_gate
+        ok, _ = capability_gate("depth5")
+        return ok
+
+    def _capability_label(self) -> str:
+        """门禁日志标签: "五档盘口 ← fuyao" / "…(档位不足)", 便于判断该切哪个源。"""
+        from app.data_providers.capabilities import capability_gate
+        _, label = capability_gate("depth5")
+        return label
 
     @staticmethod
     def _custom_depth5_provider():

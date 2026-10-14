@@ -11,11 +11,13 @@ tool_calls 分片, 流结束时统一返回本轮结果, 由 chat_service 决定
 - {"type": "text", "delta": str}             正文增量(可能多次)
 - {"type": "round_end", "tool_calls": [...], "finish_reason": str}
   本轮结束; tool_calls 非空表示模型请求工具, 元素形如
-  {"id", "name", "arguments"(JSON 字符串)}。
+  {"id", "name", "arguments"(JSON 字符串)}, 上游附带 extra_content 时
+  (如 Gemini 的 thought_signature) 另有 "extra_content" 键, 需原样回传。
 """
 from __future__ import annotations
 
 import asyncio
+import inspect
 from collections.abc import AsyncIterator, Sequence
 from typing import Any
 
@@ -23,11 +25,13 @@ from openai import AsyncOpenAI
 
 from app import secrets_store
 from app.config import settings
+from app.services import ai_responses
 from app.services.ai_provider import (
     OPENAI_PROVIDER,
     current_ai_model,
     current_ai_provider,
     current_openai_reasoning_effort,
+    is_responses_protocol,
     normalize_openai_base_url,
 )
 
@@ -87,6 +91,14 @@ async def stream_openai_round(
     timeout: float = 240.0,
 ) -> AsyncIterator[dict[str, Any]]:
     """执行一轮流式补全: yield 文本 delta, 最后 yield 一个 round_end 事件。"""
+    if is_responses_protocol():
+        # Responses 协议走平行实现, 事件输出与本函数同构, chat_service 无感。
+        async for event in ai_responses.stream_round(
+            messages, tools, temperature=temperature, timeout=timeout,
+        ):
+            yield event
+        return
+
     client = _client(timeout)
     model = current_ai_model()
     kwargs = _build_kwargs(temperature)
@@ -111,8 +123,8 @@ async def stream_openai_round(
     content_seen = False
     reasoning_seen = False
     finish_reason = ""
-    calls: dict[int, dict[str, str]] = {}
-    order: list[int] = []
+    calls: dict[int, dict[str, Any]] = {}
+    ordered: list[dict[str, Any]] = []
 
     async for chunk in stream:
         choices = getattr(chunk, "choices", None) or []
@@ -135,13 +147,22 @@ async def stream_openai_round(
 
         for tc in getattr(delta, "tool_calls", None) or []:
             idx = int(getattr(tc, "index", 0) or 0)
+            tc_id = str(getattr(tc, "id", None) or "")
             entry = calls.get(idx)
-            if entry is None:
+            # Gemini 的兼容接口会把并行调用逐个整条下发且 index 相同(或缺省),
+            # 只靠 index 累积会把两个调用的 name/arguments 拼成一个; 同一 index
+            # 上出现不同的 id 即视为新的调用。
+            if entry is None or (tc_id and entry["id"] and tc_id != entry["id"]):
                 entry = {"id": "", "name": "", "arguments": ""}
                 calls[idx] = entry
-                order.append(idx)
-            if getattr(tc, "id", None):
-                entry["id"] = str(tc.id)
+                ordered.append(entry)
+            if tc_id:
+                entry["id"] = tc_id
+            # Gemini 3 在 extra_content.google.thought_signature 里返回思考签名,
+            # 下一轮回传历史时缺了它会被 400 拒绝。
+            extra = getattr(tc, "extra_content", None)
+            if extra and "extra_content" not in entry:
+                entry["extra_content"] = extra
             fn = getattr(tc, "function", None)
             if fn is not None:
                 if getattr(fn, "name", None):
@@ -149,15 +170,19 @@ async def stream_openai_round(
                 if getattr(fn, "arguments", None):
                     entry["arguments"] += str(fn.arguments)
 
-    # 让 SDK 流对象尽快释放(部分兼容网关要求显式 close)。
+    # 让 SDK 流对象尽快释放(部分兼容网关要求显式 close); SDK 2.x 的
+    # AsyncStream.close 是协程, 必须区分同步/异步两种签名。
     close = getattr(stream, "close", None)
     if close is not None:
-        await asyncio.to_thread(close)
+        if inspect.iscoroutinefunction(close):
+            await close()
+        else:
+            await asyncio.to_thread(close)
 
     if calls:
         yield {
             "type": "round_end",
-            "tool_calls": [calls[i] for i in order],
+            "tool_calls": ordered,
             "finish_reason": finish_reason,
         }
         return

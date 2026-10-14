@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import socket
 import sys
 import threading
@@ -25,7 +26,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-_APP_NAME = "TickFlow 股票面板"
+_APP_NAME = "TSP"
 _BASE_PORT = 3018
 _PORT_PROBE_RANGE = 50  # 从 3018 起最多试 50 个端口
 
@@ -173,12 +174,25 @@ def _pid_alive(pid: int) -> bool:
     import os
 
     if os.name == "nt":
-        # Windows: 0 表示存在, 其它是异常
-        try:
-            os.kill(pid, 0)
-            return True
-        except OSError:
+        # Windows 的 os.kill 没有 POSIX 探测语义: 除 CTRL_C/CTRL_BREAK 外
+        # 任何信号值 (含 0) 都是 TerminateProcess 无条件杀进程。存活探测
+        # 必须用 OpenProcess + GetExitCodeProcess, 否则单实例检查会误杀
+        # 正在运行的实例 (例如探测子进程重启自身时)。
+        import ctypes
+
+        STILL_ACTIVE = 259
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
             return False
+        try:
+            exit_code = ctypes.c_ulong()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                return False
+            return exit_code.value == STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
     else:
         try:
             os.kill(pid, 0)  # signal 0 = 探测存活, 不实际发信号
@@ -297,6 +311,13 @@ def main() -> int:
     # 放在 basicConfig 之后 (它先建好 root logger 的格式), 这里只追加 handler。
     _setup_logging()
 
+    # TdxQuant 探测 worker 哨兵 (见 probe.run): 打包版以「重执行自身 + 哨兵」
+    # 拉起独立探测进程, 必须先于单实例锁/后端/窗口等任何桌面启动动作分发。
+    if os.environ.get("TDX_PROBE_WORKER") == "1":
+        from app.plugins.tdxquant.probe import run_worker
+
+        return run_worker()
+
     try:
         _ensure_data_dir_writable()
     except Exception:
@@ -339,7 +360,7 @@ def main() -> int:
         # 写完整 traceback 到 data/desktop.log, 并弹原生 MessageBox 让用户截图反馈。
         # 必须排在 KeyboardInterrupt 之后 —— Exception 是基类, 在前会遮蔽它。
         logger.exception("桌面客户端启动失败")
-        _show_crash("TickFlow 启动失败", traceback.format_exc())
+        _show_crash("TSP 启动失败", traceback.format_exc())
         return 1
     finally:
         _release_single_instance()

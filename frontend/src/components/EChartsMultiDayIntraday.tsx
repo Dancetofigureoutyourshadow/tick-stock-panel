@@ -2,9 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import * as echarts from 'echarts'
 import type { ECharts, EChartsOption } from 'echarts'
 import type { MinuteKlineRow, MinuteKlineSession } from '@/lib/api'
-import type { IntradayChartMarker } from '@/components/EChartsIntraday'
-import type { ChartPriceLine } from '@/components/EChartsCandlestick'
-import { computeIntradayAverage, formatMinuteTime, FULL_DAY_TIMES, minuteBarDelta } from '@/lib/intraday-chart'
+import { computeIntradayAverage, formatMinuteTime, FULL_DAY_TIMES } from '@/lib/intraday-chart'
 import { useChartTheme } from '@/lib/theme'
 
 const COLORS = {
@@ -21,8 +19,7 @@ interface Props {
   sessions: MinuteKlineSession[]
   height?: number
   onPriceDoubleClick?: (price: number, currentPrice: number) => void
-  priceLines?: ChartPriceLine[]
-  markers?: IntradayChartMarker[]
+  priceLines?: { value: number; label?: string; color?: string }[]
 }
 
 interface InfoPoint {
@@ -42,19 +39,6 @@ function formatAmount(value: number | null | undefined): string {
 function priceColor(close: number, prevClose: number | null): string {
   if (prevClose == null || close === prevClose) return COLORS.flat
   return close > prevClose ? COLORS.up : COLORS.down
-}
-
-function nearestTradingTime(time: string): string {
-  const [hour, minute] = time.split(':').map(Number)
-  const target = Number.isFinite(hour) && Number.isFinite(minute) ? hour * 60 + minute : 15 * 60
-  return FULL_DAY_TIMES.reduce((nearest, candidate) => {
-    const [candidateHour, candidateMinute] = candidate.split(':').map(Number)
-    const [nearestHour, nearestMinute] = nearest.split(':').map(Number)
-    return Math.abs(candidateHour * 60 + candidateMinute - target)
-      < Math.abs(nearestHour * 60 + nearestMinute - target)
-      ? candidate
-      : nearest
-  }, FULL_DAY_TIMES[0])
 }
 
 function buildModel(sessions: MinuteKlineSession[]) {
@@ -81,17 +65,19 @@ function buildModel(sessions: MinuteKlineSession[]) {
     }
 
     const averagePrices = computeIntradayAverage(session.rows)
-    const rowsByTime = new Map<string, { row: MinuteKlineRow; average: number; rowIndex: number }>()
+    const rowsByTime = new Map<string, { row: MinuteKlineRow; average: number | null }>()
     session.rows.forEach((row, index) => {
       rowsByTime.set(formatMinuteTime(row.datetime), {
         row,
         average: averagePrices[index],
-        rowIndex: index,
       })
     })
 
     const dayValues: (number | null)[] = []
     const dayAverages: (number | null)[] = []
+    // 量柱着色基准: 前一分钟 close; 当日第一根用 session 昨收。
+    // 不用 row.open — 部分分钟源历史日无真实 open(为 null), close-vs-open 会全偏。
+    let prevRef: number | null = session.prev_close
     for (const time of FULL_DAY_TIMES) {
       const point = rowsByTime.get(time)
       const index = categories.length
@@ -103,21 +89,24 @@ function buildModel(sessions: MinuteKlineSession[]) {
         continue
       }
 
-      const { row, average, rowIndex } = point
-      const delta = minuteBarDelta(row, session.rows[rowIndex - 1]?.close ?? session.prev_close)
+      const { row, average } = point
       dayValues.push(row.close)
       dayAverages.push(average)
       volumeData.push({
         value: row.volume,
         itemStyle: {
-          color: delta > 0
-            ? COLORS.volumeUp
-            : delta < 0
-              ? COLORS.volumeDown
-              : COLORS.volumeFlat,
+          color: prevRef == null
+            ? COLORS.volumeFlat
+            : row.close > prevRef
+              ? COLORS.volumeUp
+              : row.close < prevRef
+                ? COLORS.volumeDown
+                : COLORS.volumeFlat,
         },
       })
-      priceValues.push(row.low, row.high, average)
+      prevRef = row.close
+      priceValues.push(row.low, row.high)
+      if (average != null) priceValues.push(average)
       pointByIndex.set(index, {
         date: session.date,
         row,
@@ -158,7 +147,6 @@ export function EChartsMultiDayIntraday({
   height = 420,
   onPriceDoubleClick,
   priceLines = [],
-  markers = [],
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<ECharts | null>(null)
@@ -221,13 +209,9 @@ export function EChartsMultiDayIntraday({
     }
 
     const monitoredPrices = priceLines
-      .filter(line => !line.axisLabel)
       .map(line => line.value)
       .filter(value => Number.isFinite(value) && value > 0)
-    const markerPrices = markers
-      .map(marker => marker.price)
-      .filter(value => Number.isFinite(value) && value > 0)
-    const allPriceValues = [...model.priceValues, ...monitoredPrices, ...markerPrices]
+    const allPriceValues = [...model.priceValues, ...monitoredPrices]
     const minPrice = allPriceValues.length > 0 ? Math.min(...allPriceValues) : 0
     const maxPrice = allPriceValues.length > 0 ? Math.max(...allPriceValues) : 1
     const padding = Math.max((maxPrice - minPrice) * 0.08, maxPrice * 0.002)
@@ -257,19 +241,17 @@ export function EChartsMultiDayIntraday({
     }))
     const monitorLineData = priceLines.flatMap(line => {
       if (!Number.isFinite(line.value) || line.value <= 0) return []
-      if (line.axisLabel && (line.value < minPrice - padding || line.value > maxPrice + padding)) return []
       return [{
         yAxis: line.value,
         lineStyle: { color: line.color ?? theme.text, type: 'dashed', width: 1, opacity: 0.92 },
         label: {
-          show: !!line.label || !!line.axisLabel,
-          formatter: line.axisLabel ? line.value.toFixed(2) : line.label ?? '',
-          position: line.axisLabel ? 'start' : 'insideEndTop',
-          distance: line.axisLabel ? 8 : 5,
+          show: !!line.label,
+          formatter: line.label ?? '',
+          position: 'insideEndTop',
           color: line.color ?? theme.text,
           backgroundColor: theme.tooltipBg,
           borderRadius: 4,
-          padding: line.axisLabel ? [2, 0] : [2, 6],
+          padding: [2, 6],
           fontSize: 10,
           fontFamily: 'JetBrains Mono, monospace',
         },
@@ -283,29 +265,6 @@ export function EChartsMultiDayIntraday({
         animation: false,
         data: markLineData,
       }
-    }
-    const visibleDates = new Set(model.dayRanges.map(item => item.session.date))
-    const markerData = markers
-      .filter(marker => visibleDates.has(marker.date) && Number.isFinite(marker.price) && marker.price > 0)
-      .map(marker => ({
-        name: marker.description ?? '',
-        value: marker.description ?? '',
-        coord: [`${marker.date} ${nearestTradingTime(marker.time)}`, marker.price],
-        symbol: 'circle',
-        symbolSize: 9,
-        symbolOffset: [0, 0],
-        itemStyle: {
-          color: marker.kind === 'buy' ? '#B91C1C' : '#15803D',
-          borderColor: '#FFFFFF',
-          borderWidth: 1.5,
-        },
-        label: { show: false },
-        tooltip: marker.description
-          ? { show: true, renderMode: 'richText', formatter: marker.description }
-          : undefined,
-      }))
-    if (priceSeries.length > 0 && markerData.length > 0) {
-      priceSeries[0].markPoint = { data: markerData, animation: false }
     }
     const averageSeries: any[] = model.dayRanges.map(({ start, session, averages }) => {
       const data = new Array(totalLength).fill(null) as (number | null)[]
@@ -431,7 +390,7 @@ export function EChartsMultiDayIntraday({
       ],
     }
     chart.setOption(option, true)
-  }, [height, markers, model, priceLines, theme])
+  }, [height, model, priceLines, theme])
 
   useEffect(() => () => {
     chartRef.current?.off('updateAxisPointer')

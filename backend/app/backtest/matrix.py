@@ -23,6 +23,20 @@ from typing import Any, Protocol, runtime_checkable
 import numpy as np
 import polars as pl
 import pyarrow as pa
+
+
+def _publish_matrix_cache_directory(temporary: Path, cache_path: Path) -> None:
+    try:
+        os.replace(temporary, cache_path)
+        return
+    except OSError:
+        if (cache_path / "manifest.json").exists():
+            shutil.rmtree(temporary, ignore_errors=True)
+            return
+        if not cache_path.is_dir():
+            raise
+        shutil.rmtree(cache_path)
+        os.replace(temporary, cache_path)
 import pyarrow.compute as pc
 import pyarrow.dataset as pads
 
@@ -68,32 +82,6 @@ class MatrixPrewarmCancelledError(RuntimeError):
 def _raise_if_matrix_cancelled(cancel_event: threading.Event | None) -> None:
     if cancel_event is not None and cancel_event.is_set():
         raise MatrixPrewarmCancelledError("matrix cache prewarm cancelled")
-
-
-def _publish_matrix_cache_directory(temporary: Path, cache_path: Path) -> None:
-    """Publish a completed matrix cache without being blocked by a stale target.
-
-    Windows refuses to replace an existing directory.  A previous interrupted
-    build can leave that directory without ``manifest.json``; it is not a
-    usable cache and may safely be removed before retrying the publish.
-    Completed caches remain authoritative and keep the existing discard-temp
-    behavior when another builder won the race.
-    """
-    try:
-        os.replace(temporary, cache_path)
-        return
-    except OSError:
-        if (cache_path / "manifest.json").exists():
-            shutil.rmtree(temporary, ignore_errors=True)
-            return
-
-        if not cache_path.is_dir():
-            raise
-        try:
-            shutil.rmtree(cache_path)
-        except OSError:
-            raise
-        os.replace(temporary, cache_path)
 
 
 _MATRIX_DISK_CACHE_LOCK = threading.RLock()
@@ -641,17 +629,6 @@ def build_market_data_matrix(
             continue
         if column in panel.columns and panel[column].dtype.is_numeric():
             fields[column] = float_matrix(column)
-        elif column == "turnover_rate":
-            # Enriched panels written before turnover_rate became a storage
-            # column still carry float_shares. Derive the percentage here so
-            # the long-panel and parquet matrix paths expose the same field.
-            fields[column] = np.full(shape, np.nan, dtype=np.float32)
-            if "float_shares" in panel.columns:
-                _write_turnover_rate_matrix(
-                    fields[column],
-                    volume,
-                    float_matrix("float_shares"),
-                )
         elif column == "raw_close":
             # A live quote is already an unadjusted price when no separate raw
             # field is supplied. Keep this explicit compatibility contract for
@@ -1251,7 +1228,13 @@ def _build_market_data_matrix_cache_from_dataset(
             encoding="utf-8",
         )
         _raise_if_matrix_cancelled(cancel_event)
-        _publish_matrix_cache_directory(temporary, cache_path)
+        try:
+            os.replace(temporary, cache_path)
+        except OSError:
+            if (cache_path / "manifest.json").exists():
+                shutil.rmtree(temporary, ignore_errors=True)
+            else:
+                raise
     except BaseException:
         _close_matrix_memmaps(mapped)
         shutil.rmtree(temporary, ignore_errors=True)

@@ -50,7 +50,7 @@ export const IconWatchlist = make(
   </>,
 )
 
-/** 策略 — 直角漏斗 (筛选/选股策略) */
+/** 策略 — 直角漏斗 (筛选/策略) */
 export const IconStrategy = make(
   <path d="M4 5H20L14 12.2V19.2L10 17.2V12.2Z" />,
 )
@@ -150,6 +150,16 @@ export const IconAlert = make(
     <path d="M9 20H4V15" />
     <path d="M12 7.5V13" strokeWidth="2.2" />
     <rect x="11.1" y="15.4" width="1.8" height="1.8" fill="currentColor" stroke="none" />
+  </>,
+)
+
+/** 持仓提醒 — 仓位箱 + mini K 线 */
+export const IconLots = make(
+  <>
+    <rect x="4" y="8.5" width="16" height="11" />
+    <path d="M9.5 8.5V5.5H14.5V8.5" />
+    <line x1="12" y1="11.6" x2="12" y2="16.6" strokeWidth="1.5" strokeOpacity="0.75" />
+    <rect x="10.5" y="13" width="3" height="2.5" fill="currentColor" stroke="none" />
   </>,
 )
 

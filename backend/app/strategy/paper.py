@@ -11,12 +11,13 @@
 
 多账户 (V2): 数据目录 data/paper/accounts/{account_id}/, 账户间完全隔离
 (订单/台账/持仓/净值/自动规则均按账户存放)。所有域函数带 account_id 参数
-(默认 "default")。旧版 Portfolio/Lots 数据不进入此账本, 不做运行时兼容或迁移。
+(默认 "default", 即迁移前的单账户)。旧版 data/paper/ 单账户布局首次访问时
+自动迁移到 accounts/default/, 一次性且幂等。
 
 撮合规则:
   - 即时单: 盘中由行情轮询钩子按最新快照价成交 (evaluate_intraday);
   - next_open / close 单: 盘后管道 settle_day 按当日 raw_open / raw_close 成交;
-  - T+1: 当日买入次一交易日方可卖 (买入批次按 buy_date 记账, available = date < today);
+  - T+1: 当日买入次一交易日方可卖 (lots 按 buy_date 记账, available = date < today);
   - 涨跌停: 触及涨停的买单 / 跌停的卖单默认拒单 (expired 留痕); 账户开启
     queue_limit_orders 后转「排队次日重试」(转 next_open, 计顺延, 超限过期);
   - 停牌/缺行情: 顺延, 连续顺延超过 max_postpone 日自动过期;
@@ -28,6 +29,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import shutil
 import threading
 import uuid
 from datetime import date as _date
@@ -59,7 +61,6 @@ _SESSION_CLOSE = _time(15, 0)
 LOT_SIZE = 100                     # 一手 100 股 (股票/ETF 同)
 MAX_POSITION_SYMBOLS = 50          # 持仓标的数上限 (防误操作)
 DEFAULT_ACCOUNT_ID = "default"
-_ACCOUNT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 DEFAULT_AUTO_FOLLOW_ENABLED = True
 DEFAULT_AUTO_EXIT_ENABLED = False
 DEFAULT_ENTRY_FILL = "open_t+1"
@@ -67,6 +68,10 @@ DEFAULT_EXIT_FILL = "close_t"
 DEFAULT_POSITION_SIZING = "equal"
 DEFAULT_MAX_POSITIONS = MAX_POSITION_SYMBOLS
 DEFAULT_MAX_TOTAL_POSITION = 1.0
+_ACCOUNT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
+
+_MIGRATION_DONE = False
+
 
 # ── 路径与账户目录 ──────────────────────────────────────
 def validate_account_id(account_id: str) -> str:
@@ -80,7 +85,41 @@ def accounts_base(data_dir: Path) -> Path:
     return Path(data_dir) / "paper" / "accounts"
 
 
+def _migrate_legacy(data_dir: Path) -> None:
+    """旧单账户布局 data/paper/* → data/paper/accounts/default/* (一次性, 幂等)。
+
+    仅当旧 account.json 存在且 accounts/ 尚不存在时迁移; 移动失败只留痕不阻断
+    (下次访问重试), 避免迁移异常导致模拟盘整体不可用。
+    """
+    legacy = Path(data_dir) / "paper"
+    base = accounts_base(data_dir)
+    if not (legacy / "account.json").exists() or base.exists():
+        return
+    dest = base / DEFAULT_ACCOUNT_ID
+    try:
+        dest.mkdir(parents=True, exist_ok=True)
+        for name in ("account.json", "orders", "fills.jsonl", "positions.json", "nav", "auto_rules"):
+            src = legacy / name
+            if src.exists():
+                shutil.move(str(src), str(dest / name))
+        logger.info("paper: 旧单账户数据已迁移到 %s", dest)
+    except Exception as e:
+        logger.warning("paper 旧数据迁移失败 (下次重试): %s", e)
+        # 迁移半途而废时目标目录已建立, 会跳过后续重试 — 清掉半成品目录保证可重试
+        try:
+            if dest.exists() and not (dest / "account.json").exists():
+                shutil.rmtree(dest, ignore_errors=True)
+                if not any(base.iterdir()):
+                    base.rmdir()
+        except Exception:
+            pass
+
+
 def _root(data_dir: Path, account_id: str = DEFAULT_ACCOUNT_ID) -> Path:
+    global _MIGRATION_DONE
+    if not _MIGRATION_DONE:
+        _migrate_legacy(data_dir)
+        _MIGRATION_DONE = True
     d = accounts_base(data_dir) / validate_account_id(account_id)
     d.mkdir(parents=True, exist_ok=True)
     return d
@@ -117,8 +156,7 @@ def get_account(data_dir: Path, account_id: str = DEFAULT_ACCOUNT_ID) -> dict | 
     if not p.exists():
         return None
     try:
-        acc = json.loads(p.read_text(encoding="utf-8"))
-        return acc
+        return json.loads(p.read_text(encoding="utf-8"))
     except Exception as e:
         logger.warning("paper account load failed: %s", e)
         return None
@@ -171,11 +209,11 @@ def _cash_flows_path(data_dir: Path, account_id: str = DEFAULT_ACCOUNT_ID) -> Pa
 
 
 def load_cash_flows(data_dir: Path, account_id: str = DEFAULT_ACCOUNT_ID) -> list[dict]:
-    p = _cash_flows_path(data_dir, account_id)
-    if not p.exists():
+    path = _cash_flows_path(data_dir, account_id)
+    if not path.exists():
         return []
     out: list[dict] = []
-    for line in p.read_text(encoding="utf-8").splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         try:
             out.append(json.loads(line))
         except Exception:
@@ -184,8 +222,8 @@ def load_cash_flows(data_dir: Path, account_id: str = DEFAULT_ACCOUNT_ID) -> lis
 
 
 def _append_cash_flow(data_dir: Path, flow: dict, account_id: str = DEFAULT_ACCOUNT_ID) -> None:
-    with PAPER_LOCK, _cash_flows_path(data_dir, account_id).open("a", encoding="utf-8") as f:
-        f.write(json.dumps(flow, ensure_ascii=False) + "\n")
+    with PAPER_LOCK, _cash_flows_path(data_dir, account_id).open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps(flow, ensure_ascii=False) + "\n")
 
 
 def record_cash(
@@ -215,8 +253,7 @@ def record_cash(
             "created_at": _now_iso(),
         }
         _append_cash_flow(data_dir, flow, account_id)
-        positions, cash = replay_positions(data_dir, account_id=account_id)
-        acc["cash"] = cash
+        acc["cash"] = replay_positions(data_dir, account_id=account_id)[1]
         save_account(data_dir, acc, account_id)
         return flow
 
@@ -230,12 +267,13 @@ def reverse_cash(
 ) -> dict:
     with PAPER_LOCK:
         flows = load_cash_flows(data_dir, account_id)
-        target = next((f for f in flows if f.get("id") == flow_id), None)
+        target = next((flow for flow in flows if flow.get("id") == flow_id), None)
         if target is None:
             raise ValueError("资金流水不存在")
-        if target.get("type") == "reversal" or any(f.get("reverses_id") == flow_id for f in flows):
+        if target.get("type") == "reversal" or any(flow.get("reverses_id") == flow_id for flow in flows):
             raise ValueError("该资金流水已冲正")
-        if target.get("type") == "deposit" and float(target.get("amount", 0)) > float(get_account(data_dir, account_id).get("cash", 0)):
+        acc = get_account(data_dir, account_id)
+        if target.get("type") == "deposit" and float(target.get("amount", 0)) > float((acc or {}).get("cash", 0)):
             raise ValueError("可用现金不足, 无法冲正该入金")
         reversal = {
             "id": _new_id("cash"),
@@ -247,7 +285,6 @@ def reverse_cash(
             "created_at": _now_iso(),
         }
         _append_cash_flow(data_dir, reversal, account_id)
-        acc = get_account(data_dir, account_id)
         if acc is not None:
             acc["cash"] = replay_positions(data_dir, account_id=account_id)[1]
             save_account(data_dir, acc, account_id)
@@ -266,13 +303,7 @@ def list_account_ids(data_dir: Path) -> list[str]:
             out.append((acc.get("created_at", ""), acc.get("id", p.parent.name)))
         except Exception:
             continue
-    return [
-        aid
-        for _, aid in sorted(
-            out,
-            key=lambda item: (item[1] != DEFAULT_ACCOUNT_ID, item[0], item[1]),
-        )
-    ]
+    return [aid for _, aid in sorted(out)]
 
 
 def list_accounts(data_dir: Path) -> list[dict]:
@@ -368,40 +399,15 @@ def limit_reference_error(
     ref_price: float | None,
     day: str | None = None,
 ) -> str | None:
-    """按当前参考价检查涨跌停; 缺少上一交易日价格时不臆判。"""
     if ref_price is None or float(ref_price) <= 0:
         return None
     previous = _prev_close(data_dir, symbol, asset_type, day or cn_today().isoformat())
     if previous is None:
         return None
     upper, lower = limit_prices(previous, symbol, asset_type)
-    price = float(ref_price)
-    if side == "buy" and price >= upper:
+    if side == "buy" and float(ref_price) >= upper:
         return f"参考价触及涨停 {upper}, 当前不能确认买入"
-    if side == "sell" and price <= lower:
-        return f"参考价触及跌停 {lower}, 当前不能确认卖出"
-    return None
-
-
-def limit_reference_error(
-    data_dir: Path,
-    symbol: str,
-    side: str,
-    asset_type: str,
-    ref_price: float | None,
-    day: str | None = None,
-) -> str | None:
-    """按当前参考价检查涨跌停; 缺少上一交易日价格时不臆判。"""
-    if ref_price is None or float(ref_price) <= 0:
-        return None
-    previous = _prev_close(data_dir, symbol, asset_type, day or cn_today().isoformat())
-    if previous is None:
-        return None
-    upper, lower = limit_prices(previous, symbol, asset_type)
-    price = float(ref_price)
-    if side == "buy" and price >= upper:
-        return f"参考价触及涨停 {upper}, 当前不能确认买入"
-    if side == "sell" and price <= lower:
+    if side == "sell" and float(ref_price) <= lower:
         return f"参考价触及跌停 {lower}, 当前不能确认卖出"
     return None
 
@@ -425,7 +431,7 @@ def preview_buys(
     current_prices: dict[str, float],
     account_id: str = DEFAULT_ACCOUNT_ID,
 ) -> dict:
-    """计算手动买入建议数量, 不读取或占用任何跟单规则额度。"""
+    """Calculate manual buy suggestions without reserving cash or strategy capacity."""
     acc = get_account(data_dir, account_id)
     if acc is None:
         raise ValueError("尚未创建模拟账户")
@@ -433,25 +439,18 @@ def preview_buys(
     cash = float(acc.get("cash", 0))
     market_value = sum(float(pos.get("qty", 0)) * float(pos.get("avg_cost", 0)) for pos in positions.values())
     total_assets = cash + market_value
-    exposure_capacity = cash
-    remaining_slots = MAX_POSITION_SYMBOLS
     eligible = [
         (idx, item, max(float(item.get("score") or 0), 0.0), float(item.get("price") or current_prices.get(item.get("symbol", ""), 0) or 0))
         for idx, item in enumerate(candidates)
     ]
     eligible = [item for item in eligible if item[3] > 0]
     eligible.sort(key=lambda item: (-item[2], item[0]))
-    selected = eligible
-    budget = min(cash, exposure_capacity)
-    single_cap = budget
-    allocations = {item[0]: budget / len(selected) for item in selected} if selected else {}
+    budget = cash
+    allocations = {item[0]: budget / len(eligible) for item in eligible} if eligible else {}
     items = []
     for idx, candidate, score, price in eligible:
         allocation = allocations.get(idx, 0.0)
         qty = normalize_qty(int(allocation / price)) if price > 0 else 0
-        blocked = None
-        if idx not in allocations or qty <= 0:
-            blocked = "预算不足一手"
         items.append({
             "symbol": candidate.get("symbol", ""),
             "strategy_id": candidate.get("strategy_id"),
@@ -459,7 +458,7 @@ def preview_buys(
             "price": price,
             "suggested_budget": round(allocation, 2),
             "suggested_qty": qty,
-            "blocked_reason": blocked,
+            "blocked_reason": "预算不足一手" if qty <= 0 else None,
             "has_exit_rules": bool((candidate.get("strategy_snapshot") or {}).get("exit_signals")),
         })
     return {
@@ -467,8 +466,8 @@ def preview_buys(
         "market_value": round(market_value, 2),
         "total_assets": round(total_assets, 2),
         "total_budget": round(budget, 2),
-        "single_position_cap": round(single_cap, 2),
-        "remaining_slots": remaining_slots,
+        "single_position_cap": round(budget, 2),
+        "remaining_slots": MAX_POSITION_SYMBOLS,
         "items": items,
     }
 
@@ -482,129 +481,6 @@ def load_orders(data_dir: Path, account_id: str = DEFAULT_ACCOUNT_ID) -> list[di
         except Exception as e:
             logger.warning("paper order load failed %s: %s", f.name, e)
     return out
-
-
-def _find_lot(data_dir: Path, account_id: str, symbol: str, lot_id: str) -> dict | None:
-    position = load_positions(data_dir, account_id).get(symbol)
-    if not position:
-        return None
-    return next((lot for lot in position.get("lots", []) if str(lot.get("lot_id")) == str(lot_id)), None)
-
-
-def _reserved_target_qty(
-    data_dir: Path,
-    account_id: str,
-    symbol: str,
-    lot_id: str,
-    *,
-    before_order: dict | None = None,
-    exclude_intent_id: str | None = None,
-) -> int:
-    """数量尚未成交但已被待成交策略退出订单锁定的批次数量。"""
-    reserved = 0
-    cutoff = _order_sort_key(before_order) if before_order is not None else None
-    for order in load_orders(data_dir, account_id):
-        if order.get("status") != "pending" or order.get("side") != "sell":
-            continue
-        if before_order is not None and order.get("id") == before_order.get("id"):
-            continue
-        if order.get("symbol") != symbol or str(order.get("target_lot_id") or "") != str(lot_id):
-            continue
-        if cutoff is not None and _order_sort_key(order) > cutoff:
-            continue
-        reserved += int(order.get("qty", 0))
-    return reserved
-
-
-def _estimated_buy_cost(acc: dict, qty: int, ref_price: float) -> float:
-    """按下单预估价计算一笔买单需要占用的资金。"""
-    estimated_price = float(ref_price) * (1 + float(acc["slippage_bps"]) / 10000)
-    return qty * estimated_price + buy_fee(qty, estimated_price, acc["commission_pct"])
-
-
-def _pending_strategy_buy_reservations(
-    data_dir: Path,
-    account_id: str,
-    strategy_scope_id: str | None,
-    *,
-    exclude_intent_id: str | None = None,
-) -> tuple[float, set[str]]:
-    """返回同策略待成交买单和待确认买入占用的资金与标的名额。"""
-    if not strategy_scope_id:
-        return 0.0, set()
-    acc = get_account(data_dir, account_id) or {}
-    reserved_value = 0.0
-    reserved_symbols: set[str] = set()
-    for order in load_orders(data_dir, account_id):
-        if (
-            order.get("status") != "pending"
-            or order.get("side") != "buy"
-            or order.get("strategy_scope_id") != strategy_scope_id
-        ):
-            continue
-        qty = int(order.get("qty", 0))
-        ref_price = float(order.get("ref_price") or 0)
-        if qty > 0 and ref_price > 0:
-            reserved_value += _estimated_buy_cost(acc, qty, ref_price)
-            reserved_symbols.add(str(order.get("symbol")))
-    try:
-        from app.strategy import paper_intents
-        for intent in paper_intents.load(data_dir, account_id):
-            if (
-                intent.get("status") != "pending"
-                or intent.get("side") != "buy"
-                or intent.get("strategy_scope_id") != strategy_scope_id
-                or intent.get("id") == exclude_intent_id
-            ):
-                continue
-            qty = int(intent.get("qty", 0))
-            ref_price = float(intent.get("ref_price") or 0)
-            if qty > 0 and ref_price > 0:
-                reserved_value += _estimated_buy_cost(acc, qty, ref_price)
-                reserved_symbols.add(str(intent.get("symbol")))
-    except Exception:
-        logger.warning("paper pending strategy buy reservation read failed", exc_info=True)
-    return reserved_value, reserved_symbols
-
-
-def _allocate_sell_lots(
-    data_dir: Path,
-    order: dict,
-    day: str,
-    account_id: str,
-) -> list[dict]:
-    """为一笔卖单确定实际扣减批次，返回 [{lot_id, qty}]。"""
-    position = load_positions(data_dir, account_id).get(order["symbol"])
-    if not position:
-        return []
-    requested = int(order["qty"])
-    target_lot_id = order.get("target_lot_id")
-    if target_lot_id:
-        lot = next((x for x in position.get("lots", []) if str(x.get("lot_id")) == str(target_lot_id)), None)
-        if lot is None or str(lot.get("date", "")) >= day:
-            return []
-        available = max(0, int(lot.get("qty", 0)) - _reserved_target_qty(
-            data_dir, account_id, order["symbol"], str(target_lot_id),
-            before_order=order, exclude_intent_id=order.get("intent_id"),
-        ))
-        if requested > available:
-            return []
-        return [{"lot_id": str(target_lot_id), "qty": requested}]
-
-    allocations: list[dict] = []
-    remain = requested
-    for lot in position.get("lots", []):
-        if remain <= 0 or str(lot.get("date", "")) >= day:
-            continue
-        lot_id = str(lot.get("lot_id"))
-        available = max(0, int(lot.get("qty", 0)) - _reserved_target_qty(
-            data_dir, account_id, order["symbol"], lot_id, before_order=order,
-        ))
-        take = min(available, remain)
-        if take > 0:
-            allocations.append({"lot_id": lot_id, "qty": take})
-            remain -= take
-    return allocations if remain == 0 else []
 
 
 def save_order(data_dir: Path, order: dict, account_id: str = DEFAULT_ACCOUNT_ID) -> None:
@@ -685,81 +561,63 @@ def create_order(
             return None, f"数量必须是 {LOT_SIZE} 的整数倍"
 
         acc_cash = float(acc["cash"])
-        positions = load_positions(data_dir, account_id)
-        scoped_symbols: set[str] = set()
-        current_market_value = 0.0
-        total_market_value = 0.0
-        for position_symbol, pos in positions.items():
-            total_market_value += float(pos.get("qty", 0)) * float(pos.get("avg_cost", 0))
-            lots = pos.get("lots", []) or []
-            if strategy_scope_id:
-                lots = [lot for lot in lots if lot.get("strategy_id") == strategy_scope_id]
-            if not lots:
-                continue
-            scoped_qty = sum(int(lot.get("qty", 0)) for lot in lots)
-            if scoped_qty <= 0:
-                continue
-            scoped_symbols.add(position_symbol)
-            current_market_value += sum(
-                float(lot.get("qty", 0)) * float(lot.get("price", lot.get("avg_cost", 0)))
-                for lot in lots
-            )
         if side == "buy":
             # 买入资金预检 (按参考价上界估算, 撮合时二次校验)
             est_price = float(ref_price) if ref_price else 0.0
-            pending_value, pending_symbols = _pending_strategy_buy_reservations(
-                data_dir, account_id, strategy_scope_id, exclude_intent_id=intent_id,
-            )
-            if est_price > 0 and _estimated_buy_cost(acc, qty, est_price) > acc_cash:
+            if est_price > 0 and qty * est_price * (1 + acc["slippage_bps"] / 10000) + buy_fee(qty, est_price, acc["commission_pct"]) > acc_cash:
                 return None, f"可用资金不足 (需约 {qty * est_price:.0f}, 可用 {acc_cash:.0f})"
-            scoped_symbols_with_pending = scoped_symbols | pending_symbols
-            if max_positions is not None and symbol not in scoped_symbols_with_pending and len(scoped_symbols_with_pending) >= int(max_positions):
-                return None, f"策略持仓标的数已达上限 {max_positions}, 不能再开新仓"
-            if est_price > 0 and max_total_position is not None:
-                equity = acc_cash + total_market_value
-                capacity = max(0.0, equity * max_total_position - current_market_value - pending_value)
-                estimated = _estimated_buy_cost(acc, qty, est_price)
-                if estimated > capacity + 1e-6:
-                    return None, f"超过策略最大总仓位 {max_total_position * 100:.1f}% (可用额度约 {capacity:.0f})"
+            if strategy_scope_id:
+                scoped_positions = [
+                    (position_symbol, pos) for position_symbol, pos in load_positions(data_dir, account_id).items()
+                    if any(lot.get("strategy_id") == strategy_scope_id and int(lot.get("qty", 0)) > 0 for lot in pos.get("lots", []))
+                ]
+                pending_symbols = {
+                    str(order.get("symbol")) for order in load_orders(data_dir, account_id)
+                    if order.get("status") == "pending" and order.get("side") == "buy" and order.get("strategy_scope_id") == strategy_scope_id
+                }
+                if max_positions and symbol not in {key for key, _ in scoped_positions} | pending_symbols and len({key for key, _ in scoped_positions} | pending_symbols) >= max_positions:
+                    return None, f"持仓标的数已达上限 {max_positions}"
+                scoped_value = sum(
+                    int(lot.get("qty", 0)) * float(lot.get("price", lot.get("avg_cost", 0)))
+                    for _, pos in scoped_positions for lot in pos.get("lots", []) if lot.get("strategy_id") == strategy_scope_id
+                )
+                reserved_value = sum(
+                    int(order.get("qty", 0)) * float(order.get("ref_price") or 0)
+                    for order in load_orders(data_dir, account_id)
+                    if order.get("status") == "pending" and order.get("side") == "buy" and order.get("strategy_scope_id") == strategy_scope_id
+                )
+                cap = float(acc.get("initial_cash", 0)) * float(max_total_position or 0)
+                if cap > 0 and scoped_value + reserved_value + qty * est_price > cap:
+                    return None, "最大总仓位预算不足"
         else:
-            pos = positions.get(symbol)
+            pos = load_positions(data_dir, account_id).get(symbol)
             if pos is None or pos["qty"] <= 0:
                 return None, f"无 {symbol} 持仓, 不能卖出"
             # 可卖数量按当前交易日现算 (与 _fill_order / overview 同口径): 物化文件里的
             # available_qty 是上次重建时的 T+1 口径, 跨日后不会更新, 次日仍会是 0
-            if target_lot_id:
-                target = next((lot for lot in pos.get("lots", []) if str(lot.get("lot_id")) == str(target_lot_id)), None)
-                if target is None:
-                    return None, f"目标持仓批次不存在: {target_lot_id}"
-                available = 0 if str(target.get("date", "")) >= cn_today().isoformat() else max(
-                    0,
-                    int(target.get("qty", 0)) - _reserved_target_qty(
-                        data_dir, account_id, symbol, str(target_lot_id),
-                        exclude_intent_id=intent_id,
-                    ),
-                )
-            else:
-                available = _available_of(pos, cn_today().isoformat())
-                reserved = sum(
-                    _reserved_target_qty(data_dir, account_id, symbol, str(lot.get("lot_id")))
-                    for lot in pos.get("lots", [])
-                )
-                available = max(0, available - reserved)
+            available = _available_of(pos, cn_today().isoformat())
             if qty > available:
                 return None, f"可卖数量不足 (T+1): 可卖 {available}, 请求数量 {qty}"
-            # 手动卖单没有目标批次，创建时预留已有的手动/普通卖单；
-            # 策略目标单的目标批次预留已经在 available 中扣除。
-            if not target_lot_id:
-                pending_unallocated = sum(
-                    int(o["qty"]) for o in load_orders(data_dir, account_id)
-                    if o["status"] == "pending" and o["side"] == "sell"
-                    and o["symbol"] == symbol and not o.get("target_lot_id")
+            # 超卖防护: pending 卖出单占用可卖额度 — 同 symbol 的 pending 卖出合计
+            # 不得超过可卖数量, 否则多张单各自通过校验、成交时逐张扣减会超额
+            pending_sell = sum(
+                int(o["qty"]) for o in load_orders(data_dir, account_id)
+                if o["status"] == "pending" and o["side"] == "sell" and o["symbol"] == symbol
+            )
+            if pending_sell + qty > available:
+                return None, (
+                    f"可卖数量不足 (T+1): 可卖 {available}, "
+                    f"已有待成交卖出 {pending_sell}, 请求数量 {qty}"
                 )
-                if pending_unallocated + qty > available:
-                    return None, (
-                        f"可卖数量不足 (T+1): 可卖 {available}, "
-                        f"已有待成交卖出 {pending_unallocated}, 请求数量 {qty}"
-                    )
+
+        # 持仓标的数上限 (仅新开仓的买入; 加仓已有持仓不受限)
+        positions = load_positions(data_dir, account_id)
+        if (
+            side == "buy"
+            and symbol not in positions
+            and len([p for p in positions.values() if p["qty"] > 0]) >= MAX_POSITION_SYMBOLS
+        ):
+            return None, f"持仓标的数已达上限 {MAX_POSITION_SYMBOLS}, 不能再开新仓"
 
         order = {
             "id": _new_id("order"),
@@ -772,7 +630,7 @@ def create_order(
             "ref_price": float(ref_price) if ref_price else None,
             "postponed": 0,        # 顺延交易日计数 (停牌顺延 / 涨跌停排队共用)
             "source": source,      # manual / auto:{rule_id}
-            "automation_source": automation_source or ("manual" if source == "manual" else None),
+            "automation_source": automation_source,
             "strategy_id": strategy_id,
             "strategy_snapshot": strategy_snapshot or {},
             "buy_score": buy_score,
@@ -848,12 +706,11 @@ def replay_positions(
     """由台账重放推导 (持仓, 现金)。纯函数 — 重建与校验的唯一权威实现。
 
     持仓结构: {symbol: {asset_type, qty, avg_cost, available_qty,
-                        lots: [{lot_id, date, qty, strategy_snapshot}]}}
+                        lots: [{date: 'YYYY-MM-DD', qty}]}}
     corp_action 行: 数量乘 factor、成本除以 factor、日期归属保持原 buy_date。
     """
     acc = get_account(data_dir, account_id)
     cash = float(acc["initial_cash"]) if acc else 0.0
-    cash += sum(float(flow.get("cash_delta", 0)) for flow in load_cash_flows(data_dir, account_id))
     positions: dict[str, dict] = {}
     for f in fills if fills is not None else load_fills(data_dir, account_id):
         kind = f.get("kind", "fill")
@@ -880,20 +737,19 @@ def replay_positions(
             pos["qty"] += qty
             pos["avg_cost"] = round(total_cost / pos["qty"], 6) if pos["qty"] else 0.0
             pos["lots"].append({
-                "lot_id": f.get("lot_id") or f.get("order_id") or _new_id("lot"),
                 "date": f.get("date", ""),
                 "qty": qty,
-                "original_qty": qty,
+                "lot_id": str(f.get("order_id") or f"lot_{f.get('seq', len(pos['lots']))}"),
                 "price": price,
-                "fee": fee,
-                "cost_amount": round(qty * price + fee, 6),
                 "strategy_id": f.get("strategy_id"),
                 "strategy_snapshot": f.get("strategy_snapshot") or {},
                 "buy_score": f.get("buy_score"),
-                "source": f.get("source", "manual"),
-                "automation_source": f.get("automation_source"),
                 "auto_rule_id": f.get("auto_rule_id"),
+                "automation_source": f.get("automation_source"),
                 "strategy_scope_id": f.get("strategy_scope_id"),
+                "source": f.get("source", "manual"),
+                "fee": fee,
+                "cost_amount": qty * price + fee,
             })
         else:
             cash += qty * price - fee
@@ -904,45 +760,25 @@ def replay_positions(
                     "asset_type": f.get("asset_type", "stock"),
                     "qty": 0, "avg_cost": 0.0, "available_qty": 0, "lots": [],
                 })
-            allocations = f.get("lot_allocations") or []
+            allocations = f.get("lot_allocations")
             if allocations:
-                allocation_map = {str(item.get("lot_id")): int(item.get("qty", 0)) for item in allocations}
-                ordered_lots = [lot for lot in pos["lots"] if str(lot.get("lot_id")) in allocation_map]
-                for lot in ordered_lots:
-                    take = min(lot["qty"], allocation_map[str(lot.get("lot_id"))])
-                    old_qty = float(lot["qty"])
-                    lot["qty"] -= take
-                    lot["cost_amount"] = round(
-                        float(lot.get("cost_amount", old_qty * float(lot.get("price", 0))))
-                        * (lot["qty"] / old_qty) if old_qty else 0.0,
-                        6,
-                    )
+                by_id = {str(item.get("lot_id")): int(item.get("qty", 0)) for item in allocations}
+                for lot in pos["lots"]:
+                    lot["qty"] -= min(int(lot.get("qty", 0)), by_id.get(str(lot.get("lot_id")), 0))
             else:
                 remain = qty
-                # 历史成交没有批次分配时继续 FIFO; 新成交都会写入 lot_allocations。
                 for lot in pos["lots"]:
                     if remain <= 0:
                         break
                     take = min(lot["qty"], remain)
-                    old_qty = float(lot["qty"])
                     lot["qty"] -= take
-                    lot["cost_amount"] = round(
-                        float(lot.get("cost_amount", old_qty * float(lot.get("price", 0))))
-                        * (lot["qty"] / old_qty) if old_qty else 0.0,
-                        6,
-                    )
                     remain -= take
             pos["lots"] = [lot for lot in pos["lots"] if lot["qty"] > 1e-9]
             pos["qty"] = max(0, pos["qty"] - qty)
             if pos["qty"] == 0:
                 pos["avg_cost"] = 0.0
-            else:
-                pos["avg_cost"] = round(
-                    sum(float(lot.get("cost_amount", lot["qty"] * lot.get("price", 0))) for lot in pos["lots"])
-                    / pos["qty"],
-                    6,
-                )
         pos["available_qty"] = _available_of(pos)
+    cash += sum(float(flow.get("cash_delta", 0)) for flow in load_cash_flows(data_dir, account_id))
     return positions, round(cash, 2)
 
 
@@ -971,6 +807,34 @@ def _materialize(data_dir: Path, account_id: str = DEFAULT_ACCOUNT_ID) -> None:
         _root(data_dir, account_id) / "positions.json",
         json.dumps({"updated_at": _now_iso(), "positions": positions}, ensure_ascii=False, indent=2),
     )
+
+
+def _lot_allocations(data_dir: Path, order: dict, day: str, account_id: str) -> list[dict]:
+    position = load_positions(data_dir, account_id).get(order["symbol"]) or {}
+    remain = int(order["qty"])
+    target = order.get("target_lot_id")
+    reserved: dict[str, int] = {}
+    for other in load_orders(data_dir, account_id):
+        if other.get("id") == order.get("id") or other.get("status") != "pending" or other.get("side") != "sell" or other.get("symbol") != order["symbol"]:
+            continue
+        lot_id = other.get("target_lot_id")
+        if lot_id:
+            reserved[str(lot_id)] = reserved.get(str(lot_id), 0) + int(other.get("qty", 0))
+    allocations = []
+    for lot in position.get("lots", []):
+        lot_id = str(lot.get("lot_id") or "")
+        if target and lot_id != str(target):
+            continue
+        if str(lot.get("date", "")) >= day:
+            continue
+        available = max(0, int(lot.get("qty", 0)) - reserved.get(lot_id, 0))
+        take = min(remain, available)
+        if take > 0:
+            allocations.append({"lot_id": lot_id, "qty": take})
+            remain -= take
+        if remain <= 0:
+            break
+    return allocations if remain == 0 else []
 
 
 def rebuild_positions(data_dir: Path, account_id: str = DEFAULT_ACCOUNT_ID) -> dict[str, dict]:
@@ -1016,7 +880,6 @@ def _fill_order(data_dir: Path, order: dict, raw_price: float, day: str, account
 
     fee = buy_fee(qty, price, acc["commission_pct"]) if side == "buy" else sell_fee(qty, price, acc["commission_pct"], acc["stamp_tax_pct"])
     gross = qty * price
-    lot_allocations: list[dict] = []
     if side == "buy":
         if gross + fee > float(acc["cash"]) + 1e-6:
             _expire(data_dir, order, f"资金不足 (需 {gross + fee:.2f}, 可用 {acc['cash']:.2f})", account_id)
@@ -1040,10 +903,6 @@ def _fill_order(data_dir: Path, order: dict, raw_price: float, day: str, account
         if pos is None or pos["qty"] < qty or avail < qty:
             _expire(data_dir, order, f"可卖数量不足 (T+1): 可卖 {avail}", account_id)
             return None
-        lot_allocations = _allocate_sell_lots(data_dir, order, day, account_id)
-        if sum(int(item["qty"]) for item in lot_allocations) != qty:
-            _expire(data_dir, order, "目标持仓批次已被其他卖出消耗或不可卖", account_id)
-            return None
         # 超卖防护 (撮合侧兜底): 只计入 created_at 早于本单的其他 pending 卖出 —
         # 先到先得, 早单优先成交; 剩余额度不足则本单拒 (而非成交出负持仓)。
         pending_sell = sum(
@@ -1055,6 +914,12 @@ def _fill_order(data_dir: Path, order: dict, raw_price: float, day: str, account
         if pending_sell + qty > avail:
             _expire(data_dir, order, f"可卖数量被更早的待成交卖出单占用: 可卖 {avail}, 先到 {pending_sell}", account_id)
             return None
+        allocations = _lot_allocations(data_dir, order, day, account_id)
+        if not allocations:
+            _expire(data_dir, order, "目标持仓批次已被消费或可卖数量不足", account_id)
+            return None
+    else:
+        allocations = []
 
     fill = {
         "seq": int(datetime.now().timestamp() * 1000),
@@ -1068,18 +933,17 @@ def _fill_order(data_dir: Path, order: dict, raw_price: float, day: str, account
         "price": price,
         "fee": fee,
         "kind": "fill",
-        "lot_id": order.get("target_lot_id") or (order["id"] if side == "buy" else None),
-        "lot_allocations": lot_allocations,
+        "source": order.get("source", "manual"),
+        "automation_source": order.get("automation_source"),
+        "source": order.get("source", "manual"),
         "strategy_id": order.get("strategy_id"),
         "strategy_snapshot": order.get("strategy_snapshot") or {},
         "buy_score": order.get("buy_score"),
         "exit_reason": order.get("exit_reason"),
-        "intent_id": order.get("intent_id"),
-        "source": order.get("source", "manual"),
-        "automation_source": order.get("automation_source"),
+        "target_lot_id": order.get("target_lot_id"),
         "auto_rule_id": order.get("auto_rule_id"),
         "strategy_scope_id": order.get("strategy_scope_id"),
-        "target_lot_id": order.get("target_lot_id"),
+        "lot_allocations": allocations if side == "sell" else [],
     }
     _append_fill(data_dir, fill, account_id)
 
@@ -1460,6 +1324,24 @@ def load_nav(data_dir: Path, account_id: str = DEFAULT_ACCOUNT_ID) -> list[dict]
     return out
 
 
+def _overview_lot(lot: dict) -> dict:
+    return {
+        "lot_id": lot.get("lot_id"),
+        "date": lot.get("date"),
+        "qty": lot.get("qty"),
+        "price": lot.get("price"),
+        "fee": lot.get("fee", 0),
+        "cost_amount": lot.get("cost_amount"),
+        "strategy_id": lot.get("strategy_id"),
+        "strategy_snapshot": lot.get("strategy_snapshot") or {},
+        "buy_score": lot.get("buy_score"),
+        "source": lot.get("source", "manual"),
+        "automation_source": lot.get("automation_source"),
+        "auto_rule_id": lot.get("auto_rule_id"),
+        "strategy_scope_id": lot.get("strategy_scope_id"),
+    }
+
+
 def overview(data_dir: Path, price_map: dict[str, float] | None = None, account_id: str = DEFAULT_ACCOUNT_ID) -> dict:
     """总览 (盘中实时估算): 现金 + 持仓市值 + 估算净值。"""
     acc = get_account(data_dir, account_id)
@@ -1482,46 +1364,24 @@ def overview(data_dir: Path, price_map: dict[str, float] | None = None, account_
             owner_type = "strategy" if strategy_id else "manual"
             key = (owner_type, str(strategy_id) if strategy_id else None)
             group = groups_by_key.setdefault(key, {
-                "owner_type": owner_type,
-                "strategy_id": strategy_id,
+                "owner_type": owner_type, "strategy_id": strategy_id,
                 "strategy_name": (lot.get("strategy_snapshot") or {}).get("strategy_name") if strategy_id else None,
-                "qty": 0,
-                "available_qty": 0,
-                "cost_amount": 0.0,
-                "lots": [],
+                "qty": 0, "available_qty": 0, "cost_amount": 0.0, "lots": [],
             })
             qty = int(lot.get("qty", 0))
-            cost_amount = float(lot.get("cost_amount", qty * float(lot.get("price", 0)) + float(lot.get("fee", 0))))
+            cost = float(lot.get("cost_amount", qty * float(lot.get("price", 0)) + float(lot.get("fee", 0))))
             group["qty"] += qty
-            if str(lot.get("date", "")) < today:
-                group["available_qty"] += qty
-            group["cost_amount"] += cost_amount
+            group["available_qty"] += qty if str(lot.get("date", "")) < today else 0
+            group["cost_amount"] += cost
             group["lots"].append(lot)
         groups = []
         for group in groups_by_key.values():
-            group_qty = int(group["qty"])
-            group["avg_cost"] = round(group["cost_amount"] / group_qty, 6) if group_qty else 0.0
-            group["market_value"] = round(group_qty * last, 2)
+            qty = int(group["qty"])
+            group["avg_cost"] = round(group["cost_amount"] / qty, 6) if qty else 0.0
+            group["market_value"] = round(qty * last, 2)
             group["pnl"] = round(group["market_value"] - group["cost_amount"], 2)
             group["pnl_pct"] = round((last / group["avg_cost"] - 1) * 100, 2) if group["avg_cost"] else 0.0
-            group["lots"] = [
-                {
-                    "lot_id": lot.get("lot_id"),
-                    "date": lot.get("date"),
-                    "qty": lot.get("qty"),
-                    "price": lot.get("price"),
-                    "fee": lot.get("fee", 0),
-                    "cost_amount": lot.get("cost_amount"),
-                    "strategy_id": lot.get("strategy_id"),
-                    "strategy_snapshot": lot.get("strategy_snapshot") or {},
-                    "buy_score": lot.get("buy_score"),
-                    "source": lot.get("source", "manual"),
-                    "automation_source": lot.get("automation_source"),
-                    "auto_rule_id": lot.get("auto_rule_id"),
-                    "strategy_scope_id": lot.get("strategy_scope_id"),
-                }
-                for lot in group["lots"]
-            ]
+            group["lots"] = [_overview_lot(lot) for lot in group["lots"]]
             groups.append(group)
         holdings.append({
             "symbol": symbol,
@@ -1534,25 +1394,7 @@ def overview(data_dir: Path, price_map: dict[str, float] | None = None, account_
             "pnl_pct": round((last / pos["avg_cost"] - 1) * 100, 2) if pos["avg_cost"] else 0.0,
             "available_qty": _available_of(pos, today),
             "groups": groups,
-            "lots": [
-                {
-                    "lot_id": lot.get("lot_id"),
-                    "date": lot.get("date"),
-                    "qty": lot.get("qty"),
-                    "price": lot.get("price"),
-                    "fee": lot.get("fee", 0),
-                    "cost_amount": lot.get("cost_amount"),
-                    "strategy_id": lot.get("strategy_id"),
-                    "strategy_snapshot": lot.get("strategy_snapshot") or {},
-                    "buy_score": lot.get("buy_score"),
-                    "source": lot.get("source", "manual"),
-                    "automation_source": lot.get("automation_source"),
-                    "auto_rule_id": lot.get("auto_rule_id"),
-                    "strategy_scope_id": lot.get("strategy_scope_id"),
-                }
-                for lot in pos.get("lots", [])
-                if float(lot.get("qty", 0)) > 0
-            ],
+            "lots": [_overview_lot(lot) for lot in raw_lots],
         })
     return {
         "initialized": True,

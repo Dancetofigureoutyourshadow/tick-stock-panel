@@ -8,7 +8,7 @@
 import { useState, type CSSProperties, type ReactNode } from 'react'
 import { Check, Plus, Eye, EyeOff, RefreshCw, ListCollapse, ListTree, ShoppingCart } from 'lucide-react'
 import type { KlineRow, MinuteKlineRow } from '@/lib/api'
-import { fmtPct, fmtPrice, fmtSignedPrice, formatExtNumber, priceColorClass } from '@/lib/format'
+import { fmtPrice, fmtPct, fmtSignedPrice, priceColorClass, formatExtNumber } from '@/lib/format'
 import type { ColumnConfig } from '@/lib/screener-columns'
 import { getSignals, signalCls } from '@/lib/stock-table'
 import { boardTag, renderBuiltinDataCell } from '@/components/stock-table/primitives'
@@ -22,7 +22,7 @@ import {
   dimensionKindForSourceField,
   type DimensionMembersTarget,
 } from '@/components/DimensionMembersDialog'
-import { toNavItems, type NavItem } from '@/components/StockPreviewDialog'
+import { toNavItems, type NavItem } from '@/lib/listNav'
 import { cn } from '@/lib/cn'
 
 interface ScreenerTableProps {
@@ -35,7 +35,6 @@ interface ScreenerTableProps {
   onPreview: (symbol: string, name?: string, navList?: NavItem[]) => void
   onAddToWatchlist: (symbol: string, groupId: string | null) => void
   onRemoveFromWatchlist: (symbol: string) => void
-  onBuy?: (row: any) => void
   watchlistPending: boolean
   /** symbol → 日k 数据，仅当启用日k列时传入 */
   klineData?: Record<string, KlineRow[]>
@@ -62,6 +61,7 @@ interface ScreenerTableProps {
   onSortToggle?: (colId: string) => void
   /** 正在 K 线弹窗预览中的 symbol → 高亮该行 */
   activeSymbol?: string | null
+  onBuy?: (row: any) => void
 }
 
 /** 渲染标签数组（含 maxTags 折叠/展开、横竖排列）。策略列与 ext 列共用。
@@ -161,12 +161,12 @@ function renderExtValue(
 
 export function ScreenerTable({
   rows, columns, strategyIdToName, symbolStrategyMap, activeStrategy,
-  watchlistSet, onPreview, onAddToWatchlist, onRemoveFromWatchlist, onBuy, watchlistPending, klineData = {},
+  watchlistSet, onPreview, onAddToWatchlist, onRemoveFromWatchlist, watchlistPending, klineData = {},
   dailyKChartVisible = true, onToggleDailyKChart,
   minuteData = {}, intradayChartVisible = true, onToggleIntradayChart,
   intradayAutoRefresh = false, onRefreshIntraday, intradayRefreshing = false,
   strategyTagsExpanded = false, onToggleStrategyTags,
-  sort, onSortToggle, activeSymbol,
+  sort, onSortToggle, activeSymbol, onBuy,
 }: ScreenerTableProps) {
   const [expandedCells, setExpandedCells] = useState<Set<string>>(new Set())
   const [dimensionTarget, setDimensionTarget] = useState<DimensionMembersTarget | null>(null)

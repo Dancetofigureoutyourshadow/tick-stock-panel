@@ -57,6 +57,8 @@ interface Props {
   prefetchSymbols?: string[]
   /** 多日分时周期 (分时 tab 使用): 预取邻股 klineMinuteRange 时用同一 days, 保证 queryKey 命中 */
   intradayDays?: number
+  /** 加入自选日 (北京时间 YYYY-MM-DD); 有值时在日K主图绘制标记。 */
+  addedDate?: string | null
   /** 日K/分时并排时日K图占宽 (默认 1:1; 弹窗内图表信息栏较宽需更多空间时传 flex-[1.4] 之类) */
   dailyKlineFlex?: string
   /** 初始可见蜡烛根数 (默认 60); 'all' = 初始适配显示全部数据 (用于全区间回放) */
@@ -89,6 +91,7 @@ export function StockPanel({
   infoBarOnly = false,
   prefetchSymbols,
   intradayDays = DEFAULT_INTRADAY_DAYS,
+  addedDate,
   dailyKlineFlex = 'flex-1',
   visibleBars,
 }: Props) {
@@ -234,7 +237,7 @@ export function StockPanel({
           onPriceDoubleClick={onPriceDoubleClick}
           visibleBars={visibleBars ?? (showIntraday ? 40 : 60)}
           extColumns={extColumns}
-          refetchIntervalMs={refetchIntervalMs}
+          addedDate={addedDate}
           />
 
         {showIntraday && selectedDate && !intradayDismissed && (

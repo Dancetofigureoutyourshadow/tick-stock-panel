@@ -18,13 +18,15 @@ from app.api import (
     analysis,
     backtest,
     data,
-    ext_data,
     events,
+    ext_data,
+    ext_pages,
     factors,
     financials,
     indices,
     intraday,
     kline,
+    lots,
     market_recap,
     mining,
     monitor_rules,
@@ -38,6 +40,7 @@ from app.api import (
     signals,
     stock_analysis,
     strategy,
+    task_registry,
     watchlist,
 )
 from app.api import auth as auth_api
@@ -51,7 +54,6 @@ from app.extensions.loader import (
     start_backend_extensions,
 )
 from app.jobs import daily_pipeline
-from app.logging_config import build_backend_log_handler
 from app.services.matrix_prewarm_owner import MatrixCachePrewarmOwner
 from app.services.mining_process_lock import MiningProcessLock
 from app.services.quote_service import QuoteService
@@ -69,12 +71,17 @@ logger = logging.getLogger(__name__)
 # 运行时日志仅出现在 dev 终端, 关掉或滚屏后即丢失, 排查「同步后日志没落」时无处可查。
 # 落盘到 data/backend.log 与桌面版 (desktop.py:_setup_logging → desktop.log) 行为对齐,
 # 事后可查。桌面版 (frozen) 已由 desktop.py 写 desktop.log, 此处跳过避免重复落盘。
-# ConcurrentRotatingFileHandler 防止日志无限增长，并允许 reload 进程安全交接。
+# RotatingFileHandler 防止长期运行/频繁 reload 导致文件无限增长。
 if not getattr(sys, "frozen", False):
     try:
+        from logging.handlers import RotatingFileHandler
+
         _log_path = settings.data_dir / "backend.log"
         _log_path.parent.mkdir(parents=True, exist_ok=True)
-        _file_handler = build_backend_log_handler(_log_path)
+        _file_handler = RotatingFileHandler(
+            _log_path, maxBytes=10 * 1024 * 1024, backupCount=3,
+            mode="a", encoding="utf-8", errors="replace",
+        )
         _file_handler.setFormatter(
             logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
         )
@@ -103,6 +110,16 @@ async def _application_lifespan(app: FastAPI):
     repo = KlineRepository(store)
     app.state.datastore = store
     app.state.repo = repo
+    # 去内置化种子迁移必须赶在下方 refresh_cache 之前: enriched 缓存构建时
+    # 编译自定义信号表达式, 晚种会让本次启动的看板/梯队引用的 signal_limit_*
+    # 列缺失 (跌停恒 0、连板梯队无数据), 直到下一次缓存刷新才自愈。
+    _seeded_signals = 0
+    try:
+        from app.strategy import custom_signals as _cs_seed
+
+        _seeded_signals = _cs_seed.seed_if_empty(store.data_dir)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("signal seeding failed (ignored): %s", e)
     # 自定义/复合因子载入注册表 (P3); 单个失败只跳过该因子 (fail-隔离)
     from app.factors.store import load_into_registry
 
@@ -145,6 +162,19 @@ async def _application_lifespan(app: FastAPI):
     capset = detect_capabilities()
     app.state.capabilities = capset
     logger.info("ready; %d capabilities active", len(capset.all()))
+    # 各能力的生效源与可用性: 切换数据源后一眼看出路由落点, 无需回设置页对照
+    try:
+        from app.data_providers.capabilities import resolve_capability_sources
+
+        for row in resolve_capability_sources():
+            logger.info(
+                "  能力路由 | %-8s ← %-12s %s",
+                row["label"],
+                row["source_display"],
+                "可用" if row["usable"] else "不可用",
+            )
+    except Exception as e:  # noqa: BLE001 — 仅日志, 失败不影响启动
+        logger.warning("能力路由日志输出失败: %s", e)
 
     # 全局行情服务
     qs = QuoteService()
@@ -246,15 +276,16 @@ async def _application_lifespan(app: FastAPI):
     app.state.watchdog = start_watchdog(app.state, repo)
 
     # 策略引擎
+    from app.services.screener import ScreenerService
+    from app.strategy import config as strategy_config
     from app.strategy.engine import StrategyEngine
     from app.strategy import config as strategy_config
     from app.strategy.monitor import StrategyMonitorService
-    from app.services.screener import ScreenerService
 
     _screener_svc = ScreenerService(repo)
     _etf_screener_svc = ScreenerService(repo, asset_type="etf")
     strategy_dirs = [
-        Path(__file__).resolve().parent / "strategy" / "builtin",
+        Path(__file__).resolve().parent / "strategy" / "research",
         store.data_dir / "strategies" / "custom",
         store.data_dir / "strategies" / "ai",
         store.data_dir / "strategies" / "composite",
@@ -263,6 +294,25 @@ async def _application_lifespan(app: FastAPI):
         strategy_dirs=strategy_dirs,
         override_loader=lambda sid: strategy_config.load_override(store.data_dir, sid),
     )
+    # 去内置化一次性迁移: ①信号目录缺种子时补入 20 个默认定义;
+    # ②内置残留类加载失败 (composite 断链 / import 已删模块) 的策略文件
+    #   自动归档出扫描目录并重载。摘要挂到 app.state 供前端提示一次。
+    legacy_migration: dict = {}
+    try:
+        from app.strategy.legacy_migrate import archive_unloadable_strategies
+
+        if _seeded_signals:
+            legacy_migration["seeded_signals"] = _seeded_signals
+            logger.info("legacy migrate: seeded %d default signals", _seeded_signals)
+        archived = archive_unloadable_strategies(strategy_engine.load_errors())
+        if archived:
+            strategy_engine.reload()
+            legacy_migration["archived_files"] = archived
+            logger.info("legacy migrate: archived %d unloadable files", len(archived))
+        if legacy_migration:
+            app.state.legacy_migration = legacy_migration
+    except Exception as e:  # noqa: BLE001
+        logger.warning("legacy migrate failed (ignored): %s", e)
     app.state.strategy_engine = strategy_engine
     logger.info("strategy engine loaded: %d strategies", len(strategy_engine.list_strategies()))
 
@@ -311,32 +361,22 @@ async def _application_lifespan(app: FastAPI):
         if not matrix_prewarm_owner.schedule(_prewarm):
             logger.info("matrix cache prewarm already running or shutting down, skip")
 
-    def _on_market_data_refresh_done() -> None:
-        # refresh_cache 已原子替换 repository 快照；进程级筛选 TTL 若不清空，
-        # 管道后最多 120 秒仍会返回旧连板/策略窗口。随后广播低频事件让前端
-        # 失效日线派生查询，不复用 quotes_updated 以免受实时行情开关限制。
-        from app.services.screener import ScreenerService
-
-        ScreenerService.clear_history_cache()
-        qs.notify_market_data_updated()
-        _schedule_matrix_cache_prewarm()
-
-    repo._on_refresh_done = _on_market_data_refresh_done  # noqa: SLF001
+    repo._on_refresh_done = _schedule_matrix_cache_prewarm  # noqa: SLF001
     if repo.enriched_ready:
         _schedule_matrix_cache_prewarm()
 
     # 通用监控规则引擎: 启动时 reload 规则到内存态 (修复重启后告警失效)
-    from app.strategy.monitor import MonitorRuleEngine
-    from app.strategy import monitor_rules as mr_store
     from app.services import preferences
     from app.services.sector_monitor import SectorMonitorService
+    from app.strategy import monitor_rules as mr_store
+    from app.strategy.monitor import MonitorRuleEngine
     monitor_engine = MonitorRuleEngine()
     sector_monitor_service = SectorMonitorService(repo)
     monitor_engine.set_strategy_engine(strategy_engine)
     monitor_engine.set_data_dir(store.data_dir)
     monitor_engine.set_sector_monitor_service(sector_monitor_service)
     # 复用 ScreenerService 的历史窗口加载器 (三级缓存, 启动预计算命中 ~0ms),
-    # 让声明 filter_history 的策略 (如反包) 也能在实时监控里跑选股 → 盘中触发通知。
+    # 让声明 filter_history 的策略 (如反包) 也能在实时监控里跑策略 → 盘中触发通知。
     monitor_engine.set_history_loader(_screener_svc._load_enriched_history)
     # ETF 版历史加载器: asset_type=etf 的 strategy 型规则用 (读 kline_etf_enriched)。
     monitor_engine.set_history_loader_etf(_etf_screener_svc._load_enriched_history)
@@ -391,9 +431,6 @@ async def _application_lifespan(app: FastAPI):
         qs = getattr(app.state, "quote_service", None)
         if qs:
             qs.stop()
-        focus_stream = getattr(app.state, "focus_market_stream", None)
-        if focus_stream:
-            await focus_stream.close()
         dsvc = getattr(app.state, "depth_service", None)
         if dsvc:
             dsvc.stop_polling()
@@ -403,6 +440,10 @@ async def _application_lifespan(app: FastAPI):
         mrs = getattr(app.state, "minute_refresh", None)
         if mrs:
             mrs.stop()
+        # webhook 投递线程池: 放弃排队投递并关闭, 避免通知静默丢失在 daemon 线程里
+        from app.services.quote_service import shutdown_webhook_executor
+
+        shutdown_webhook_executor()
         logger.info("shutdown")
 
 
@@ -420,7 +461,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Tick Stock Panel",
     version=__version__,
-    description="A 股选股 + 回测面板 — TickFlow 适配",
+    description="A 股策略 + 回测面板 — TickFlow 适配",
     lifespan=lifespan,
 )
 
@@ -476,6 +517,13 @@ async def auth_middleware(request: Request, call_next):
     authz = request.headers.get("authorization", "")
     if authz.startswith("Bearer "):
         from app.services import api_gateway
+        # 网络门禁先行: 默认仅本机/内网可调 Token 通道 (API_TOKEN_LOCAL_ONLY=0 放开);
+        # 先于 evaluate 拦截 → 不消耗限流额度, 公网探测者也拿不到 Token 有效性信号
+        gate = api_gateway.token_network_verdict(auth_api._client_ip(request))
+        if gate is not None:
+            return JSONResponse(
+                status_code=gate["status"], content={"detail": gate["detail"]},
+            )
         verdict = api_gateway.evaluate(
             settings.data_dir, request.method, path, authz[len("Bearer "):].strip(),
         )
@@ -531,6 +579,8 @@ app.include_router(analysis.router)
 app.include_router(pipeline.router)
 app.include_router(data.router)
 app.include_router(ext_data.router)
+app.include_router(ext_pages.router)
+app.include_router(task_registry.router)
 app.include_router(financials.router)
 app.include_router(stock_analysis.router)
 app.include_router(market_recap.router)
@@ -538,6 +588,7 @@ app.include_router(settings_api.router)
 app.include_router(strategy.router)
 app.include_router(signals.router)
 app.include_router(monitor_rules.router)
+app.include_router(lots.router)
 app.include_router(alerts.router)
 app.include_router(events.router)
 app.include_router(rps.router)
@@ -554,6 +605,7 @@ app.state.extension_load_errors = extension_load_errors
 # 若不注册 handler 会冒泡成 500 Internal Server Error,对前端不友好且语义错误。
 from fastapi import Request
 from fastapi.responses import JSONResponse
+
 from app.tickflow.capabilities import CapabilityDenied
 
 

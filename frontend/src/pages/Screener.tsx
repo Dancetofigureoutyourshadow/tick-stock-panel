@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { motion } from 'framer-motion'
 import { ScanSearch, Clock, TrendingUp, Star, Filter, Layers, Network, Sparkles, RefreshCw, Settings2, Store, RotateCcw, X, SlidersHorizontal } from 'lucide-react'
-import { api, ApiError, genRuleId, type ScreenerStrategy, type ScreenerResult } from '@/lib/api'
+import { api, genRuleId, type ScreenerStrategy, type ScreenerResult } from '@/lib/api'
 import { fetchMinuteBatchIncremental } from '@/lib/minuteBatchIncremental'
 import { DEFAULT_STRATEGY_NOTIFY_EVENTS } from '@/lib/strategyMonitorEvents'
 import { toast } from '@/components/Toast'
@@ -13,7 +13,8 @@ import { storage } from '@/lib/storage'
 import { PageHeader } from '@/components/PageHeader'
 import { EmptyState } from '@/components/EmptyState'
 import { DatePicker } from '@/components/DatePicker'
-import { StockPreviewDialog, type NavItem } from '@/components/StockPreviewDialog'
+import { StockPreviewDialog } from '@/components/StockPreviewDialog'
+import { type NavItem } from '@/lib/listNav'
 import { WatchlistAddMenu } from '@/components/WatchlistAddMenu'
 import { useStrategyPool } from '@/lib/useStrategyPool'
 import { StrategyCard, CardSize, loadCardSize, cardWrapCls } from '@/components/screener/StrategyCard'
@@ -25,7 +26,6 @@ import { StrategyPoolDialog } from '@/components/screener/StrategyPoolDialog'
 import { StrategyBuilderDialog } from '@/components/screener/StrategyBuilderDialog'
 import { StrategyStoreDialog } from '@/components/screener/StrategyStoreDialog'
 import { CompositeStrategyDialog } from '@/components/screener/CompositeStrategyDialog'
-import { PaperStrategyBuyDialog } from '@/components/paper/PaperStrategyBuyDialog'
 import { ListColumnCustomizer } from '@/components/ListColumnCustomizer'
 import { useTableSort } from '@/components/stock-table/useTableSort'
 import { resolveCandleConfig } from '@/lib/list-columns'
@@ -65,7 +65,6 @@ export function Screener() {
   const [showStore, setShowStore] = useState(false)
   const [showDefaultParams, setShowDefaultParams] = useState(false)
   const [showComposite, setShowComposite] = useState(false)
-  const [buyTarget, setBuyTarget] = useState<any | null>(null)
   const { pool, addToPool, removeFromPool, reorderPool, prune } = useStrategyPool()
   const [cardSize, setCardSize] = useState<CardSize>(loadCardSize)
   // 日k蜡烛图显示开关（仅当 candle 列可见时才有意义；持久化）
@@ -157,6 +156,7 @@ export function Screener() {
   const strategies = useQuery({
     queryKey: [...QK.screenerStrategies('all'), 'all'],
     queryFn: () => api.screenerStrategies(undefined, 'all'),
+    staleTime: 60_000,  // 策略池清单慢变 (与 Paper 同款), 减少切页重拉
   })
 
   // 激活策略自身的执行周期 (决定走缓存还是分钟实时跑)。
@@ -265,12 +265,44 @@ export function Screener() {
     prune(allStrategyIds)
   }, [allStrategyIds, prune, strategies.isError, strategies.isSuccess])
 
-  // 策略文件加载失败时提示用户(避免"策略静默消失"被误判为正常)
+  // 去内置化一次性迁移提示: 后端启动时自动种入默认信号/归档失效策略,
+  // 摘要只在首次见到时提示一次 (localStorage 记录迁移指纹)。
+  const legacyMigration = strategies.data?.legacy_migration
+  useEffect(() => {
+    if (!legacyMigration) return
+    const fingerprint = JSON.stringify(legacyMigration)
+    const key = 'tsp-legacy-migration-v1'
+    try {
+      if (localStorage.getItem(key) === fingerprint) return
+      localStorage.setItem(key, fingerprint)
+    } catch { /* 隐私模式等存储不可用: 退化为每次提示 */ }
+    const parts: string[] = []
+    if (legacyMigration.seeded_signals) {
+      parts.push(`已将 ${legacyMigration.seeded_signals} 个原内置信号转为自定义信号(可在信号库编辑)`)
+    }
+    if (legacyMigration.archived_files?.length) {
+      parts.push(`已归档 ${legacyMigration.archived_files.length} 个无法加载的旧策略文件(位于 data/strategies/*/_archive_unloadable/)`)
+    }
+    if (parts.length) toast(`旧版数据自动迁移完成：${parts.join('；')}`, 'success')
+  }, [legacyMigration])
+
+  // 策略文件加载失败时提示用户(避免"策略静默消失"被误判为正常)。
+  // 多个失败聚合为一条, 避免旧数据目录升级后 (内置模块移除/叠加断链) 刷屏。
   const loadErrors = strategies.data?.load_errors ?? []
   useEffect(() => {
-    for (const e of loadErrors) {
-      toast(`策略「${e.file}」加载失败：${e.error}`, 'error')
+    if (loadErrors.length === 0) return
+    if (loadErrors.length === 1) {
+      toast(`策略「${loadErrors[0].file}」加载失败：${loadErrors[0].error}`, 'error')
+      return
     }
+    const files = loadErrors.slice(0, 3)
+      .map(e => String(e.file).split('/').pop())
+      .join('、')
+    toast(
+      `${loadErrors.length} 个策略文件加载失败（${files}${loadErrors.length > 3 ? ' 等' : ''}）。` +
+      '常见原因：文件引用了已移除的内置模块、或叠加策略的子策略不存在 —— 请在 data/strategies/ 下更新或删除这些文件',
+      'error',
+    )
   }, [loadErrors])
 
   // 进入页面自动跑策略池中的策略，获取命中数 (日线走盘后缓存/渐进式 runAll;
@@ -296,6 +328,12 @@ export function Screener() {
           : null,
       )
       if (data.error) toast(`策略计算失败：${data.error}`, 'error')
+      // 策略池残留的失效 ID (如内置策略移除后的旧数据目录): 后端已跳过,
+      // 这里从池中清掉并提示一次, 空库场景 prune(按有效列表) 清不掉的兜底。
+      if (data.skipped_unknown?.length) {
+        for (const id of data.skipped_unknown) removeFromPool(id)
+        toast(`已跳过 ${data.skipped_unknown.length} 个不存在的策略，并从策略池移除`, 'success')
+      }
       qc.invalidateQueries({ queryKey: ['screener-cached'] })
     },
   })
@@ -519,11 +557,13 @@ export function Screener() {
     const mainRows = limit != null ? rows.slice(0, limit) : rows
 
     // 追加当前策略的失效行 (灰色)
-    if (!showAll && activeStrategy && expiredRows.length > 0) {
-      return [...mainRows, ...expiredRows.map((row: any) => enrichedRows.get(row.symbol) ?? row)]
+    if (!showAll && activeStrategy) {
+      if (expiredRows.length > 0) {
+        return [...mainRows, ...expiredRows]
+      }
     }
     return mainRows
-  }, [candidateRows, enrichedRows, showAll, activeStrategy, strategyLimits, expiredRows, sort, sortRows, columns])
+  }, [showAll, allRows, filteredRows, filter, activeStrategy, strategyLimits, expiredRows, sort, sortRows, columns])
 
   // 日k列是否启用 → 决定是否加载批量 kline 数据
   const candleColumn = useMemo(() =>
@@ -688,10 +728,11 @@ export function Screener() {
 
   const batchAdd = useWatchlistBatchAdd()
 
-  // 自选股列表 (用于判断是否在自选中)
+  // 自选列表 (用于判断是否在自选中)
   const watchlist = useQuery({
     queryKey: QK.watchlist,
     queryFn: api.watchlistList,
+    staleTime: 30_000,
   })
   const watchlistSet = useMemo(() => {
     const symbols = watchlist.data?.symbols ?? []
@@ -708,18 +749,12 @@ export function Screener() {
       symbol: string
       action: 'add' | 'remove'
       groupId?: string | null
-    }) => {
-      if (action === 'add') return api.watchlistAdd(symbol, '', groupId)
-      return api.watchlistRemove(symbol).catch(error => {
-        if (!(error instanceof ApiError) || error.status !== 409) throw error
-        if (!window.confirm('该股票仍有未平仓批次。确认仅移出普通自选？持仓账户数据不会被删除。')) throw error
-        return api.watchlistRemove(symbol, true)
-      })
-    },
+    }) => action === 'remove'
+      ? api.watchlistRemove(symbol)
+      : api.watchlistAdd(symbol, '', groupId),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: QK.watchlist })
       qc.invalidateQueries({ queryKey: ['watchlist-enriched'] })
-      qc.invalidateQueries({ queryKey: QK.watchlistPerformance })
     },
   })
 
@@ -799,7 +834,13 @@ export function Screener() {
         title="策略"
         subtitle="基于本地 enriched 表 · 毫秒级 SQL"
         right={
-          <div className="flex items-center gap-2">
+          /* 工具栏 10 组控件总宽会超过标题栏 (窄屏实测溢出 148px)。
+             不能靠 overflow-x-auto + 隐藏滚动条 —— 那样右侧按钮被静默裁掉,
+             用户既看不到也滚不到 (「创建策略 · AI」曾整块消失)。
+             改用 flex-wrap: 空间不足时折到第二行, 全部控件始终可达。
+             间距取 1.5 (6px): 1440px 宽下总占位 939+54=993px, 刚好单行放下;
+             8px 间距则是 1011px, 会在 1440 只剩一个按钮孤零零折行。 */
+          <div className="flex flex-wrap items-center justify-end gap-1.5">
             {/* 资产类型切换: 股票 / ETF (分钟策略 asset_types 仅股票, ETF 列表自然不含) */}
             <div className="flex items-center h-7 rounded-btn border border-border overflow-hidden">
               {(['stock', 'etf'] as const).map(t => (
@@ -949,11 +990,39 @@ export function Screener() {
         {cardSize !== 'hidden' && (
         <section>
           {strategies.isLoading && <div className="text-sm text-muted">加载中…</div>}
-          {!strategies.isLoading && displayPool.length === 0 && (
-            <div className="text-sm text-muted py-4 text-center border border-dashed border-border rounded-btn">
-              {pool.length === 0
-                ? '策略池为空，点击右上角「策略池」按钮添加策略'
-                : '当前周期筛选下无策略，切换周期筛选或编辑策略池'}
+          {!strategies.isLoading && strategies.isError && (
+            <div className="flex flex-col items-center gap-2 py-4 text-center border border-dashed border-danger/40 rounded-btn">
+              <span className="text-sm text-secondary">策略列表加载失败，请重试；策略池配置本身不受影响。</span>
+              <button
+                type="button"
+                onClick={() => strategies.refetch()}
+                disabled={strategies.isFetching}
+                className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-xs text-accent transition-colors hover:bg-elevated disabled:opacity-50"
+              >
+                重试
+              </button>
+            </div>
+          )}
+          {!strategies.isLoading && !strategies.isError && displayPool.length === 0 && (
+            <div className="py-4 text-center border border-dashed border-border rounded-btn">
+              <div className="text-sm text-muted">
+                {pool.length === 0
+                  ? '策略池为空，点击右上角「策略池」按钮添加策略'
+                  : '当前周期筛选下无策略，切换周期筛选或编辑策略池'}
+              </div>
+              {/* 池空时补文档入口: 用户此刻最需要的是「怎么造一个策略」, 而文档路径
+                  在界面上不可发现 —— 补上下文提到的三份指南, 与其它页引用 docs 同款
+                  (等宽文本而非链接: 这些是仓库内文件, 浏览器里点不开)。 */}
+              {pool.length === 0 && (
+                <div className="mt-2 flex flex-wrap items-center justify-center gap-x-1.5 gap-y-1 text-[11px] leading-relaxed text-muted/80">
+                  <span>自己写策略看</span>
+                  <code className="rounded bg-elevated/70 px-1 py-px font-mono text-[10px] text-secondary">docs/strategy.md</code>
+                  <span>（三种扩展方式：自定义信号 / AI 生成 / 手写代码）</span>
+                  <span className="text-border" aria-hidden="true">·</span>
+                  <span>用 AI 迭代已有策略看</span>
+                  <code className="rounded bg-elevated/70 px-1 py-px font-mono text-[10px] text-secondary">docs/strategy-iteration.md</code>
+                </div>
+              )}
             </div>
           )}
           <div className={cardWrapCls(cardSize)}>
@@ -1151,18 +1220,6 @@ export function Screener() {
                     onPreview={(symbol, name, navList) => { setPreviewSymbol(symbol); setPreviewName(name ?? ''); setPreviewNavList(navList ?? []) }}
                     onAddToWatchlist={(symbol, groupId) => toggleWatchlist.mutate({ symbol, action: 'add', groupId })}
                     onRemoveFromWatchlist={symbol => toggleWatchlist.mutate({ symbol, action: 'remove' })}
-                    onBuy={assetType === 'stock' ? row => {
-                      const ids = symbolStrategyMap.get(row.symbol) ?? (activeStrategy ? [activeStrategy] : [])
-                      const supportsAccount = ids.some(id => {
-                        const strategy = strategyMap.get(id)
-                        return strategy && strategy.timeframes?.includes('1d') !== false
-                      })
-                      if (!supportsAccount) {
-                        toast('首版持仓账户仅支持日线 A 股策略', 'error')
-                        return
-                      }
-                      setBuyTarget(row)
-                    } : undefined}
                     watchlistPending={toggleWatchlist.isPending}
                     klineData={klineData}
                     dailyKChartVisible={dailyKChartVisible}
@@ -1189,8 +1246,18 @@ export function Screener() {
                 <ScanSearch className="h-7 w-7 text-accent/40" />
               </div>
               <div className="flex flex-col items-center gap-1.5">
-                <span className="text-sm text-secondary">点击策略卡片查看选股结果</span>
-                <span className="text-[11px] text-muted">若提示 enriched 表无数据，请先运行盘后管道</span>
+                {/* 池空时没有卡片可点, 原文案「点击策略卡片」会指向不存在的操作 */}
+                {pool.length === 0 ? (
+                  <>
+                    <span className="text-sm text-secondary">还没有策略，先添加或创建一个</span>
+                    <span className="text-[11px] text-muted">用右上角「创建策略 · AI」生成，或按上方文档手写</span>
+                  </>
+                ) : (
+                  <>
+                    <span className="text-sm text-secondary">点击策略卡片查看策略结果</span>
+                    <span className="text-[11px] text-muted">若提示 enriched 表无数据，请先运行盘后管道</span>
+                  </>
+                )}
               </div>
             </div>
           )}
@@ -1321,15 +1388,6 @@ export function Screener() {
         open={showStore}
         onClose={() => setShowStore(false)}
       />
-      {buyTarget && (() => {
-        return (
-          <PaperStrategyBuyDialog
-            symbol={buyTarget.symbol}
-            name={buyTarget.name ?? ''}
-            onClose={() => setBuyTarget(null)}
-          />
-        )
-      })()}
     </>
   )
 }

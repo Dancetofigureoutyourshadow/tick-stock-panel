@@ -1,6 +1,6 @@
 """全局实时行情服务。
 
-集中管理全市场行情拉取 + enriched 缓存，供盘中选股、自选股等所有模块复用。
+集中管理全市场行情拉取 + enriched 缓存，供盘中策略、自选等所有模块复用。
 
 架构:
   - 后台线程轮询 TickFlow get_by_universes(["CN_Equity_A", "CN_ETF"]) + 核心指数按码拉取
@@ -29,7 +29,8 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
-from datetime import date, datetime, time as dt_time
+from datetime import date, datetime
+from datetime import time as dt_time
 
 import polars as pl
 
@@ -45,7 +46,6 @@ SOURCE_LABELS = {
     "strategy": "策略", "signal": "信号", "price": "价格",
     "market": "异动", "ladder": "连板梯队", "sector": "板块",
     "volume_delta": "放量", "abnormal": "异动", "date": "日期提醒",
-    "paper_exit": "模拟盘策略退出",
     "paper": "模拟盘",
 }
 
@@ -79,6 +79,14 @@ logger = logging.getLogger(__name__)
 _WEBHOOK_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="feishu-webhook")
 
 
+def shutdown_webhook_executor() -> None:
+    """应用关闭时放弃仍在排队的投递并关闭线程池 (lifespan shutdown 调用)。
+
+    不调用则 daemon 工作线程随进程退出, 排队中的 webhook 静默丢失。
+    """
+    _WEBHOOK_EXECUTOR.shutdown(wait=False, cancel_futures=True)
+
+
 class QuoteSubscriber:
     """一个 SSE 连接对应一个订阅者: 独立事件 + 独立队列。
 
@@ -94,7 +102,6 @@ class QuoteSubscriber:
         self._max_alerts = max_alerts
         self._max_reviews = max_reviews
         self._quote_updated = False
-        self._market_data_updated = False
         self._strategy_results_updated = False
         self._depth_updated = False
         self._alerts: list[dict] = []
@@ -110,14 +117,12 @@ class QuoteSubscriber:
         with self._lock:
             out = {
                 "quote_updated": self._quote_updated,
-                "market_data_updated": self._market_data_updated,
                 "strategy_results_updated": self._strategy_results_updated,
                 "depth_updated": self._depth_updated,
                 "alerts": self._alerts,
                 "reviews": self._reviews,
             }
             self._quote_updated = False
-            self._market_data_updated = False
             self._strategy_results_updated = False
             self._depth_updated = False
             self._alerts = []
@@ -145,7 +150,6 @@ class QuoteSubscriber:
             self._alerts = []
             if (
                 not self._quote_updated
-                and not self._market_data_updated
                 and not self._strategy_results_updated
                 and not self._depth_updated
                 and not self._reviews
@@ -155,11 +159,6 @@ class QuoteSubscriber:
     def notify_quote(self) -> None:
         with self._lock:
             self._quote_updated = True
-            self._event.set()
-
-    def notify_market_data(self) -> None:
-        with self._lock:
-            self._market_data_updated = True
             self._event.set()
 
     def notify_strategy_results(self) -> None:
@@ -225,6 +224,10 @@ class QuoteService:
         # 串行化行情拉取: 手动 POST /refresh 与后台轮询线程可能并发调用
         # _fetch_quotes, 两者同时写同一批 parquet/缓存会互相覆盖
         self._fetch_lock = threading.Lock()
+        # 监控评估专用锁: 评估已移出 _fetch_lock (评估链含告警落盘/模拟盘逐账户
+        # IO/webhook 判定, 留在取数锁内会阻塞下一轮拉取与手动刷新), 此锁保证
+        # 两轮评估不并发 (原先由取数锁隐式串行)。
+        self._evaluate_lock = threading.Lock()
         self._running = False
         self._enabled = False      # 全局开关 (持久化到 preferences)
         # 暂停态: 盘后管道/数据修正运行期间临时暂停取数, 防止与管道写同一批 parquet 竞态。
@@ -310,7 +313,7 @@ class QuoteService:
         """开启自动行情 (不立即启动线程，等下一个交易时段)。
 
         none 档无实时行情权限,拒绝开启并返回 False;
-        free 档开启自选股实时,starter+ 开启全市场实时。返回值表示是否真正开启。
+        free 档开启自选实时,starter+ 开启全市场实时。返回值表示是否真正开启。
         """
         if not self.is_realtime_allowed():
             logger.warning("实时行情开启被拒:当前档位(none)无实时行情权限")
@@ -341,14 +344,11 @@ class QuoteService:
 
         用于盘后管道/数据修正运行期间, 防止实时行情覆写管道正在写的 parquet。
         与 stop() 的区别: 线程继续存活但跳过 _fetch_quotes; preferences 开关态不变,
-        管道结束调用 resume() 即恢复。暂停会等待已经开始的 fetch 完成, 避免写盘竞态。
+        管道结束调用 resume() 即恢复。线程级检查, 即时生效, 无 join 等待。
         """
+        self._fetch_lock.acquire()
         self._paused = True
-        # 仅设置标志不能阻止已经通过 _poll_loop 检查的 fetch 继续写盘。
-        # 等待当前 fetch 退出, 并让 _fetch_quotes 在锁内再次检查暂停态,
-        # 才能保证管道开始写 enriched 时不存在实时写入者。
-        with self._fetch_lock:
-            pass
+        self._fetch_lock.release()
         logger.info("行情轮询已临时暂停 (管道/修正运行中)")
 
     def resume(self) -> None:
@@ -385,7 +385,10 @@ class QuoteService:
         if not self.is_realtime_allowed():
             if preferences.get_realtime_quotes_enabled():
                 self._save_enabled(False)
-            logger.info("实时行情未启动:当前档位(none)无实时行情权限")
+            # 带生效源: 便于判断「该切哪个源」, 而不是只看到 TickFlow 档位
+            from app.data_providers.capabilities import capability_gate
+            _, label = capability_gate("realtime")
+            logger.info("实时行情未启动: %s 不可用", label)
             return
         if preferences.get_realtime_quotes_enabled():
             self.start()
@@ -446,14 +449,6 @@ class QuoteService:
         """策略监控完成实时结果更新后调用，仅刷新策略页结果缓存。"""
         for sub in self._snapshot_subscribers():
             sub.notify_strategy_results()
-
-    def notify_market_data_updated(self) -> None:
-        """盘后数据快照已原子替换，通知客户端重取日线派生数据。"""
-        from app.api.overview import invalidate_overview_cache
-
-        invalidate_overview_cache()
-        for sub in self._snapshot_subscribers():
-            sub.notify_market_data()
 
     def notify_depth_updated(self) -> None:
         """五档盘口修正完成后调用: 通知 SSE 推送 depth_updated, 触发连板梯队刷新。
@@ -541,7 +536,7 @@ class QuoteService:
         return self._repo.get_enriched_latest()
 
     def get_quotes_compat(self) -> pl.DataFrame:
-        """兼容接口: 返回行情 DataFrame (用于盘中选股等需要 last_price/prev_close 的场景)。
+        """兼容接口: 返回行情 DataFrame (用于盘中策略等需要 last_price/prev_close 的场景)。
 
         从 _enriched_cache 取 today 的数据, 只选行情基础列, 补上 last_price 别名。
         不返回指标列, 避免 JOIN live_agg 时列名冲突。
@@ -550,7 +545,7 @@ class QuoteService:
         if df.is_empty():
             return df
 
-        # 只取盘中选股需要的行情基础列
+        # 只取盘中策略需要的行情基础列
         keep = [c for c in [
             "symbol", "close", "open", "high", "low", "volume", "amount",
             "prev_close", "change_pct", "change_amount", "amplitude", "turnover_rate",
@@ -667,25 +662,48 @@ class QuoteService:
                 time.sleep(0.5)
                 waited += 0.5
 
+    def _cleanup_day_scoped_state(self) -> None:
+        """按日清理 final 同步状态 (键为 (date, phase), 严格无界累积)。
+
+        旧日期键不再被 _final_sync_key 命中, 新交易日首次拉取时清掉;
+        放在 _fetch_quotes 入口而非 _update_volume_delta, 避免依赖最小实例
+        (测试用 __new__ 构造) 不具备的属性。
+        """
+        today = cn_today()
+        if self._final_sync_done and any(k[0] != today for k in self._final_sync_done):
+            self._final_sync_done = {k for k in self._final_sync_done if k[0] == today}
+        if self._final_sync_failed and any(k[0] != today for k in self._final_sync_failed):
+            self._final_sync_failed = {k: v for k, v in self._final_sync_failed.items() if k[0] == today}
+
     def _fetch_quotes(self, *, final: bool = False, final_boundary_ms: int | None = None) -> bool:
         """拉取行情。加锁串行化 (后台轮询 vs 手动 refresh)。返回本轮是否成功更新。
 
         final_boundary_ms: final 定版的边界时间戳 (ms)。传入时快照时间戳未达边界
         的本轮不落盘 (见 _process_full_market_records)。
         """
+        self._cleanup_day_scoped_state()
         with self._fetch_lock:
-            # pause() 与这里使用同一把锁, 避免 pause 设置标志后仍有一个
-            # 已经越过 _poll_loop 检查的 fetch 抢到写盘机会。
             if self._paused:
                 return False
             before = self._fetched_at
             if final:
                 logger.info("最终行情同步开始")
-            self._fetch_full_market_quotes(final_boundary_ms=final_boundary_ms)
-            return self._fetched_at > before
+            snapshot = self._fetch_full_market_quotes(final_boundary_ms=final_boundary_ms)
+            updated = self._fetched_at > before
+        # 监控评估移出取数锁执行: 评估输入是本轮快照 (daily_df/quote_extra),
+        # 离锁执行结果不变; 时序不变式 (enriched 替换后才评估) 仍由调用顺序保证。
+        if snapshot is not None:
+            with self._evaluate_lock:
+                self._evaluate_monitors(*snapshot)
+        return updated
 
-    def _fetch_full_market_quotes(self, final_boundary_ms: int | None = None) -> None:
-        """拉取全市场行情 → 写 daily + 计算 enriched + 更新缓存。"""
+    def _fetch_full_market_quotes(
+        self, final_boundary_ms: int | None = None
+    ) -> tuple[pl.DataFrame, pl.DataFrame | None] | None:
+        """拉取全市场行情 → 写 daily + 计算 enriched + 更新缓存。
+
+        返回 (daily_df, quote_extra) 快照供调用方在锁外评估监控; 空/失败轮返回 None。
+        """
         from app.services import preferences
 
         provider_name = preferences.get_realtime_data_provider()
@@ -724,14 +742,13 @@ class QuoteService:
                 except Exception as e:  # noqa: BLE001
                     logger.warning("自定义实时行情拉取失败: %s", e)
                     return
-                self._process_full_market_records(
+                return self._process_full_market_records(
                     records,
                     t0=t0,
                     now_ts=now_ts,
                     replace_index_cache=replace_index_cache,
                     final_boundary_ms=final_boundary_ms,
                 )
-                return
             # 自定义源未配置 realtime → 回退 TickFlow
 
         from app.tickflow.client import get_paid_realtime_client
@@ -818,7 +835,7 @@ class QuoteService:
                 "session": q.get("session"),
             })
 
-        self._process_full_market_records(
+        return self._process_full_market_records(
             records, t0=t0, now_ts=now_ts, final_boundary_ms=final_boundary_ms
         )
 
@@ -830,7 +847,7 @@ class QuoteService:
         now_ts: float,
         replace_index_cache: bool = True,
         final_boundary_ms: int | None = None,
-    ) -> None:
+    ) -> tuple[pl.DataFrame, pl.DataFrame | None] | None:
         """把全市场 records 写盘并增量计算 enriched。
 
         final_boundary_ms (final 定版边界) 传入时, 快照最大时间戳未达边界的本轮
@@ -924,8 +941,10 @@ class QuoteService:
             self._flush_live_enriched(daily_df, quote_extra, asset_type="stock")
         if not etf_daily_df.is_empty() and self._repo:
             self._flush_live_enriched(etf_daily_df, etf_quote_extra, asset_type="etf")
-        # ---- 指数: 仅有指数监控规则时才写盘 (无规则零成本) ----
-        # 指数为按码显式拉取 (部分标的) → merge 不截断分区
+        # ---- 指数: 核心四只每轮已显式拉取, 与股票/ETF 同口径 merge 写盘 ----
+        # 不能再门控 has_asset_rules("index"): 默认配置无指数监控规则, 否则
+        # 盘中 kline_index_enriched 停在上一交易日, 读侧守卫直接跳过不注入。
+        # 指数为按码显式拉取 (部分标的) → merge 不截断分区。
         if self._repo:
             index_daily_df = self._build_daily(index_records)
             if not index_daily_df.is_empty():
@@ -939,7 +958,9 @@ class QuoteService:
         self._broadcast_quote_updated()
 
         # ---- 策略监控 + 告警评估 ----
-        self._evaluate_monitors(daily_df, quote_extra)
+        # 由调用方 (_fetch_quotes) 持 _evaluate_lock 在取数锁外执行;
+        # 返回本轮快照 (daily_df, quote_extra) 作为评估输入
+        return daily_df, quote_extra
 
     # ================================================================
     # 工具
@@ -971,9 +992,6 @@ class QuoteService:
             "low": "low",
             "volume": "volume",
             "amount": "amount",
-            # 前收盘/涨跌幅来自实时行情源，随日K落盘供冷启动重算。
-            "prev_close": "prev_close",
-            "change_pct": "change_pct",
             "timestamp": "quote_ts",
         }
         select_exprs = []
@@ -1031,6 +1049,10 @@ class QuoteService:
         keep = [c for c in keep if c == "symbol" or df[c].null_count() < len(df)]
         if not keep or "symbol" not in keep:
             return pl.DataFrame()
+        # 整列 null = 数据源未提供该字段 (如 fuyao 的 turnover_rate/amplitude 显式置 None),
+        # 必须丢弃: 下游 compute_enriched_today 对这些列是「列存在即直接采用」,
+        # 转发全空列会跳过回退计算, 当日换手/振幅将永远为空且每轮实时覆写自锁
+        keep = [c for c in keep if c == "symbol" or df[c].null_count() < len(df)]
         out = df.select(keep)
         # 实时 API 的 turnover_rate 入口契约为小数制(0.05 = 5%).
         # enriched 内部统一存百分数值(5 = 5%), 后续页面/筛选直接展示和比较。
@@ -1259,6 +1281,8 @@ class QuoteService:
                     # 独立 try —— ETF 轮任何异常都不得丢弃本轮已算出的股票告警。
                     # refresh=False —— 不在轮询线程上触发 ETF 冷缓存的同步重算 (缓存由 ETF 实时
                     # flush 焐热; 未焐热说明无 ETF 实时数据, 跳过本轮 ETF 评估)。
+                    # 日期守卫同指数轮: 自选/策略等页面会把磁盘上一交易日的 ETF 快照读进缓存,
+                    # ETF 实时拉取关闭 (默认) 或休市时它不会被当日数据替换, 不得当作当日评估。
                     if engine.has_asset_rules("etf") and self._repo is not None:
                         try:
                             etf_enriched, etf_date = self._repo.get_enriched_latest_asset("etf", refresh=False)
@@ -1271,7 +1295,7 @@ class QuoteService:
                             logger.warning("ETF 监控评估失败 (不影响股票告警): %s", e)
                     # 指数规则轮: 复刻 ETF 轮。快照由指数实时 flush 焐热;
                     # refresh=False 冷缓存不同步重算; 显式日期守卫防陈旧 parquet 误告警
-                    # (ETF 轮靠空表隐式跳过, 指数轮更显式, 行为等价)。
+                    # (与 ETF 轮同口径)。
                     if engine.has_asset_rules("index") and self._repo is not None:
                         try:
                             index_enriched, index_date = self._repo.get_enriched_latest_asset("index", refresh=False)
@@ -1282,69 +1306,42 @@ class QuoteService:
                                 )
                         except Exception as e:  # noqa: BLE001
                             logger.warning("指数监控评估失败 (不影响股票/ETF 告警): %s", e)
-
-                # 模拟盘持仓退出规则与监控同频评估。每个账户只检查现有持仓批次，
-                # 不重新运行完整策略选股；退出事件由 paper 域负责生成自动卖单或待确认意图。
-                if stock_ready and self._app_state is not None:
-                    try:
-                        from app.strategy import paper as paper_trading
-                        from app.strategy import paper_exit
-                        data_dir = self._app_state.repo.store.data_dir
-                        for acc_id in paper_trading.list_account_ids(data_dir):
-                            open_symbols = set(paper_trading.load_positions(data_dir, acc_id))
-                            if not open_symbols:
-                                continue
-                            position_rows = enriched_today.filter(
-                                pl.col("symbol").is_in(open_symbols)
-                            ).to_dicts()
-                            rule_events += paper_exit.evaluate(
-                                data_dir,
-                                position_rows,
-                                account_id=acc_id,
-                                trade_date=cn_today().isoformat(),
-                            )
-                    except Exception as e:  # noqa: BLE001
-                        logger.warning("模拟盘持仓退出规则评估失败 (不影响其他告警): %s", e)
-
-                if rule_events:
-                    rule_events = self._format_extension_notifications(rule_events)
-                    # 落盘到 alerts.jsonl
-                    try:
-                        from app.services import alert_store
-                        alert_store.append_many(
-                            self._app_state.repo.store.data_dir, rule_events,
-                        )
-                    except Exception as e:  # noqa: BLE001
-                        logger.warning("告警落盘失败: %s", e)
-                    # 转为 SSE 推送格式 (兼容旧 alert schema)
-                    for ev in rule_events:
-                        alert = {
-                            "source": ev["source"],
-                            "type": ev["type"],
-                            "rule_id": ev.get("rule_id"),
-                            "strategy_id": ev.get("strategy_id"),
-                            "symbol": ev["symbol"],
-                            "name": ev["name"],
-                            "message": ev["message"],
-                            "price": ev["price"],
-                            "change_pct": ev["change_pct"],
-                            "signals": ev["signals"],
-                            "severity": ev.get("severity", "info"),
-                            "conditions": ev.get("conditions") or [],
-                            "logic": ev.get("logic") or "and",
-                        }
-                        for key in (
-                            "sector_kind", "sector_key", "sector_name",
-                            "sector_source_field", "sector_value", "sector_level",
-                            "window_change_pct", "coverage_ratio", "valid_count",
-                            "total_count", "up_count", "down_count", "leader",
-                            "abnormal_window", "abnormal_value", "abnormal_threshold",
-                            "abnormal_closeness", "volume_delta", "volume_delta_span",
-                            "volume_delta_amount", "position_id", "exit_reason",
-                        ):
-                            if key in ev:
-                                alert[key] = ev[key]
-                        all_alerts.append(alert)
+                    if rule_events:
+                        rule_events = self._format_extension_notifications(rule_events)
+                        # 落盘到 alerts.jsonl
+                        try:
+                            rule_events = rule_events + engine.evaluate_date_rules()
+                        except Exception as e:  # noqa: BLE001
+                            logger.warning("告警落盘失败: %s", e)
+                        # 转为 SSE 推送格式 (兼容旧 alert schema)
+                        for ev in rule_events:
+                            alert = {
+                                "source": ev["source"],
+                                "type": ev["type"],
+                                "rule_id": ev.get("rule_id"),
+                                "strategy_id": ev.get("strategy_id") if ev["source"] == "strategy" else None,
+                                "symbol": ev["symbol"],
+                                "name": ev["name"],
+                                "message": ev["message"],
+                                "price": ev["price"],
+                                "change_pct": ev["change_pct"],
+                                "signals": ev["signals"],
+                                "severity": ev.get("severity", "info"),
+                                "conditions": ev.get("conditions") or [],
+                                "logic": ev.get("logic") or "and",
+                            }
+                            for key in (
+                                "sector_kind", "sector_key", "sector_name",
+                                "sector_source_field", "sector_value", "sector_level",
+                                "window_change_pct", "coverage_ratio", "valid_count",
+                                "total_count", "up_count", "down_count", "leader",
+                                "abnormal_window", "abnormal_value", "abnormal_threshold",
+                                "abnormal_closeness", "volume_delta", "volume_delta_span",
+                                "volume_delta_amount",
+                            ):
+                                if key in ev:
+                                    alert[key] = ev[key]
+                            all_alerts.append(alert)
 
             # 策略页实时回显: 不写文件 (实时行情每轮更新 enriched, 写文件会被 read_cache
             # 的 mtime 校验判过期, 反复读不到)。监控引擎本轮已算出的结果存在内存
@@ -1385,10 +1382,7 @@ class QuoteService:
                         paper_events.extend(
                             paper_trading.evaluate_intraday(data_dir, snapshot, account_id=acc_id))
                         if rule_events:
-                            # 持仓退出已经由 paper_exit 处理, 不再喂给新建仓/监控跟单规则,
-                            # 避免同一退出事件重复生成卖单。
-                            follow_events = [ev for ev in rule_events if ev.get("source") != "paper_exit"]
-                            created = paper_auto.on_rule_events(data_dir, follow_events, account_id=acc_id)
+                            created = paper_auto.on_rule_events(data_dir, rule_events, account_id=acc_id)
                             paper_events.extend(paper_auto.auto_order_events(created, account_id=acc_id))
                     # 成交/自动跟单下单推送 (V3): 复用监控中心既有管道 —— SSE toast /
                     # 语音 (前端按 source 拼文案) / 系统通知 / alert_store 留痕 /
@@ -1702,11 +1696,7 @@ class QuoteService:
                 rule = rules.get(ev.get("rule_id"))
                 # webhook_channels 指定本规则需要投递的外部渠道。
                 # 空列表 = 该规则不推送。仅推送「渠道已选 + 对应地址已配置」的组合。
-                channels = (
-                    rule.get("webhook_channels")
-                    if rule
-                    else ev.get("webhook_channels")
-                )
+                channels = rule.get("webhook_channels") if rule else None
                 if not channels:
                     continue
                 source = ev.get("source", "")
@@ -1799,8 +1789,7 @@ class QuoteService:
         - 批量策略事件 (symbol="") 聚合为一条通知, 避免刷屏
         """
         try:
-            from app.services import preferences
-            from app.services import notify_adapter
+            from app.services import notify_adapter, preferences
 
             if not preferences.get_system_notify_enabled():
                 return
@@ -1863,15 +1852,12 @@ class QuoteService:
 
             if use_incremental:
                 from app.indicators.pipeline import compute_enriched_today
-                from app.market_time import trading_minutes_elapsed_from_ts, trading_minutes_elapsed
+                from app.market_time import trading_minutes_elapsed, trading_minutes_elapsed_from_ts
                 instruments = self._repo.get_instruments()
                 # 将 API 直接提供的补充字段 JOIN 到 daily_df
                 today_ohlcv = daily_df
                 if quote_extra is not None and not quote_extra.is_empty():
-                    # 日K也可能已持久化同名字段；先去掉旧值，确保实时快照
-                    # 的 prev_close/change_pct 优先，避免生成 *_right 后被忽略。
-                    overlap = [c for c in quote_extra.columns if c != "symbol" and c in daily_df.columns]
-                    today_ohlcv = daily_df.drop(overlap).join(quote_extra, on="symbol", how="left")
+                    today_ohlcv = daily_df.join(quote_extra, on="symbol", how="left")
                 # 量比时间折算: 优先用行情 quote_ts (真实成交时间), 缺失则兜底服务端时间
                 elapsed_minutes: float | None = None
                 if "quote_ts" in daily_df.columns and not daily_df.is_empty():
@@ -1894,6 +1880,7 @@ class QuoteService:
             # ---- 全量回退路径 ----
             if not use_incremental:
                 from datetime import timedelta
+
                 from app.indicators.pipeline import compute_enriched
                 from app.tickflow.repository import _live_agg_window_start
 
@@ -1903,13 +1890,10 @@ class QuoteService:
                 cutoff = today - timedelta(days=90)
                 table = {"etf": "kline_etf_daily", "index": "kline_index_daily"}.get(asset_type, "kline_daily")
                 daily_glob = str(self._repo.store.data_dir / table / "**" / "*.parquet")
-                ohlcv_cols = [
-                    "symbol", "date", "open", "high", "low", "close", "volume", "amount",
-                    "prev_close", "change_pct", "quote_ts",
-                ]
+                ohlcv_cols = ["symbol", "date", "open", "high", "low", "close", "volume", "amount", "quote_ts"]
                 hist_df = guarded_collect(
                     scan_daily_parquet(daily_glob)
-                    # Read extra calendar days, then choose the window by trading-day count.
+                    # 多读一段自然日, 再按交易日计数确定窗口起点 (长假前后 90 个自然日不足 60 个交易日)
                     .filter(pl.col("date") >= cutoff - timedelta(days=60))
                     .sort(["symbol", "date"]),
                     priority="background",
@@ -1919,6 +1903,7 @@ class QuoteService:
 
                 hist_cols = [c for c in ohlcv_cols if c in hist_df.columns]
                 hist_df = hist_df.select(hist_cols).filter(pl.col("date") != today)
+                # 与股票盘中递推窗口同口径: 至少覆盖 60 个交易日, 否则 MA60/60 日极值/60 日动量为空
                 window_start = _live_agg_window_start(hist_df["date"], today, cutoff)
                 hist_df = hist_df.filter(pl.col("date") >= window_start)
                 daily_ohlcv = daily_df.select([c for c in ohlcv_cols if c in daily_df.columns])

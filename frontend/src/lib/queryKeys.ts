@@ -79,10 +79,11 @@ export const QK = {
   dimensionIntraday:    (id: string, field: string, value: string, date?: string) => ['dimension-intraday', id, field, value, date] as const,
   analysisMenus:        ['analysis-menus'] as const,
   analysisMenu:         (id: string) => ['analysis-menu', id] as const,
+  extPages:             ['ext-pages'] as const,
 
   // Kline
-  kline:                (symbol: string, start: string, end: string, extColumns?: string, period = 'day') =>
-                           ['kline', symbol, start, end, extColumns ?? '', period] as const,
+  kline:                (symbol: string, start: string, end: string, extColumns?: string) =>
+                           ['kline', symbol, start, end, extColumns ?? ''] as const,
   klineLatest:          (symbol: string) => ['kline-latest', symbol] as const,
   stockLevels:          (symbol: string, days?: number) => ['stock-levels', symbol, days ?? 120] as const,
   klineMinute:          (symbol: string, date: string) =>
@@ -108,6 +109,8 @@ export const QK = {
   // Monitor (监控规则 + 触发记录)
   monitorRules:         ['monitor-rules'] as const,
   monitorRuleOptions:   ['monitor-rule-options'] as const,
+  lots:                 ['lots'] as const,
+  lotsKline:            (symbols: string) => ['lots-kline', symbols] as const,
 
   // 模拟盘 (多账户: 键按账户隔离; paperAll 作账户无关失效前缀)
   paperAll:             ['paper'] as const,
@@ -116,8 +119,6 @@ export const QK = {
   paperOverview:        (acc: string) => ['paper', 'overview', acc] as const,
   paperOrders:          (acc: string) => ['paper', 'orders', acc] as const,
   paperTrades:          (acc: string) => ['paper', 'trades', acc] as const,
-  paperIntents:         (acc: string) => ['paper', 'intents', acc] as const,
-  paperTransactions:    (acc: string) => ['paper', 'transactions', acc] as const,
   paperNav:             (acc: string) => ['paper', 'nav', acc] as const,
   paperStats:           (acc: string) => ['paper', 'stats', acc] as const,
   paperCompare:         ['paper', 'compare'] as const,
@@ -139,7 +140,7 @@ export const QK = {
   regimeMainline:       (kind: string, start?: string, end?: string) => ['regime-mainline', kind, start ?? '', end ?? ''] as const,
   // 板块切换 (盘中轮动, 全量分钟聚合) — 30s 前端轮询刷新; seriesKey = 自定义展示板块清单,
   // filterKey = 自动活跃榜行数与排除名单 (会改变结果的参数必须进查询键)
-  sectorRotation:       (kind: string, bucket?: number, seriesKey?: string, filterKey?: string) => ['sector-rotation', kind, bucket ?? 5, seriesKey ?? '', filterKey ?? ''] as const,
+  sectorRotation:       (kind: string, flow?: string, bucket?: number, seriesKey?: string, filterKey?: string) => ['sector-rotation', kind, flow ?? '', bucket ?? 5, seriesKey ?? '', filterKey ?? ''] as const,
   // 板块切换的指数叠加线 (核心四只, 默认上证) — 分钟取当日, 日K取昨收基准
   sectorRotationIndexMinute: (symbol: string, date?: string) => ['sector-rotation-index-minute', symbol, date ?? ''] as const,
   sectorRotationIndexDaily:  (symbol: string) => ['sector-rotation-index-daily', symbol] as const,
@@ -156,12 +157,11 @@ export const QK = {
 // 且在 monitor "重算" 窗口内读到空结果, 造成策略列表闪烁 (变 0 → 空失效 → 又出现)。
 
 export const SSE_INVALIDATE_PREFIXES = [
-  // 精确前缀: 只命中自选/模拟盘页的实时数据 (quotes/enriched/paper)。不能用宽泛的 'watchlist' ——
+  // 精确前缀: 只命中自选页的实时数据 (quotes/enriched)。不能用宽泛的 'watchlist' ——
   // 会误伤 ['watchlist'] (自选列表) 和 ['watchlist-groups'] (分组配置, 只随手动操作变化)。
   // 旧设置里的 'watchlist' 单开关由 useQuoteStream 兼容读取。
   'watchlist-quotes',
   'watchlist-enriched',
-  'paper',
   'quote-status',
   'screener-current-prices',
   'index-quotes',
@@ -170,24 +170,4 @@ export const SSE_INVALIDATE_PREFIXES = [
   // 概念/行业分析的全市场快照 (#419): 后端读最新日内缓存, 行情更新后需重取,
   // 否则停留页面时板块聚合数值一直停留旧值。仅两页打开时才实际发请求。
   'market-snapshot',
-] as const
-
-// 盘后管道或手动刷新替换日线快照后需要失效的查询。它与盘中 quotes_updated
-// 分开，避免秒级行情轮询反复拉取历史日K，同时保证关闭实时行情时也能拿到定版数据。
-export const MARKET_DATA_INVALIDATE_PREFIXES = [
-  'data-status',
-  'overview-market',
-  'index-quotes',
-  'index-daily',
-  'watchlist-enriched',
-  'watchlist-performance',
-  'kline',
-  'kline-minute',
-  'kline-minute-range',
-  'screener-cached',
-  'screener-kline-batch',
-  'market-snapshot',
-  'limit-ladder',
-  'stock-levels',
-  'rps-rotation',
 ] as const

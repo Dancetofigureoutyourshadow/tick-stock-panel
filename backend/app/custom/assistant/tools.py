@@ -2,7 +2,7 @@
 
 设计原则(为项目服务、有界):
 - 查询工具对应页面核心查询能力(行情/自选/看板/指数/板块轮动/市场
-  环境/异动/信号库/财务/个股分析/因子值/跑策略), 全部只读。
+  环境/异动/持仓提醒/信号库/财务/个股分析/因子值/跑策略), 全部只读。
 - 动作工具(create_signal_strategy/add_to_watchlist, 及核心目录的
   run_backtest)有写副作用或重计算, 由 chat_service 的确认闸门把守
   (actions.py), 未经用户确认不会执行。
@@ -72,7 +72,7 @@ QUICK_SUGGESTS: list[dict[str, str]] = [
         "id": "watchlist-check",
         "group": "我的与个股",
         "label": "我的自选表现如何",
-        "prompt": "查一下我的自选股列表, 按今日涨跌幅排序, 标出表现最好和最差的, 并简要点评。",
+        "prompt": "查一下我的自选列表, 按今日涨跌幅排序, 标出表现最好和最差的, 并简要点评。",
     },
     {
         "id": "stock-analyze",
@@ -114,8 +114,8 @@ QUICK_SUGGESTS: list[dict[str, str]] = [
     {
         "id": "run-strategy-today",
         "group": "策略与信号",
-        "label": "跑一个选股策略",
-        "prompt": "执行我的第一个选股策略, 看看按最新数据选出哪些标的, 并简要点评排在前面的几只。",
+        "label": "跑一个策略",
+        "prompt": "执行我的第一个策略, 看看按最新数据选出哪些标的, 并简要点评排在前面的几只。",
     },
     {
         "id": "backtest-pick",
@@ -604,6 +604,35 @@ def _get_abnormal(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     data = build_overview(repo, ctx.quote_service, limit=limit)
     rows = data.get("rows") or []
     return {"kind": kind, "rows": rows[:limit]}
+
+
+def _get_lots(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    from app.strategy.lots import load_all
+
+    if ctx.data_dir is None:
+        raise ValueError("数据目录未就绪。")
+    lots = load_all(ctx.data_dir)
+    if not lots:
+        return {"count": 0, "rows": [], "note": "暂无持仓提醒记录。"}
+    symbols = [str(lot.get("symbol") or "") for lot in lots if lot.get("symbol")]
+    quotes = _quotes_map(ctx, symbols)
+    names = ctx.repo.get_name_map(symbols) if ctx.repo is not None else {}
+    rows = []
+    for lot in lots[:100]:
+        symbol = str(lot.get("symbol") or "")
+        quote = quotes.get(symbol, {})
+        rows.append({
+            "symbol": symbol,
+            "name": names.get(symbol, ""),
+            "qty": lot.get("qty"),
+            "cost_price": lot.get("cost_price"),
+            "buy_date": _clean_value(lot.get("buy_date")),
+            "target_pct": lot.get("target_pct"),
+            "stop_pct": lot.get("stop_pct"),
+            "close": quote.get("close"),
+            "change_pct": quote.get("change_pct"),
+        })
+    return {"count": len(rows), "rows": rows}
 
 
 def _list_signals(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
@@ -1153,6 +1182,7 @@ _LOCAL_TOOLS: dict[str, Callable[[dict[str, Any], ToolContext], Any]] = {
     "get_sector_rotation": _get_sector_rotation,
     "get_regime": _get_regime,
     "get_abnormal": _get_abnormal,
+    "get_lots": _get_lots,
     "list_signals": _list_signals,
     "run_strategy": _run_strategy,
     "get_factor_values": _get_factor_values,
@@ -1222,7 +1252,7 @@ def _local_tool_schemas() -> list[dict[str, Any]]:
         ),
         _schema(
             "get_watchlist",
-            "查询用户的自选股列表(含备注), 并合并最新价与今日涨跌幅, 用于回答「我的自选表现如何」。",
+            "查询用户的自选列表(含备注), 并合并最新价与今日涨跌幅, 用于回答「我的自选表现如何」。",
             {},
             [],
         ),
@@ -1263,6 +1293,12 @@ def _local_tool_schemas() -> list[dict[str, Any]]:
             [],
         ),
         _schema(
+            "get_lots",
+            "查询用户的持仓提醒(lots): 持仓数量、成本、目标/止损幅度, 合并最新价与今日涨跌幅。",
+            {},
+            [],
+        ),
+        _schema(
             "list_signals",
             "检索用户自定义信号的目录(信号库页): 名称、表达式、分组与启用状态。",
             {},
@@ -1270,7 +1306,7 @@ def _local_tool_schemas() -> list[dict[str, Any]]:
         ),
         _schema(
             "run_strategy",
-            "以最新交易日报酬面执行一个选股策略并返回命中标的列表(≤30 行)。strategy_id 可先用 list_strategies 查询。",
+            "以最新交易日报酬面执行一个策略并返回命中标的列表(≤30 行)。strategy_id 可先用 list_strategies 查询。",
             {"strategy_id": {"type": "string", "description": "策略 id"}},
             ["strategy_id"],
         ),
@@ -1463,6 +1499,8 @@ def summarize_tool_result(name: str, payload: dict[str, Any]) -> str:
         return f"返回 {_count()} 日 regime, 最新 {latest}"
     if name == "get_abnormal":
         return f"返回异动 {_count()} 行"
+    if name == "get_lots":
+        return f"返回持仓提醒 {_count()} 条"
     if name == "list_signals":
         return f"返回 {_count()} 个信号定义"
     if name == "run_strategy":

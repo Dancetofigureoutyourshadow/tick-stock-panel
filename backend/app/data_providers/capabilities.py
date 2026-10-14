@@ -3,8 +3,8 @@
 能力 (capability) = 一个标准化数据集 (CONTRIBUTING「数据源插件化要求」):
 daily / adj_factor / realtime / minute / depth5 / financial (注册表顺序即设置页卡片顺序)。注册表集中声明每个
 能力的展示元数据、路由偏好字段与 TickFlow 档位要求, 前端设置页不再各自硬编码。
-depth5 通过代码插件的 get_depth5 契约接入, 当前 MooTDX 已提供该实现; 仍进矩阵是为了
-可用性门控诚实: 五档不可用时连板梯队封单/看板封单缺数据应有提示。
+depth5 与其他数据集一样可由插件声明并独立路由; 五档不可用时连板梯队封单/
+看板封单通过 usable 给出缺数据提示。
 
 build_capability_matrix 把注册表、插件/自定义源的能力声明 (datasets) 和当前
 路由偏好合并为一个矩阵, 供设置页一次拉全。当前偏好由 API 层注入
@@ -67,7 +67,6 @@ CAPABILITY_REGISTRY: list[dict] = [
         "field": "depth5_data_provider",
         "default": "tickflow",
         "tf_tier": "pro",
-        # 代码插件可通过 get_depth5 契约提供, 通用 HTTP YAML 源不支持
     },
     {
         "id": "financial",
@@ -199,3 +198,92 @@ def build_capability_matrix(current: dict[str, str], tickflow_tier: str = "none"
             "pending": pending,
         })
     return {"tickflow_tier": tier_base, "capabilities": capabilities}
+
+
+# ---------------------------------------------------------------------------
+# 门禁视角 (面向各服务的启动/调度判断与日志)
+# ---------------------------------------------------------------------------
+
+def _cap_specs_by_id() -> dict[str, dict]:
+    return {c["id"]: c for c in CAPABILITY_REGISTRY}
+
+
+def _current_routing() -> dict[str, str]:
+    """偏好字段 → 当前生效源 (经 preferences getters, 非法值已回退默认)。
+
+    与 api/settings.py 的 capability-matrix 端点同一组 getter; 显式列全,
+    不用 getattr 拼函数名 (拼错会静默回退, 难排查)。
+    """
+    from app.services import preferences
+
+    return {
+        "realtime_data_provider": preferences.get_realtime_data_provider(),
+        "daily_data_provider": preferences.get_daily_data_provider(),
+        "minute_data_provider": preferences.get_minute_data_provider(),
+        "full_minute_data_provider": preferences.get_full_minute_data_provider(),
+        "depth5_data_provider": preferences.get_depth5_data_provider(),
+        "adj_factor_provider": preferences.get_adj_factor_provider(),
+        "financial_data_provider": preferences.get_financial_provider(),
+    }
+
+
+def resolve_capability_sources(tickflow_tier: str = "none") -> list[dict]:
+    """每个能力一行: 生效源 + 展示名 + 该源当前能否真正提供 (usable)。
+
+    与 build_capability_matrix 同口径 (复用同一 candidates 组装), 供服务层
+    的门禁判断与日志标签使用 —— 门禁必须看「生效源能否提供」, 而不是只看
+    TickFlow 套餐 (路由到插件时 TickFlow 档位无关; 同理路由到 TickFlow 而
+    档位不足时, 插件声明了也不该被算作可用)。
+
+    返回 [{id, label, field, source, source_display, usable, tf_available}]。
+    """
+    tier_rank = _TIER_RANK.get(_tier_base(tickflow_tier), -1)
+    sources = _declared_sources()
+    current = _current_routing()
+
+    rows: list[dict] = []
+    for cap in CAPABILITY_REGISTRY:
+        field = cap.get("field")
+        if not field:
+            continue
+        effective = current.get(field, cap["default"])
+        tf_available = tier_rank >= _TIER_RANK[cap["tf_tier"]]
+        provider_names = {"tickflow"} if tf_available else set()
+        provider_names |= {
+            s["name"] for s in sources
+            if cap["id"] in s["datasets"] and s["available"]
+        }
+        rows.append({
+            "id": cap["id"],
+            "label": cap["label"],
+            "field": field,
+            "source": effective,
+            "source_display": _display_of(sources, effective),
+            "usable": effective in provider_names,
+            "tf_available": tf_available,
+        })
+    return rows
+
+
+def capability_gate(cap_id: str, tickflow_tier: str | None = None) -> tuple[bool, str]:
+    """单个能力的门禁: (是否可用, 日志标签)。
+
+    标签形如 "日K ← fuyao" / "财务数据 ← TickFlow(档位不足)", 让「为什么没跑」
+    在日志里一眼可读, 而不必回设置页对照路由。
+
+    可用性以生效源为准 (与设置页 usable 同口径): 路由到已声明的插件即可用,
+    路由到 TickFlow 但档位不够则不可用。
+    """
+    if tickflow_tier is None:
+        from app.tickflow import policy
+        tickflow_tier = policy.base_tier_name()
+
+    for row in resolve_capability_sources(tickflow_tier):
+        if row["id"] == cap_id:
+            label = f"{row['label']} ← {row['source_display']}"
+            if not row["usable"] and row["source"] == "tickflow" and not row["tf_available"]:
+                label += "(档位不足)"
+            elif not row["usable"]:
+                label += "(当前源不可用)"
+            return row["usable"], label
+    return False, f"{cap_id}(未知能力)"

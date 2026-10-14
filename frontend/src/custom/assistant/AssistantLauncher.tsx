@@ -9,7 +9,6 @@ import { useEffect } from 'react'
 import type { FrontendSlotContextMap } from '@/extensions/types'
 import { closeAssistant, setPageContext, toggleAssistant, useAssistantStore } from './store'
 import { AssistantFloatingButton } from './ui/AssistantFloatingButton'
-import { AiConfigEntry } from './ui/AiConfigEntry'
 import { AssistantDrawer } from './ui/AssistantDrawer'
 
 // 插槽注册表把组件 props 定为所有插槽上下文的联合类型(保守契约);
@@ -32,6 +31,7 @@ const PAGE_LABELS: Record<string, string> = {
   '/monitor': '监控中心',
   '/regime': '市场环境',
   '/abnormal': '异动监控',
+  '/lots': '持仓提醒',
   '/signals': '信号库',
   '/review': '复盘',
   '/indices': '指数',
@@ -63,7 +63,6 @@ export function AssistantLauncher(props: AnySlotContext) {
   return (
     <>
       <AssistantFloatingButton />
-      <AiConfigEntry />
       <AssistantDrawer />
     </>
   )

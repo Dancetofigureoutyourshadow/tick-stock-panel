@@ -2,23 +2,17 @@ import { useEffect, useMemo, useRef } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Download, Loader2, RefreshCw } from 'lucide-react'
 import { api, type MinuteKlineSession } from '@/lib/api'
-import { klineMinuteQueryOptions, klineMinuteRangeQueryOptions } from '@/lib/kline'
+import { klineMinuteQueryOptions, klineMinuteRangeQueryOptions, minuteRefetchInterval } from '@/lib/kline'
 import { toast } from '@/components/Toast'
 import { EChartsMultiDayIntraday } from '@/components/EChartsMultiDayIntraday'
-import type { IntradayChartMarker } from '@/components/EChartsIntraday'
-import { StockDepth5Panel } from '@/components/StockDepth5Panel'
-import { StockTransactionsPanel } from '@/components/StockTransactionsPanel'
-import { chinaToday, useFocusMarketStream } from '@/lib/useFocusMarketStream'
 
 interface Props {
   symbol: string
   days: number
   height?: number
   refetchIntervalMs?: number
-  showDepth5?: boolean
   onPriceDoubleClick?: (price: number, currentPrice: number) => void
-  priceLines?: import('@/components/EChartsCandlestick').ChartPriceLine[]
-  markers?: IntradayChartMarker[]
+  priceLines?: { value: number; label?: string; color?: string }[]
 }
 
 function errorMessage(error: unknown): string {
@@ -30,17 +24,10 @@ export function StockMultiDayIntradayChart({
   days,
   height = 420,
   refetchIntervalMs,
-  showDepth5 = false,
   onPriceDoubleClick,
   priceLines,
-  markers,
 }: Props) {
   const queryClient = useQueryClient()
-  const focusStream = useFocusMarketStream({
-    symbol,
-    date: chinaToday(),
-    enabled: showDepth5,
-  })
   const history = useQuery({
     ...klineMinuteRangeQueryOptions(symbol, days),
     enabled: !!symbol,
@@ -49,7 +36,7 @@ export function StockMultiDayIntradayChart({
     // live: 当日盘中直接实时拉取, 不被分钟增量落盘的本地分区(≥60s一轮)拖慢
     ...klineMinuteQueryOptions(symbol, undefined, true),
     enabled: !!symbol,
-    refetchInterval: focusStream.streamEnabled ? false : refetchIntervalMs,
+    refetchInterval: minuteRefetchInterval(refetchIntervalMs),
   })
 
   const sessions = useMemo(() => {
@@ -101,7 +88,6 @@ export function StockMultiDayIntradayChart({
   const localSessionCount = history.data?.sessions?.length ?? 0
   const missingDays = Math.max(0, days - localSessionCount)
   const showCoverage = !history.isPlaceholderData && sessions.length > 0 && missingDays > 0 && !isIndex
-  const prevClose = latest.data?.prev_close ?? sessions.at(-1)?.prev_close ?? null
 
   // 自动补齐: 本地落库天数不足且非指数时, 自动触发同步
   // 用 ref 记录已触发的 symbol:days, 避免重复; 失败后清标记, 允许上限内自动重试
@@ -176,8 +162,7 @@ export function StockMultiDayIntradayChart({
   }
 
   return (
-    <div className="flex flex-wrap items-start gap-3">
-      <div className="min-w-0 flex-1" style={{ height }}>
+    <div style={{ height }}>
       {(showCoverage || (syncMinute.isPending && !isIndex)) && (
         <div className="flex h-8 items-center justify-between gap-3 border-b border-border/60 bg-elevated/40 px-3 text-[11px]">
           {syncMinute.isPending ? (
@@ -210,34 +195,9 @@ export function StockMultiDayIntradayChart({
         height={chartHeight}
         onPriceDoubleClick={onPriceDoubleClick}
         priceLines={priceLines}
-        markers={markers}
       />
       {syncMinute.isError && (
         <div className="px-3 pt-1 text-center text-[11px] text-danger">{errorMessage(syncMinute.error)}</div>
-      )}
-      </div>
-      {showDepth5 && focusStream.isCurrentDate && (
-        <StockTransactionsPanel
-          rows={focusStream.transactions}
-          status={focusStream.transactionsStatus}
-          error={focusStream.transactionsError}
-          updatedAt={focusStream.transactionsUpdatedAt}
-          prevClose={prevClose}
-          height={height}
-          className="w-[320px] shrink-0"
-        />
-      )}
-      {showDepth5 && focusStream.isCurrentDate && (
-        <div className="basis-full w-full shrink-0">
-          <StockDepth5Panel
-            snapshot={focusStream.depth}
-            status={focusStream.depthStatus}
-            error={focusStream.depthError}
-            provider={focusStream.depthProvider}
-            updatedAt={focusStream.updatedAt}
-            className="min-h-0"
-          />
-        </div>
       )}
     </div>
   )

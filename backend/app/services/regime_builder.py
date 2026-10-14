@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from datetime import date
 from pathlib import Path
 
@@ -58,6 +59,12 @@ def _score(value: float, low: float, high: float) -> float:
     与看板 market_overview_builder._score 同款。low/high 用 A 股真实分位数校准。
     """
     if high <= low:
+        return 50.0
+    if not math.isfinite(value):
+        # 非有限输入(inf/-inf/nan)不在 [low, high] 映射域内。原先直接 round() 会抛
+        # OverflowError(inf) / ValueError(nan) ⇒ 单个坏值中断整段 regime 计算
+        # (2026-09-15: 停牌补零 ⇒ avg_pct=inf ⇒ regime_history 停更)。取中性 50 =
+        # "该维度不可计算", 既不伪造看多也不伪造看空。
         return 50.0
     return float(max(0, min(100, round((value - low) / (high - low) * 100))))
 
@@ -315,8 +322,7 @@ def _aggregate_daily(df: pl.DataFrame, index_pct_map: dict | None = None) -> pl.
             # 梯队指标(阶段判定所需); phase 由 refresh_phase_labels 统一重标
             **finalize_ladder_row(r),
         })
-    # 日序可空指标可能连续数百天为 None, 需扫描完整行集后再确定列类型。
-    return pl.DataFrame(rows, infer_schema_length=None) if rows else pl.DataFrame()
+    return pl.DataFrame(rows) if rows else pl.DataFrame()
 
 
 # 全量回填分批参数(控制内存峰值) —— 实际值从用户偏好读取(preferences.get_regime_*),
@@ -513,13 +519,27 @@ def regime_path(data_dir: Path) -> Path:
     return data_dir / REGIME_DIR / "part.parquet"
 
 
+# (path, mtime_ns, size) 签名缓存 — regime 三个端点每请求各读一次全量 parquet,
+# 重算/导入改变文件后 mtime 变化自动失效; Polars 帧由调用方只读 (操作均为函数式)
+_REGIME_HISTORY_CACHE: pl.DataFrame | None = None
+_REGIME_HISTORY_SIG: tuple[str, int, int] | None = None
+
+
 def load_regime_history(data_dir: Path) -> pl.DataFrame:
-    """读取全部 regime 时序; 不存在返回空 DataFrame。"""
+    """读取全部 regime 时序; 不存在返回空 DataFrame (带 mtime 签名缓存)。"""
+    global _REGIME_HISTORY_CACHE, _REGIME_HISTORY_SIG
     p = regime_path(data_dir)
-    if not p.exists():
-        return pl.DataFrame()
     try:
-        return pl.read_parquet(p)
+        sig = (str(p), p.stat().st_mtime_ns, p.stat().st_size)
+    except OSError:
+        return pl.DataFrame()
+    if _REGIME_HISTORY_CACHE is not None and sig == _REGIME_HISTORY_SIG:
+        return _REGIME_HISTORY_CACHE
+    try:
+        df = pl.read_parquet(p)
+        _REGIME_HISTORY_CACHE = df
+        _REGIME_HISTORY_SIG = sig
+        return df
     except Exception as e:  # noqa: BLE001
         logger.warning("load_regime_history failed: %s", e)
         return pl.DataFrame()

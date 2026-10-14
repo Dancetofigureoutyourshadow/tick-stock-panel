@@ -4,8 +4,8 @@ import { Loader2 } from 'lucide-react'
 import { api, type MinuteKlineRow } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
 import { klineMinuteQueryOptions } from '@/lib/kline'
-import { EChartsIntraday, type DailyOhlc, type IntradayChartMarker } from '@/components/EChartsIntraday'
 import { alignMinutePricesToDailyClose } from '@/lib/intraday-chart'
+import { EChartsIntraday, type DailyOhlc, type IntradayChartMarker } from '@/components/EChartsIntraday'
 import type { ChartPriceLine } from '@/components/EChartsCandlestick'
 
 interface Props {
@@ -13,22 +13,18 @@ interface Props {
   date: string | null
   height?: number
   prevClose?: number
+  dailyOhlc?: DailyOhlc
+  showDate?: boolean
+  alignToDailyClose?: boolean
   className?: string
   onPriceHover?: (price: number | null) => void
   onPriceDoubleClick?: (price: number, currentPrice: number) => void
   currentPrice?: number
-  dailyOhlc?: DailyOhlc
   priceLines?: ChartPriceLine[]
   markers?: IntradayChartMarker[]
-  /** 是否在分时信息栏展示交易日期；盲训场景可关闭。 */
-  showDate?: boolean
-  /** 将分钟价格换算到 dailyOhlc 的复权基准；历史训练浮窗使用。 */
-  alignToDailyClose?: boolean
   /** 自动刷新间隔(ms)。undefined/0 = 不轮询(默认)。个股对话框盘中实时刷新时传入。 */
   refetchIntervalMs?: number
-  /** 是否使用当前日后端实时数据请求；默认随 refetchIntervalMs 推断。 */
   live?: boolean
-  /** 由后端 focus SSE 更新时，保留首次 live 请求但关闭客户端定时轮询。 */
   disablePolling?: boolean
 }
 
@@ -37,15 +33,15 @@ export function StockIntradayChart({
   date,
   height = 520,
   prevClose,
+  dailyOhlc,
+  alignToDailyClose = false,
   className,
   onPriceHover,
   onPriceDoubleClick,
   currentPrice,
-  dailyOhlc,
   priceLines,
   markers,
   showDate = true,
-  alignToDailyClose = false,
   refetchIntervalMs,
   live,
   disablePolling = false,
@@ -159,7 +155,7 @@ export function StockIntradayChart({
         <EChartsIntraday
           data={minuteRows}
           height={height}
-          prevClose={prevClose}
+          prevClose={minute.data?.prev_close ?? prevClose}
           date={showDate ? date : undefined}
           priceLimit={priceLimit}
           onPriceHover={onPriceHover}
@@ -168,7 +164,6 @@ export function StockIntradayChart({
           dailyOhlc={dailyOhlc}
           priceLines={priceLines}
           markers={markers}
-          averagePriceScale={minuteAlignment.priceScale}
         />
       )}
     </div>

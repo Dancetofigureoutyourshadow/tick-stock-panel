@@ -1,10 +1,10 @@
-"""自选股 API。"""
+"""自选 API。"""
 from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Callable
 from datetime import UTC, date, datetime
+from typing import Callable
 
 import anyio
 import polars as pl
@@ -22,7 +22,6 @@ from app.services import watchlist
 from app.services.watchlist_csv import import_watchlist_codes, import_watchlist_csv
 from app.services.watchlist_ocr import import_watchlist_image
 from app.services.watchlist_ocr.provider import get_ocr_provider
-from app.services.watchlist_performance import get_reference_prices
 
 logger = logging.getLogger(__name__)
 
@@ -443,7 +442,12 @@ _WATCHLIST_COLS = [
 
 
 def _added_dates_bj(entries: list[dict]) -> dict[str, date]:
-    """Normalize the stored UTC timestamp to its Beijing calendar date."""
+    """自选条目的 added_at (naive UTC ISO 串) → 北京日期; 空值/非法值跳过该条。
+
+    added_at 由 watchlist.add_batch 以 datetime.utcnow() 写入 (无 Z 后缀), 属 UTC 语义;
+    必须显式按 UTC 解析再转北京 —— 否则北京时间 00:00-08:00 加入的记录会被算到前一天。
+    换算惯例同 backtest/minute_replay.py, 服务器本地时区不参与 (CONTRIBUTING §3.3)。
+    """
     out: dict[str, date] = {}
     for entry in entries:
         raw = entry.get("added_at")
@@ -464,17 +468,34 @@ def _added_base_closes(
     added_dates: dict[str, date],
     stock_symbols: set[str],
 ) -> pl.DataFrame:
-    """Return each stock's latest close on or before its watchlist add date."""
+    """取各标的「加入日或之前最近一个交易日」的前复权收盘价, 作为区间收益基准。
+
+    返回 symbol/base_close 两列表; 无可用值返回空表, 由调用方按 null 降级。
+
+    - **只覆盖股票**: 内存历史缓存 (get_enriched_range) 仅含股票, ETF/指数只有最新日
+      缓存, 逐只回补会在行情 tick 热路径上形成 N+1 parquet 扫描, 故显式降级为「—」。
+    - **基准日取 <= 加入日**: 周末/节假日/停牌自然回落到前一交易日。与 K 线竖线的
+      「不 snap」有意不同 —— 价格口径可以回落, 日期事实不行。
+    - **超出缓存窗口 (约 300 个自然日) 的标的直接跳过**, 不触发 scan 兜底。
+    """
     stock_targets = {s: d for s, d in added_dates.items() if s in stock_symbols}
     if not stock_targets:
-        return pl.DataFrame()
+        return pl.DataFrame()  # 没有可算的股票标的 → 不碰 repo
     span = repo.get_enriched_history_span()
     if span is None:
         return pl.DataFrame()
     span_start, span_end = span
     in_range = {s: d for s, d in stock_targets.items() if d >= span_start}
+    if len(in_range) < len(stock_targets):
+        logger.debug(
+            "自选加入后涨跌幅: %d/%d 只早于可查询历史 (%s 之前), 降级为 null",
+            len(stock_targets) - len(in_range), len(stock_targets), span_start,
+        )
     if not in_range:
         return pl.DataFrame()
+    # 窗口必须钳制在缓存区间内: get_enriched_range 是全有或全无的 (cache_min > start
+    # 或 cache_max < end 即整体返回 None), 一只越界的标的会让全部标的失去基准价。
+    # start > end 只出现在「加入日晚于缓存末日」(本地数据未同步) 时, 退化为取缓存末日。
     end = min(max(in_range.values()), span_end)
     start = min(min(in_range.values()), end)
     hist = repo.get_enriched_range(
@@ -499,7 +520,10 @@ def watchlist_enriched(
     request: Request,
     ext_columns: str | None = Query(None, description="逗号分隔的 ext 列: config_id.field_name"),
 ):
-    """自选股 enriched 数据 — 直接从 enriched 最新日读取, 无即时计算。
+    """自选 enriched 数据 — 直接从 enriched 最新日读取, 无重计算。
+
+    仅两列为按行向量化现算 (不落盘): 涨跌停价, 以及「加入后涨跌幅」(pct_since_added,
+    以加入日收盘价为基准)。本端点在行情 tick 热路径上被反复调用, 故不做历史 scan 兜底。
 
     ext_columns 参数示例: "industry_rating.score,fund_flow.net_inflow"
     会动态 LEFT JOIN 对应的 ext_{config_id} DuckDB view。
@@ -510,7 +534,16 @@ def watchlist_enriched(
     entries = watchlist.list_symbols()
     symbols = [r["symbol"] for r in entries]
     if not symbols:
-        return {"rows": [], "as_of": None, "elapsed_ms": 0}
+        return {"rows": [], "as_of": None, "elapsed_ms": 0,
+                "dates": {"stock": None, "etf": None, "index": None}}
+
+    # 按资产拆分自选 symbol; ETF enriched 是独立缓存, 仅自选真的含 ETF 才去加载
+    # (避免无 ETF 用户在缓存冷启动时触发 ETF 全量懒加载)
+    etf_set = repo.get_etf_symbol_set()
+    index_set = repo.get_index_symbol_set()
+    etf_symbols = [s for s in symbols if s in etf_set]
+    index_symbols = [s for s in symbols if s not in etf_set and s in index_set]
+    stock_symbols = [s for s in symbols if s not in etf_set and s not in index_set]
 
     # 按资产拆分自选 symbol; ETF enriched 是独立缓存, 仅自选真的含 ETF 才去加载
     # (避免无 ETF 用户在缓存冷启动时触发 ETF 全量懒加载)
@@ -524,7 +557,7 @@ def watchlist_enriched(
     # 以自选列表为主表 LEFT JOIN enriched, 保证自选的每一只都返回一行;
     # 不在 enriched 缓存里的标的 (新股/冷门股/新用户未同步) 指标为 null, 前端渲染为 "—".
     # 旧实现是 df_e.filter(is_in(stock_symbols)), 方向反了 (以 enriched 为主),
-    # 会把不在缓存 universe 里的自选股静默丢弃.
+    # 会把不在缓存 universe 里的自选静默丢弃.
     if stock_symbols:
         watchlist_df = pl.DataFrame({"symbol": stock_symbols})
         if df_e.is_empty():
@@ -560,8 +593,18 @@ def watchlist_enriched(
     # as_of 取三类缓存中较旧者
     dates = [d for d in (cache_date if stock_symbols else None, etf_date, index_date) if d is not None]
     as_of = min(dates) if dates else None
+    # 按资产类型的行情日期 (ISO): as_of 是三类取 min 的全局值, 分不清哪类过期。
+    # 前端分时缩略图续画据此判定「该类行情是否为当日」—— ETF 未开实时拉取时
+    # etf 缓存停在旧日, 过期 close 拼到当日分钟K尾部会画出错价 (issue 场景)。
+    # None = 未加载/无缓存, 前端一律按不新鲜处理 (fail-closed)。
+    quote_dates = {
+        "stock": str(cache_date) if cache_date else None,
+        "etf": str(etf_date) if etf_date else None,
+        "index": str(index_date) if index_date else None,
+    }
     if df.is_empty():
-        return {"rows": [], "as_of": str(as_of) if as_of else None, "elapsed_ms": 0}
+        return {"rows": [], "as_of": str(as_of) if as_of else None,
+                "elapsed_ms": 0, "dates": quote_dates}
 
     # JOIN float_shares (仅股票有) + 名称 (股票/ETF 统一走 get_name_map)
     df_i = repo.get_instruments()
@@ -609,10 +652,13 @@ def watchlist_enriched(
             .alias("limit_down_price"),
         )
 
+    # 「加入日期」与「加入以来」— 与涨跌停价同为读时现算, 不落盘。只在这一处挂一次即
+    # 覆盖 stock/etf/index 三分支。pct_since_added 为小数口径 (与 momentum_* 一致)。
     try:
         added_at_df = pl.DataFrame(
             {
                 "symbol": symbols,
+                # 旧 schema 迁移补的空串归一为 null, 前端只需判断一种「缺失」
                 "added_at": [(r.get("added_at") or None) for r in entries],
             },
             schema={"symbol": pl.Utf8, "added_at": pl.Utf8},
@@ -620,8 +666,10 @@ def watchlist_enriched(
         with_base = df.join(added_at_df, on="symbol", how="left")
         base_df = _added_base_closes(repo, _added_dates_bj(entries), set(stock_symbols))
         if base_df.is_empty():
+            # 无基准价 (缓存冷 / 全为 ETF 或超窗): 整列降级为 null
             df = with_base.with_columns(pl.lit(None, dtype=pl.Float64).alias("pct_since_added"))
         else:
+            # 整链算完再回绑 df, 异常时 df 保持原样
             df = (
                 with_base.join(base_df, on="symbol", how="left")
                 .with_columns(
@@ -637,8 +685,9 @@ def watchlist_enriched(
                 )
                 .drop("base_close")
             )
-    except Exception as e:  # noqa: BLE001
-        logger.warning("watchlist added-date performance calculation skipped: %s", e)
+    except Exception as e:
+        # 装饰列失败不得影响自选主表; 两列必须存在 (值可为 null), 否则前端排序/筛选静默失效
+        logger.warning("自选加入日期/加入后涨跌幅计算跳过: %s", e, exc_info=True)
         df = df.with_columns(
             pl.lit(None, dtype=pl.Utf8).alias("added_at"),
             pl.lit(None, dtype=pl.Float64).alias("pct_since_added"),
@@ -649,8 +698,8 @@ def watchlist_enriched(
     if ext_specs:
         db = repo.store.db
         data_dir = repo.store.data_dir
-        from app.services.ext_data import ExtConfigStore
         from app.api.ext_data import _read_ext_dataframe
+        from app.services.ext_data import ExtConfigStore
 
         ext_store = ExtConfigStore(data_dir)
         configs = {c.id: c for c in ext_store.load_all()}
@@ -710,7 +759,8 @@ def watchlist_enriched(
 
     rows = df.to_dicts()
     elapsed = (time.perf_counter() - t0) * 1000
-    return {"rows": rows, "as_of": str(as_of) if as_of else None, "elapsed_ms": elapsed}
+    return {"rows": rows, "as_of": str(as_of) if as_of else None,
+            "elapsed_ms": elapsed, "dates": quote_dates}
 
 
 def _parse_ext_columns(ext_columns: str) -> list[tuple[str, str]]:

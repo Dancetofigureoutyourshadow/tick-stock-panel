@@ -1,7 +1,7 @@
 """自动跟单规则域 — 监控事件触发模拟盘自动下单 (V2)。
 
 规则匹配: 事件 source=="strategy" 且 strategy_id 相等 (跟策略), 或 rule_id 相等
-(跟任意监控规则, 含信号/价格规则)。每条规则限制自身占账户权益的最大仓位和持仓数量。
+(跟任意监控规则, 含信号/价格规则)。仓位: 固定金额 或 账户权益百分比。
 冷却: 同规则同 symbol 最近一次自动下单后 N 个交易日内不再触发 (按订单
 created_at 日期判断, 无独立状态文件 — 可由订单列表重放推导)。
 
@@ -51,6 +51,27 @@ def validate_rule(rule: dict) -> None:
         raise ValueError(f"match_kind 非法: {rule.get('match_kind')!r} (应为 strategy / rule)")
     if not (rule.get("match_id") or "").strip():
         raise ValueError("match_id 不能为空")
+    legacy = bool(rule.get("_legacy_mode") or "position_sizing" in rule or rule.get("side") == "auto" or "auto_follow_enabled" in rule or "auto_exit_enabled" in rule)
+    if legacy:
+        _validate_legacy_rule(rule)
+        return
+    if rule.get("side") not in ("buy", "sell"):
+        raise ValueError(f"side 非法: {rule.get('side')!r}")
+    if rule.get("size_mode") not in ("fixed_amount", "pct_equity"):
+        raise ValueError(f"size_mode 非法: {rule.get('size_mode')!r}")
+    value = rule.get("size_value")
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+        raise ValueError("size_value 必须是正数")
+    if rule.get("size_mode") == "pct_equity" and value > 100:
+        raise ValueError("pct_equity 的 size_value 不能超过 100 (%)")
+    if rule.get("order_type") not in ("market", "next_open", "close"):
+        raise ValueError(f"order_type 非法: {rule.get('order_type')!r}")
+    cooldown = rule.get("cooldown_days", 0)
+    if isinstance(cooldown, bool) or not isinstance(cooldown, int) or cooldown < 0:
+        raise ValueError("cooldown_days 必须是非负整数")
+
+
+def _validate_legacy_rule(rule: dict) -> None:
     if rule.get("side") not in ("buy", "sell", "auto"):
         raise ValueError(f"side 非法: {rule.get('side')!r}")
     if rule.get("match_kind") == "strategy" and rule.get("side") != "auto":
@@ -78,15 +99,25 @@ def normalize_rule(rule: dict) -> dict:
     d = dict(rule)
     d["name"] = (d.get("name") or "").strip()
     d["match_id"] = (d.get("match_id") or "").strip()
-    if not d.get("side"):
-        d["side"] = "auto" if d.get("match_kind") == "strategy" else "buy"
-    d.setdefault("entry_fill", paper.DEFAULT_ENTRY_FILL)
-    d.setdefault("exit_fill", paper.DEFAULT_EXIT_FILL)
-    d.setdefault("position_sizing", paper.DEFAULT_POSITION_SIZING)
-    d.setdefault("max_positions", paper.DEFAULT_MAX_POSITIONS)
-    d.setdefault("max_total_position", paper.DEFAULT_MAX_TOTAL_POSITION * 100)
-    d.setdefault("auto_follow_enabled", paper.DEFAULT_AUTO_FOLLOW_ENABLED)
-    d.setdefault("auto_exit_enabled", paper.DEFAULT_AUTO_EXIT_ENABLED)
+    legacy = bool("position_sizing" in d or d.get("side") == "auto" or "auto_follow_enabled" in d or "auto_exit_enabled" in d)
+    if legacy:
+        d["_legacy_mode"] = True
+        if not d.get("side"):
+            d["side"] = "auto" if d.get("match_kind") == "strategy" else "buy"
+        d.setdefault("entry_fill", paper.DEFAULT_ENTRY_FILL)
+        d.setdefault("exit_fill", paper.DEFAULT_EXIT_FILL)
+        d.setdefault("position_sizing", paper.DEFAULT_POSITION_SIZING)
+        d.setdefault("max_positions", paper.DEFAULT_MAX_POSITIONS)
+        d.setdefault("max_total_position", paper.DEFAULT_MAX_TOTAL_POSITION * 100)
+        d.setdefault("auto_follow_enabled", paper.DEFAULT_AUTO_FOLLOW_ENABLED)
+        d.setdefault("auto_exit_enabled", paper.DEFAULT_AUTO_EXIT_ENABLED)
+        d.setdefault("cooldown_days", 5)
+        d.setdefault("enabled", True)
+        d.setdefault("created_at", _now_iso())
+        return d
+    d.setdefault("side", "buy")
+    d.setdefault("size_mode", "fixed_amount")
+    d.setdefault("order_type", "next_open")
     d.setdefault("cooldown_days", 5)
     d.setdefault("enabled", True)
     d.setdefault("created_at", _now_iso())
@@ -107,19 +138,13 @@ def load_auto_rules(data_dir: Path, account_id: str = paper.DEFAULT_ACCOUNT_ID, 
 
 
 def save_auto_rule(data_dir: Path, rule: dict, account_id: str = paper.DEFAULT_ACCOUNT_ID) -> dict:
-    with paper.PAPER_LOCK:
-        validate_rule(rule)
-        if rule.get("enabled") and rule.get("match_kind") == "strategy":
-            for existing in load_auto_rules(data_dir, account_id):
-                if (
-                    existing.get("id") != rule.get("id")
-                    and existing.get("enabled", True)
-                    and existing.get("match_kind") == "strategy"
-                    and existing.get("match_id") == rule.get("match_id")
-                ):
-                    raise ValueError(f"策略 {rule['match_id']} 已有启用的自动跟单规则, 请先停用或编辑原规则")
-        atomic_write_text(_dir(data_dir, account_id) / f"{rule['id']}.json", json.dumps(rule, ensure_ascii=False, indent=2))
-        return rule
+    validate_rule(rule)
+    if rule.get("_legacy_mode") and rule.get("enabled") and rule.get("match_kind") == "strategy":
+        for existing in load_auto_rules(data_dir, account_id):
+            if existing.get("id") != rule.get("id") and existing.get("enabled") and existing.get("match_kind") == "strategy" and existing.get("match_id") == rule.get("match_id"):
+                raise ValueError(f"策略 {rule['match_id']} 已有启用的自动跟单规则, 请先停用或编辑原规则")
+    atomic_write_text(_dir(data_dir, account_id) / f"{rule['id']}.json", json.dumps(rule, ensure_ascii=False, indent=2))
+    return rule
 
 
 def create_auto_rule(data_dir: Path, rule: dict, account_id: str = paper.DEFAULT_ACCOUNT_ID) -> dict:
@@ -129,12 +154,11 @@ def create_auto_rule(data_dir: Path, rule: dict, account_id: str = paper.DEFAULT
 
 
 def delete_auto_rule(data_dir: Path, rule_id: str, account_id: str = paper.DEFAULT_ACCOUNT_ID) -> bool:
-    with paper.PAPER_LOCK:
-        p = _dir(data_dir, account_id) / f"{rule_id}.json"
-        if p.exists():
-            p.unlink()
-            return True
-        return False
+    p = _dir(data_dir, account_id) / f"{rule_id}.json"
+    if p.exists():
+        p.unlink()
+        return True
+    return False
 
 
 def set_enabled(data_dir: Path, rule_id: str, enabled: bool, account_id: str = paper.DEFAULT_ACCOUNT_ID) -> dict | None:
@@ -147,44 +171,31 @@ def set_enabled(data_dir: Path, rule_id: str, enabled: bool, account_id: str = p
 
 
 def update_auto_rule(data_dir: Path, rule_id: str, values: dict, account_id: str = paper.DEFAULT_ACCOUNT_ID) -> dict | None:
-    p = _dir(data_dir, account_id) / f"{rule_id}.json"
-    if not p.exists():
+    path = _dir(data_dir, account_id) / f"{rule_id}.json"
+    if not path.exists():
         return None
-    current = normalize_rule(json.loads(p.read_text(encoding="utf-8")))
+    current = normalize_rule(json.loads(path.read_text(encoding="utf-8")))
     updated = normalize_rule({**current, **values, "id": rule_id, "created_at": current.get("created_at")})
     return save_auto_rule(data_dir, updated, account_id)
-
-
-def _strategy_event_side(ev: dict) -> str | None:
-    if ev.get("type") in ("buy_signal", "pool_entry"):
-        return "buy"
-    if ev.get("type") in ("sell_signal", "pool_exit"):
-        return "sell"
-    return None
-
-
-def _event_side(rule: dict, ev: dict) -> str | None:
-    if rule.get("match_kind") == "strategy":
-        return _strategy_event_side(ev)
-    return rule.get("side") if rule.get("side") in ("buy", "sell") else None
 
 
 def _matches(rule: dict, ev: dict) -> bool:
     if rule["match_kind"] == "strategy":
         if ev.get("source") != "strategy" or ev.get("strategy_id") != rule["match_id"]:
             return False
-        return _strategy_event_side(ev) in ("buy", "sell")
+        return not rule.get("_legacy_mode") or ev.get("type") in ("buy_signal", "sell_signal", "pool_entry", "pool_exit")
     return ev.get("rule_id") == rule["match_id"]
 
 
-def _in_cooldown(
-    data_dir: Path,
-    rule: dict,
-    symbol: str,
-    cooldown_days: int,
-    account_id: str,
-    side: str | None = None,
-) -> bool:
+def _strategy_event_side(event: dict) -> str | None:
+    if event.get("type") in ("buy_signal", "pool_entry"):
+        return "buy"
+    if event.get("type") in ("sell_signal", "pool_exit"):
+        return "sell"
+    return None
+
+
+def _in_cooldown(data_dir: Path, rule: dict, symbol: str, cooldown_days: int, account_id: str, side: str | None = None) -> bool:
     """同规则同 symbol 最近一次自动下单是否仍在冷却期 (按日历日, 含当日)。"""
     if cooldown_days <= 0:
         return False
@@ -202,81 +213,130 @@ def _in_cooldown(
         if (today - created).days < cooldown_days:
             return True
     for intent in paper_intents.load(data_dir, account_id):
-        if intent.get("status") != "pending" or intent.get("source") != prefix or intent.get("symbol") != symbol:
-            continue
-        if side is not None and intent.get("side") != side:
-            continue
-        return True
+        if intent.get("status") == "pending" and intent.get("source") == prefix and intent.get("symbol") == symbol:
+            return True
     return False
 
 
-def _equity(data_dir: Path, account_id: str, prices: dict[str, float] | None = None) -> float:
-    acc = paper.get_account(data_dir, account_id)
-    if acc is None:
-        return 0.0
+def _sizing_qty(data_dir: Path, rule: dict, ref_price: float, account_id: str) -> int:
+    if ref_price <= 0:
+        return 0
+    if rule["size_mode"] == "fixed_amount":
+        amount = float(rule["size_value"])
+    else:  # pct_equity: 按账户总权益 (现金 + 最新定版持仓市值)
+        acc = paper.get_account(data_dir, account_id)
+        if acc is None:
+            return 0
+        nav_rows = paper.load_nav(data_dir, account_id)
+        equity = nav_rows[-1]["nav"] if nav_rows else float(acc["cash"])
+        amount = equity * float(rule["size_value"]) / 100.0
+    return paper.qty_from_amount(amount, ref_price)
+
+
+def _legacy_events(data_dir: Path, events: list[dict], rules: list[dict], account_id: str) -> list[dict]:
+    created: list[dict] = []
+    today = cn_now().date().isoformat()
+    account = paper.get_account(data_dir, account_id)
+    if account is None:
+        return created
     positions = paper.load_positions(data_dir, account_id)
-    return float(acc.get("cash", 0)) + sum(
-        float(pos.get("qty", 0)) * float((prices or {}).get(symbol, pos.get("avg_cost", 0)))
+    prices = {str(event.get("symbol")): float(event.get("price") or 0) for event in events if event.get("symbol") and event.get("price")}
+    equity = float(account.get("cash", 0)) + sum(
+        int(pos.get("qty", 0)) * prices.get(symbol, float(pos.get("avg_cost", 0)))
         for symbol, pos in positions.items()
     )
-
-
-def _rule_scope(rule: dict) -> str | None:
-    return rule.get("match_id") if rule.get("match_kind") == "strategy" else None
-
-
-def _occupied_symbols(data_dir: Path, account_id: str, strategy_scope_id: str | None) -> set[str]:
-    symbols: set[str] = set()
-    for symbol, position in paper.load_positions(data_dir, account_id).items():
-        lots = position.get("lots", []) or []
-        if strategy_scope_id:
-            lots = [lot for lot in lots if lot.get("strategy_id") == strategy_scope_id]
-        if sum(int(lot.get("qty", 0)) for lot in lots) > 0:
-            symbols.add(symbol)
-    _, pending_symbols = paper._pending_strategy_buy_reservations(
-        data_dir, account_id, strategy_scope_id,
-    ) if strategy_scope_id else (0.0, set())
-    return symbols | pending_symbols
-
-
-def _rule_capacity(data_dir: Path, rule: dict, events: list[dict], account_id: str) -> tuple[float, int]:
-    """返回本规则当前还能使用的金额和持仓名额。金额是账户权益的百分比。"""
-    positions = paper.load_positions(data_dir, account_id)
-    scope_id = _rule_scope(rule)
-    prices = {str(ev.get("symbol")): float(ev["price"]) for ev in events if ev.get("symbol") and ev.get("price")}
-    symbols: set[str] = set()
-    current_value = 0.0
-    for symbol, position in positions.items():
-        lots = position.get("lots", []) or []
-        if scope_id:
-            lots = [lot for lot in lots if lot.get("strategy_id") == scope_id]
-        qty = sum(int(lot.get("qty", 0)) for lot in lots)
-        if qty <= 0:
+    for rule in rules:
+        matched = [event for event in events if _matches(rule, event) and event.get("symbol") and float(event.get("price") or 0) > 0]
+        if not matched:
             continue
-        symbols.add(symbol)
-        current_value += qty * prices.get(symbol, float(position.get("avg_cost", 0)))
-    equity = _equity(data_dir, account_id, prices)
-    maximum = equity * float(rule.get("max_total_position", 100)) / 100.0
-    remaining_value = max(0.0, maximum - current_value)
-    reserved_value, reserved_symbols = paper._pending_strategy_buy_reservations(data_dir, account_id, scope_id)
-    remaining_value = max(0.0, remaining_value - reserved_value)
-    remaining_slots = max(0, int(rule.get("max_positions", paper.MAX_POSITION_SYMBOLS)) - len(symbols | reserved_symbols))
-    return remaining_value, remaining_slots
-
-
-def _sizing_qty(data_dir: Path, amount: float, ref_price: float, account_id: str) -> int:
-    if amount <= 0 or ref_price <= 0:
-        return 0
-    acc = paper.get_account(data_dir, account_id) or {}
-    slippage = float(acc.get("slippage_bps", paper.DEFAULT_SLIPPAGE_BPS)) / 10000.0
-    qty = paper.qty_from_amount(amount / (1 + slippage), ref_price)
-    while qty > 0:
-        estimated_price = ref_price * (1 + slippage)
-        fee = paper.buy_fee(qty, estimated_price, float(acc.get("commission_pct", paper.DEFAULT_COMMISSION_PCT)))
-        if qty * estimated_price + fee <= amount + 1e-6:
-            return qty
-        qty -= paper.LOT_SIZE
-    return 0
+        buys: dict[str, dict] = {}
+        for event in matched:
+            side = _strategy_event_side(event) if rule["match_kind"] == "strategy" else rule["side"]
+            if side != "buy" or _in_cooldown(data_dir, rule, str(event["symbol"]), int(rule.get("cooldown_days", 0)), account_id, "buy"):
+                continue
+            symbol = str(event["symbol"]).strip()
+            if symbol not in buys or float(event.get("score") or 0) > float(buys[symbol].get("score") or 0):
+                buys[symbol] = event
+        buy_events = list(buys.values())
+        scope = rule["match_id"] if rule["match_kind"] == "strategy" else None
+        scoped_value = sum(
+            int(lot.get("qty", 0)) * float(lot.get("price", lot.get("avg_cost", 0)))
+            for pos in positions.values() for lot in (pos.get("lots", []) or [])
+            if not scope or lot.get("strategy_id") == scope
+        )
+        budget = max(0.0, equity * float(rule["max_total_position"]) / 100 - scoped_value)
+        scores = [max(float(event.get("score") or 0), 0.0) for event in buy_events]
+        score_total = sum(scores)
+        occupied = {
+            symbol for symbol, pos in positions.items()
+            if sum(int(lot.get("qty", 0)) for lot in (pos.get("lots", []) or []) if not scope or lot.get("strategy_id") == scope) > 0
+        }
+        for event in buy_events:
+            symbol = str(event["symbol"]).strip()
+            if symbol not in occupied and len(occupied) >= int(rule["max_positions"]):
+                continue
+            score = max(float(event.get("score") or 0), 0.0)
+            weight = score / score_total if rule["position_sizing"] == "score_weight" and score_total > 0 else 1 / max(1, len(buy_events))
+            qty = paper.qty_from_amount(budget * weight, float(event["price"]))
+            if qty <= 0:
+                continue
+            auto_enabled = bool(rule.get("auto_follow_enabled", True))
+            order_type = "market" if rule["entry_fill"] == "close_t" else "next_open"
+            common = {
+                "strategy_id": event.get("strategy_id"), "strategy_snapshot": event.get("strategy_snapshot") or {},
+                "buy_score": event.get("score"), "strategy_scope_id": scope,
+                "auto_rule_id": rule["id"], "automation_source": "auto_follow",
+                "max_positions": None, "max_total_position": None,
+            }
+            if not auto_enabled:
+                intent = paper_intents.create(
+                    data_dir, account_id=account_id, symbol=symbol, side="buy", qty=qty,
+                    order_type=order_type, ref_price=float(event["price"]), source=f"auto:{rule['id']}",
+                    reason=f"自动跟单规则: {rule['name']}", **common,
+                )
+                created.append({**intent, "kind": "intent"})
+            else:
+                order, error = paper.create_order(
+                    data_dir, symbol, "buy", account_id=account_id, qty=qty,
+                    order_type=order_type, ref_price=float(event["price"]), source=f"auto:{rule['id']}", **common,
+                )
+                if not error and order:
+                    created.append(order)
+                    occupied.add(symbol)
+        sell_events = [event for event in matched if ( _strategy_event_side(event) if rule["match_kind"] == "strategy" else rule["side"] ) == "sell"]
+        for event in sell_events:
+            symbol = str(event["symbol"]).strip()
+            if _in_cooldown(data_dir, rule, symbol, int(rule.get("cooldown_days", 0)), account_id, "sell"):
+                continue
+            position = paper.load_positions(data_dir, account_id).get(symbol) or {}
+            lots = [lot for lot in position.get("lots", []) if int(lot.get("qty", 0)) > 0 and str(lot.get("date", "")) < today and (rule["match_kind"] != "strategy" or lot.get("strategy_id") == event.get("strategy_id"))]
+            for lot in lots:
+                qty = paper.normalize_qty(int(lot.get("qty", 0)))
+                if qty <= 0:
+                    continue
+                auto_enabled = bool(rule.get("auto_exit_enabled", False)) if rule["match_kind"] == "strategy" else bool(rule.get("auto_follow_enabled", True))
+                order_type = "market" if rule["exit_fill"] == "close_t" else "next_open"
+                common = {
+                    "strategy_id": event.get("strategy_id"), "strategy_snapshot": event.get("strategy_snapshot") or lot.get("strategy_snapshot") or {},
+                    "exit_reason": "signal" if rule["match_kind"] == "strategy" else None,
+                    "target_lot_id": str(lot.get("lot_id")), "strategy_scope_id": scope,
+                    "auto_rule_id": rule["id"], "automation_source": "strategy_exit" if rule["match_kind"] == "strategy" else "auto_follow",
+                }
+                if not auto_enabled:
+                    intent = paper_intents.create(
+                        data_dir, account_id=account_id, symbol=symbol, side="sell", qty=qty,
+                        order_type=order_type, ref_price=float(event["price"]), source=f"auto:{rule['id']}",
+                        reason=f"自动跟单规则: {rule['name']}", lot_id=str(lot.get("lot_id")), **{k: v for k, v in common.items() if k != "target_lot_id"},
+                    )
+                    created.append({**intent, "kind": "intent"})
+                else:
+                    order, error = paper.create_order(
+                        data_dir, symbol, "sell", account_id=account_id, qty=qty,
+                        order_type=order_type, ref_price=float(event["price"]), source=f"auto:{rule['id']}", **common,
+                    )
+                    if not error and order:
+                        created.append(order)
+    return created
 
 
 def on_rule_events(data_dir: Path, events: list[dict], account_id: str = paper.DEFAULT_ACCOUNT_ID) -> list[dict]:
@@ -291,125 +351,40 @@ def on_rule_events(data_dir: Path, events: list[dict], account_id: str = paper.D
     rules = load_auto_rules(data_dir, account_id, enabled_only=True)
     if not rules:
         return created
+    legacy_rules = [rule for rule in rules if rule.get("_legacy_mode")]
+    if legacy_rules:
+        created.extend(_legacy_events(data_dir, events, legacy_rules, account_id))
+    rules = [rule for rule in rules if not rule.get("_legacy_mode")]
+    if not rules:
+        return created
     with paper.PAPER_LOCK:
-        acc = paper.get_account(data_dir, account_id)
-        if acc is None:
-            return created
-        for rule in rules:
-            matched = [x for x in events if _matches(rule, x) and x.get("symbol") and x.get("price") and float(x["price"]) > 0]
-            if not matched:
+        for ev in events:
+            symbol = (ev.get("symbol") or "").strip()
+            price = ev.get("price")
+            if not symbol or price is None or price <= 0:
                 continue
-            buy_candidates = [
-                x for x in matched
-                if _event_side(rule, x) == "buy"
-                and not _in_cooldown(data_dir, rule, str(x["symbol"]), int(rule.get("cooldown_days", 0)), account_id, "buy")
-            ]
-            # 同一轮扫描同一规则同一标的只保留一个信号，避免重复创建订单。
-            buy_by_symbol: dict[str, dict] = {}
-            for event in buy_candidates:
-                symbol = str(event["symbol"]).strip()
-                previous = buy_by_symbol.get(symbol)
-                if previous is None or float(event.get("score") or 0) > float(previous.get("score") or 0):
-                    buy_by_symbol[symbol] = event
-            buys = list(buy_by_symbol.values())
-            buy_budget, remaining_slots = _rule_capacity(data_dir, rule, buys, account_id)
-            occupied_symbols = _occupied_symbols(data_dir, account_id, _rule_scope(rule))
-            if buys and remaining_slots <= 0:
-                logger.info("paper auto %s: 策略持仓名额已满", rule["name"])
-            raw_scores = [max(float(x.get("score") or 0), 0.0) for x in buys]
-            score_total = sum(raw_scores)
-            sell_events = [x for x in matched if _event_side(rule, x) == "sell"]
-            for ev in buys + sell_events:
-                symbol = str(ev["symbol"]).strip()
-                price = float(ev["price"])
-                order_side = _event_side(rule, ev)
-                if order_side is None:
+            for rule in rules:
+                if not _matches(rule, ev):
                     continue
-                if order_side == "buy":
-                    if remaining_slots <= 0 and symbol not in occupied_symbols:
-                        continue
-                    weight = (max(float(ev.get("score") or 0), 0.0) / score_total) if rule.get("position_sizing") == "score_weight" and score_total > 0 else 1.0 / len(buys)
-                    qty = _sizing_qty(data_dir, buy_budget * weight, price, account_id)
-                else:
-                    if _in_cooldown(data_dir, rule, symbol, int(rule.get("cooldown_days", 0)), account_id, "sell"):
-                        continue
-                    qty = paper.normalize_qty(sum(
-                        int(lot.get("qty", 0)) for lot in (paper.load_positions(data_dir, account_id).get(symbol) or {}).get("lots", [])
-                        if lot.get("strategy_id") == ev.get("strategy_id") and str(lot.get("date", "")) < cn_now().date().isoformat()
-                    )) if rule.get("match_kind") == "strategy" else paper.normalize_qty(int((paper.load_positions(data_dir, account_id).get(symbol) or {}).get("available_qty", 0)))
+                if _in_cooldown(data_dir, rule, symbol, int(rule.get("cooldown_days", 0)), account_id):
+                    continue
+                qty = _sizing_qty(data_dir, rule, float(price), account_id)
                 if qty <= 0:
-                    logger.info("paper auto %s: %s 无可用策略仓位或预算不足", rule["name"], symbol)
+                    logger.info("paper auto %s: %s 金额不足以一手 (价 %s)", rule["name"], symbol, price)
                     continue
-                target_lots: list[dict | None] = [None]
-                if order_side == "sell" and rule.get("match_kind") == "strategy":
-                    position = paper.load_positions(data_dir, account_id).get(symbol) or {}
-                    target_lots = [
-                        lot for lot in position.get("lots", [])
-                        if lot.get("strategy_id") == ev.get("strategy_id")
-                        and int(lot.get("qty", 0)) > 0
-                        and str(lot.get("date", "")) < cn_now().date().isoformat()
-                    ]
-                    if not target_lots:
-                        logger.info("paper auto %s: %s 无本策略可卖批次", rule["name"], symbol)
-                        continue
-                fill_policy = rule.get("entry_fill") if order_side == "buy" else rule.get("exit_fill")
-                order_type = "market" if fill_policy == "close_t" else "next_open"
-                source = f"auto:{rule['id']}"
-                remaining_qty = qty
-                for target_lot in target_lots:
-                    target_lot_id = str(target_lot.get("lot_id")) if target_lot else None
-                    target_qty = remaining_qty
-                    if target_lot:
-                        reserved = paper._reserved_target_qty(data_dir, account_id, symbol, target_lot_id)
-                        target_qty = min(target_qty, max(0, int(target_lot.get("qty", 0)) - reserved))
-                        target_qty = paper.normalize_qty(target_qty)
-                    if target_qty <= 0:
-                        continue
-                    strategy_scope_id = _rule_scope(rule)
-                    automation_source = "strategy_exit" if order_side == "sell" and rule.get("match_kind") == "strategy" else "auto_follow"
-                    # 策略卖点属于策略退出，使用退出开关；买入和普通监控规则仍使用自动跟单开关。
-                    auto_enabled = (
-                        rule.get("auto_exit_enabled", paper.DEFAULT_AUTO_EXIT_ENABLED)
-                        if order_side == "sell" and rule.get("match_kind") == "strategy"
-                        else rule.get("auto_follow_enabled", paper.DEFAULT_AUTO_FOLLOW_ENABLED)
-                    )
-                    if not auto_enabled:
-                        intent = paper_intents.create(
-                            data_dir, account_id=account_id, symbol=symbol, side=order_side,
-                            qty=target_qty, order_type=order_type, ref_price=float(price), source=source,
-                            reason=f"自动跟单规则: {rule['name']}", strategy_id=ev.get("strategy_id"),
-                            strategy_snapshot=ev.get("strategy_snapshot"), buy_score=ev.get("score"),
-                            exit_reason="signal" if order_side == "sell" and rule.get("match_kind") == "strategy" else None,
-                            lot_id=target_lot_id,
-                            auto_rule_id=rule["id"], strategy_scope_id=strategy_scope_id,
-                            automation_source=automation_source,
-                            max_positions=rule.get("max_positions"), max_total_position=float(rule.get("max_total_position", 100)) / 100,
-                        )
-                        created.append({**intent, "kind": "intent"})
-                    else:
-                        order, err = paper.create_order(
-                            data_dir, symbol, order_side, account_id=account_id,
-                            qty=target_qty, order_type=order_type, ref_price=float(price), source=source,
-                            strategy_id=ev.get("strategy_id"), strategy_snapshot=ev.get("strategy_snapshot"),
-                            buy_score=ev.get("score"),
-                            exit_reason="signal" if order_side == "sell" and rule.get("match_kind") == "strategy" else None,
-                            target_lot_id=target_lot_id,
-                            auto_rule_id=rule["id"], strategy_scope_id=strategy_scope_id,
-                            automation_source=automation_source,
-                            max_positions=rule.get("max_positions"), max_total_position=float(rule.get("max_total_position", 100)) / 100,
-                        )
-                        if err:
-                            logger.info("paper auto %s: %s 下单被拒: %s", rule["name"], symbol, err)
-                            continue
-                        created.append(order)
-                        logger.info("paper auto %s: %s 触发 %s %d 股 (%s)", rule["name"], symbol, order_side, target_qty, order["id"])
-                    remaining_qty -= target_qty
-                    if order_side == "buy":
-                        if symbol not in occupied_symbols:
-                            remaining_slots -= 1
-                            occupied_symbols.add(symbol)
-                    if remaining_qty <= 0:
-                        break
+                order, err = paper.create_order(
+                    data_dir, symbol, rule["side"],
+                    account_id=account_id,
+                    qty=qty,
+                    order_type=rule["order_type"],
+                    ref_price=float(price),
+                    source=f"auto:{rule['id']}",
+                )
+                if err:
+                    logger.info("paper auto %s: %s 下单被拒: %s", rule["name"], symbol, err)
+                    continue
+                created.append(order)
+                logger.info("paper auto %s: %s 触发 %s %d 股 (%s)", rule["name"], symbol, rule["side"], qty, order["id"])
     return created
 
 
@@ -417,7 +392,7 @@ _ORDER_TYPE_LABEL = {"market": "即时", "next_open": "次日开盘", "close": "
 
 
 def auto_order_events(created: list[dict], account_id: str = paper.DEFAULT_ACCOUNT_ID) -> list[dict]:
-    """自动跟单创建的订单/意图 → 推送事件。与成交事件同构 (source=paper 对齐
+    """自动跟单创建的订单 → 推送事件。与成交事件同构 (source=paper 对齐
     AlertEvent), 走同一推送通道; rule_id 从 order.source (auto:{rule_id}) 还原。
     """
     events: list[dict] = []

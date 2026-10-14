@@ -15,7 +15,6 @@ REGIME_THREE_LEVEL_MAP = {
     "lean_weak": "weak",
     "weak": "weak",
 }
-
 REGIME_LEVELS = ("strong", "lean_strong", "range", "lean_weak", "weak")
 
 
@@ -171,11 +170,7 @@ def build_regime_filter_mask(
 def normalize_regime_position_pct(
     ladder: Mapping[str, Any] | None,
 ) -> dict[str, float] | None:
-    """Validate a five-level regime exposure ladder.
-
-    Missing levels deliberately remain neutral (``1.0``), so adding one
-    constrained level cannot silently change the other four regimes.
-    """
+    """Validate a five-level regime exposure ladder; unspecified levels stay neutral."""
     if not ladder:
         return None
 
@@ -202,27 +197,17 @@ def build_regime_scale_series(
     regime_position_pct: Mapping[str, Any] | None,
     regime_by_date: Mapping[object, Any],
 ) -> np.ndarray | None:
-    """Build the T-1 exposure scale for each market-matrix timestamp.
-
-    The first timestamp stays neutral because no previous matrix timestamp is
-    available. Missing internal regime rows fail closed via the shared
-    alignment helper; unknown regime states stay neutral for forward
-    compatibility.
-    """
+    """Build the T-1 exposure scale for each market-matrix timestamp."""
     ladder = normalize_regime_position_pct(regime_position_pct)
     if ladder is None:
         return None
 
     aligned = align_regime_t_minus_one(
-        labels,
-        regime_by_date,
-        required_start=None,
-        required_end=None,
+        labels, regime_by_date, required_start=None, required_end=None,
     )
     scale = np.ones(len(labels), dtype=np.float64)
     for index, point in enumerate(aligned):
-        if point is None:
-            continue
-        state, _score = point
-        scale[index] = ladder.get(state, 1.0)
+        if point is not None:
+            state, _score = point
+            scale[index] = ladder.get(state, 1.0)
     return scale

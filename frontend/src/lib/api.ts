@@ -1281,6 +1281,21 @@ export interface PaperCompareRow {
   day_change_pct?: number | null
   auto_rules?: Array<{ name: string; match_kind: string; match_id: string; side: 'buy' | 'sell'; enabled: boolean }>
   auto_enabled?: number
+  /** 盘中实时估算 (后端增量, 当日快照就绪才有): live_* 为快照价口径 */
+  live_total?: number | null
+  live_pnl_pct?: number | null
+  estimating?: boolean
+}
+
+/** FIFO 配对回合 (GET /api/paper/rounds): 开仓成本含买入费, 平仓净额扣卖出费 */
+export interface PaperRound {
+  symbol: string
+  open_date: string
+  close_date: string
+  qty: number
+  pnl: number
+  pnl_pct: number
+  holding_days: number
 }
 
 /** 对比批量创建的单个来源 (POST /api/paper/arena/batch_create) */
@@ -1288,13 +1303,14 @@ export interface PaperArenaSource {
   name?: string
   match_kind: 'strategy' | 'rule'
   match_id: string
-  side?: 'buy' | 'sell'
+  side?: 'buy' | 'sell' | 'auto'
   size_mode?: 'fixed_amount' | 'pct_equity'
   size_value?: number
   order_type?: 'market' | 'next_open' | 'close'
   cooldown_days?: number
   position_sizing?: 'equal' | 'score_weight'
-  max_positions?: number
+  /** 最大同时持仓标的数 (0 = 不限); 对齐回测 max_positions 口径 */
+     max_positions?: number
   max_total_position?: number
   auto_follow_enabled?: boolean
   auto_exit_enabled?: boolean
@@ -1398,18 +1414,20 @@ export interface PaperAutoRule {
   name: string
   match_kind: 'strategy' | 'rule'
   match_id: string
+  /** auto = 跟随策略信号方向 (入场/进池买入, 出场/移出全平); 仅 match_kind=strategy 支持 */
   side: 'buy' | 'sell' | 'auto'
   size_mode?: 'fixed_amount' | 'pct_equity'
   size_value?: number
   order_type?: 'market' | 'next_open' | 'close'
   position_sizing?: 'equal' | 'score_weight'
-  max_positions?: number
   max_total_position?: number
   auto_follow_enabled?: boolean
   auto_exit_enabled?: boolean
   entry_fill?: 'close_t' | 'open_t+1'
   exit_fill?: 'close_t' | 'open_t+1'
   cooldown_days: number
+  /** 最大同时持仓标的数 (仅约束买入开新仓, 0 = 不限); 对齐回测 max_positions 口径 */
+  max_positions?: number
   enabled: boolean
   created_at: string
 }
@@ -4276,11 +4294,18 @@ export const api = {
   paperStats: (account?: string) =>
     request<{ rounds: number; win_rate: number; profit_loss_ratio: number | null; avg_holding_days: number; realized_pnl: number; max_drawdown: number | null }>(accUrl('/api/paper/stats', account)),
 
+  paperRounds: (account?: string) =>
+    request<{ rounds: PaperRound[] }>(accUrl('/api/paper/rounds', account)),
+
   paperCompare: () =>
     request<{ accounts: PaperCompareRow[] }>('/api/paper/compare'),
 
   paperFreeze: (frozen: boolean, account?: string) =>
     request<{ account: PaperAccount }>(accUrl('/api/paper/freeze?frozen=' + frozen, account), { method: 'POST' }),
+
+  /** 删除账户及其全部数据 (不可恢复); 有持仓/待成交订单时后端拒绝, force=true 强删 */
+  paperDeleteAccount: (force: boolean, account?: string) =>
+    request<{ ok: boolean; deleted: string; holdings?: number; pending_orders?: number }>(accUrl(`/api/paper/account?force=${force}`, account), { method: 'DELETE' }),
 
   paperAutoRules: (account?: string) =>
     request<{ rules: PaperAutoRule[] }>(accUrl('/api/paper/auto_rules', account)),

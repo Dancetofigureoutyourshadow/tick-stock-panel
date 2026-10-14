@@ -37,7 +37,7 @@ def strategy_monitor_rules(data_dir: Path) -> list[dict]:
         str(rule["match_id"])
         for account_id in paper.list_account_ids(data_dir)
         for rule in load_auto_rules(data_dir, account_id, enabled_only=True)
-        if rule.get("match_kind") == "strategy" and rule.get("_legacy_mode")
+        if rule.get("match_kind") == "strategy"
     }
     return [{
         "id": FOLLOW_MONITOR_PREFIX + hashlib.sha1(sid.encode("utf-8")).hexdigest()[:16],
@@ -75,12 +75,14 @@ def validate_rule(rule: dict) -> None:
         raise ValueError(f"match_kind 非法: {rule.get('match_kind')!r} (应为 strategy / rule)")
     if not (rule.get("match_id") or "").strip():
         raise ValueError("match_id 不能为空")
-    legacy = bool(rule.get("_legacy_mode") or "position_sizing" in rule or rule.get("side") == "auto" or "auto_follow_enabled" in rule or "auto_exit_enabled" in rule)
+    legacy = bool(rule.get("_legacy_mode") or "position_sizing" in rule or (rule.get("side") == "auto" and "size_value" not in rule) or "auto_follow_enabled" in rule or "auto_exit_enabled" in rule)
     if legacy:
         _validate_legacy_rule(rule)
         return
-    if rule.get("side") not in ("buy", "sell"):
+    if rule.get("side") not in ("buy", "sell", "auto"):
         raise ValueError(f"side 非法: {rule.get('side')!r}")
+    if rule.get("side") == "auto" and rule.get("match_kind") != "strategy":
+        raise ValueError("side=auto (跟信号方向) 仅支持匹配策略 — 监控规则事件无方向语义")
     if rule.get("size_mode") not in ("fixed_amount", "pct_equity"):
         raise ValueError(f"size_mode 非法: {rule.get('size_mode')!r}")
     value = rule.get("size_value")
@@ -93,6 +95,9 @@ def validate_rule(rule: dict) -> None:
     cooldown = rule.get("cooldown_days", 0)
     if isinstance(cooldown, bool) or not isinstance(cooldown, int) or cooldown < 0:
         raise ValueError("cooldown_days 必须是非负整数")
+    max_positions = rule.get("max_positions", 0)
+    if isinstance(max_positions, bool) or not isinstance(max_positions, int) or max_positions < 0:
+        raise ValueError("max_positions 必须是非负整数 (0 = 不限制)")
 
 
 def _validate_legacy_rule(rule: dict) -> None:
@@ -123,7 +128,7 @@ def normalize_rule(rule: dict) -> dict:
     d = dict(rule)
     d["name"] = (d.get("name") or "").strip()
     d["match_id"] = (d.get("match_id") or "").strip()
-    legacy = bool("position_sizing" in d or d.get("side") == "auto" or "auto_follow_enabled" in d or "auto_exit_enabled" in d)
+    legacy = bool(d.get("_legacy_mode") or "position_sizing" in d or (d.get("side") == "auto" and "size_value" not in d) or "auto_follow_enabled" in d or "auto_exit_enabled" in d)
     if legacy:
         d["_legacy_mode"] = True
         if not d.get("side"):
@@ -139,10 +144,19 @@ def normalize_rule(rule: dict) -> dict:
         d.setdefault("enabled", True)
         d.setdefault("created_at", _now_iso())
         return d
-    d.setdefault("side", "buy")
+    # side=auto: 跟随策略信号方向 (入场/进池 → 买入, 出场/移出 → 卖出)。
+    # 存量规则缺 side 时按 buy 兼容 (原语义), 新建默认 auto。
+    if d.get("match_kind") == "strategy":
+        d.setdefault("side", "auto")
+    else:
+        d.setdefault("side", "buy")
+    # 新的双向/持仓上限规则保持金额配置; 旧单向客户端仍走存量升级路径。
+    if d["side"] == "auto" or "max_positions" in rule or "_legacy_mode" in rule:
+        d["_legacy_mode"] = False
     d.setdefault("size_mode", "fixed_amount")
     d.setdefault("order_type", "next_open")
     d.setdefault("cooldown_days", 5)
+    d.setdefault("max_positions", 0)   # 0 = 不限制 (对齐回测 max_positions 语义)
     d.setdefault("enabled", True)
     d.setdefault("created_at", _now_iso())
     return d
@@ -150,7 +164,7 @@ def normalize_rule(rule: dict) -> dict:
 
 def _normalize_stored_rule(rule: dict) -> dict:
     normalized = normalize_rule(rule)
-    if normalized.get("match_kind") == "strategy" and not normalized.get("_legacy_mode"):
+    if normalized.get("match_kind") == "strategy" and "_legacy_mode" not in rule and not normalized.get("_legacy_mode"):
         # 旧版单向策略规则升级为策略买卖双向跟单；普通监控规则仍保留单向行为。
         normalized = normalize_rule({
             **normalized,
@@ -158,6 +172,7 @@ def _normalize_stored_rule(rule: dict) -> dict:
             "auto_follow_enabled": True,
             "auto_exit_enabled": True,
             "cooldown_days": 0,
+            "max_positions": normalized.get("max_positions") or paper.DEFAULT_MAX_POSITIONS,
         })
     return normalized
 
@@ -404,11 +419,49 @@ def _legacy_events(data_dir: Path, events: list[dict], rules: list[dict], accoun
     return created
 
 
+def _position_slots_used(data_dir: Path, account_id: str) -> set[str]:
+    """已占用的持仓槽: 当前持仓标的 + 待成交买单标的 (去重)。
+    模拟盘 next_open 单未成交也占槽, 防同日多信号重复开仓超限。"""
+    used: set[str] = set()
+    for symbol, p in paper.load_positions(data_dir, account_id).items():
+        if p["qty"] > 0:
+            used.add(symbol)
+    for o in paper.load_orders(data_dir, account_id):
+        if o.get("status") == "pending" and o["side"] == "buy":
+            used.add(o["symbol"])
+    return used
+
+
+_AUTO_BUY_TYPES = {"buy_signal", "pool_entry"}
+
+
+def _resolve_side(rule: dict, ev: dict) -> str | None:
+    """规则方向 → 本次事件实际方向。side=auto (跟策略信号): 入场/进池买,
+    出场/移出卖; 其余按规则固定方向。返回 None 表示该事件不适用 (如 auto
+    收到无方向语义的事件类型)。"""
+    side = rule.get("side", "buy")
+    if side != "auto":
+        return side
+    etype = str(ev.get("type") or "")
+    if etype in _AUTO_BUY_TYPES:
+        return "buy"
+    if etype in ("sell_signal", "pool_exit"):
+        return "sell"
+    return None
+
+
+def _held_qty(data_dir: Path, symbol: str, account_id: str) -> int:
+    p = paper.load_positions(data_dir, account_id).get(symbol)
+    return int(p["qty"]) if p else 0
+
+
 def on_rule_events(data_dir: Path, events: list[dict], account_id: str = paper.DEFAULT_ACCOUNT_ID) -> list[dict]:
     """监控事件 → 自动下单。返回本次创建的订单列表 (被拒订单只记日志)。
 
     触发条件: 事件带 symbol 与价格、有规则匹配、未冷却; 下单复用 paper.create_order
     (冻结/资金/T+1/涨跌停等校验自动生效), ref_price 用事件价格 (当前快照价)。
+    买入信号受 max_positions 约束 (对齐回测口径): 已持仓 + 待成交买单的标的数
+    达到上限后, 新标的开仓被跳过; 已持仓标的加仓与卖出信号不受限。
     """
     created: list[dict] = []
     if not events:
@@ -423,6 +476,7 @@ def on_rule_events(data_dir: Path, events: list[dict], account_id: str = paper.D
     if not rules:
         return created
     with paper.PAPER_LOCK:
+        # 同一批事件内复用快照, 由 create_order 后的持仓变化反映 (循环内重取)
         for ev in events:
             symbol = (ev.get("symbol") or "").strip()
             price = ev.get("price")
@@ -431,14 +485,35 @@ def on_rule_events(data_dir: Path, events: list[dict], account_id: str = paper.D
             for rule in rules:
                 if not _matches(rule, ev):
                     continue
+                side = _resolve_side(rule, ev)
+                if side is None:
+                    continue
                 if _in_cooldown(data_dir, rule, symbol, int(rule.get("cooldown_days", 0)), account_id):
                     continue
-                qty = _sizing_qty(data_dir, rule, float(price), account_id)
+                if side == "buy":
+                    max_positions = int(rule.get("max_positions", 0))
+                    if max_positions > 0:
+                        used = _position_slots_used(data_dir, account_id)
+                        if len(used) >= max_positions and symbol not in used:
+                            logger.info(
+                                "paper auto %s: %s 跳过开仓 — 已达最大持仓 %d (%s)",
+                                rule["name"], symbol, max_positions, ", ".join(sorted(used)) or "空",
+                            )
+                            continue
+                    qty = _sizing_qty(data_dir, rule, float(price), account_id)
+                else:
+                    # auto 的出场卖出 = 全平该标的 (策略出场语义); 固定 sell 规则仍按 sizing。
+                    if rule.get("side") == "auto":
+                        qty = _held_qty(data_dir, symbol, account_id)
+                        if qty <= 0:
+                            continue  # 未持仓, 出场信号无意义
+                    else:
+                        qty = _sizing_qty(data_dir, rule, float(price), account_id)
                 if qty <= 0:
                     logger.info("paper auto %s: %s 金额不足以一手 (价 %s)", rule["name"], symbol, price)
                     continue
                 order, err = paper.create_order(
-                    data_dir, symbol, rule["side"],
+                    data_dir, symbol, side,
                     account_id=account_id,
                     qty=qty,
                     order_type=rule["order_type"],
@@ -449,7 +524,7 @@ def on_rule_events(data_dir: Path, events: list[dict], account_id: str = paper.D
                     logger.info("paper auto %s: %s 下单被拒: %s", rule["name"], symbol, err)
                     continue
                 created.append(order)
-                logger.info("paper auto %s: %s 触发 %s %d 股 (%s)", rule["name"], symbol, rule["side"], qty, order["id"])
+                logger.info("paper auto %s: %s 触发 %s %d 股 (%s)", rule["name"], symbol, side, qty, order["id"])
     return created
 
 

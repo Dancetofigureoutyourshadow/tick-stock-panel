@@ -28,6 +28,19 @@ RUN pnpm install --frozen-lockfile || pnpm install
 COPY frontend/ ./
 RUN pnpm build
 
+# === Stage 1b: 可选 stock-sdk 依赖 ===
+FROM node:20-alpine AS stocksdk-builder
+ARG INCLUDE_STOCKSDK=0
+ARG USE_CN_MIRROR=1
+ARG NPM_REGISTRY=https://registry.npmmirror.com
+WORKDIR /build
+COPY backend/app/plugins/stocksdk/package.json backend/app/plugins/stocksdk/package-lock.json ./
+RUN mkdir -p node_modules && \
+    if [ "$INCLUDE_STOCKSDK" = "1" ]; then \
+      if [ "$USE_CN_MIRROR" = "1" ]; then npm config set registry "$NPM_REGISTRY"; fi && \
+      npm ci --omit=dev; \
+    fi
+
 # === Stage 1c: Codex CLI ===
 # 固定版本保证镜像可复现；只复制安装产物到运行镜像，不保留 npm。
 FROM node:20-bookworm-slim AS codex-builder

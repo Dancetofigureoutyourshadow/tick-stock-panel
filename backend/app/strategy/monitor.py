@@ -1151,7 +1151,7 @@ class MonitorRuleEngine:
             if strategy_snapshot is not None:
                 ev["strategy_snapshot"] = strategy_snapshot
             events.append(ev)
-            if self._alert_handler:
+            if self._alert_handler and not str(rule["id"]).startswith("paper_follow_"):
                 try:
                     self._alert_handler(ev)
                 except Exception as e:
@@ -1318,6 +1318,48 @@ class MonitorRuleEngine:
             logger.warning("策略 %s 执行失败: %s", sid, e)
             return []
 
+        strategy_meta = getattr(s, "meta", {}) or {}
+        resolver = getattr(self._strategy_engine, "resolve_params", None)
+        if callable(resolver):
+            params = resolver(
+                s,
+                overrides.get("params") if isinstance(overrides.get("params"), dict) else None,
+                overrides,
+            )
+        else:
+            params = {
+                item["id"]: item.get("default")
+                for item in strategy_meta.get("params", [])
+                if isinstance(item, dict) and item.get("id")
+            }
+            params.update(overrides.get("params") or {})
+        effective_signals = getattr(self._strategy_engine, "_effective_signals", None)
+        default_entry_signals = list(getattr(s, "entry_signals", []) or [])
+        default_exit_signals = list(getattr(s, "exit_signals", []) or [])
+        entry_signals = effective_signals(overrides, "entry_signals", default_entry_signals) if callable(effective_signals) else list(overrides.get("entry_signals", default_entry_signals) or [])
+        exit_signals = effective_signals(overrides, "exit_signals", default_exit_signals) if callable(effective_signals) else list(overrides.get("exit_signals", default_exit_signals) or [])
+        strategy_snapshot = {
+            "strategy_id": sid,
+            "strategy_name": strategy_meta.get("name") or sid,
+            "strategy_version": str(strategy_meta.get("version") or ""),
+            "params": params,
+            "entry_signals": entry_signals,
+            "exit_signals": exit_signals,
+            "stop_loss": overrides.get("stop_loss", getattr(s, "stop_loss", None)),
+            "take_profit": overrides.get("take_profit", getattr(s, "take_profit", None)),
+            "trailing_stop": overrides.get("trailing_stop", getattr(s, "trailing_stop", None)),
+            "trailing_take_profit_activate": overrides.get(
+                "trailing_take_profit_activate", getattr(s, "trailing_take_profit_activate", None),
+            ),
+            "trailing_take_profit_drawdown": overrides.get(
+                "trailing_take_profit_drawdown", getattr(s, "trailing_take_profit_drawdown", None),
+            ),
+            "max_hold_days": overrides.get("max_hold_days", getattr(s, "max_hold_days", None)),
+            "basic_filter": overrides.get("basic_filter", {}),
+            "scoring": overrides.get("scoring", strategy_meta.get("scoring", [])),
+            "overlay_filter": overrides.get("overlay_filter", []),
+        }
+
         # 记录本轮完整策略结果 (供策略页实时回显: /cached 端点直接读取, 不落盘)。
         # 与下面的事件无关, 无论是否产生通知结果都用于策略页实时回显。
         # 策略结果缓存仅用于股票策略页 /cached 回显; ETF 策略页走实时单跑, 不写入。
@@ -1363,7 +1405,7 @@ class MonitorRuleEngine:
         self._strategy_pools[pool_key] = current_pool
 
         notify_events = set(rule.get("notify_events") or ("pool_entry", "pool_exit"))
-        sname = s.meta.get("name", "") or s.meta.get("id", sid)
+        sname = strategy_meta.get("name", "") or strategy_meta.get("id", sid)
         row_map: dict[str, dict] = {r["symbol"]: r for r in result.rows}
         try:
             for row in df.iter_rows(named=True):
@@ -1371,7 +1413,10 @@ class MonitorRuleEngine:
         except Exception:
             pass
 
-        entry_signal_hits = result.entry_signal_hits
+        entry_signal_hits = getattr(result, "entry_signal_hits", [])
+        exit_signal_hits = getattr(result, "exit_signal_hits", [])
+        result_scores = getattr(result, "scores", {})
+        result_as_of = getattr(result, "as_of", cn_today())
         if score_filter_enabled:
             entry_signal_hits = [
                 hit for hit in entry_signal_hits
@@ -1379,10 +1424,10 @@ class MonitorRuleEngine:
             ]
         changes: dict[str, set[str]] = {
             "buy_signal": self._new_strategy_signals(
-                pool_key, "buy_signal", result.as_of, entry_signal_hits,
+                pool_key, "buy_signal", result_as_of, entry_signal_hits,
             ),
             "sell_signal": self._new_strategy_signals(
-                pool_key, "sell_signal", result.as_of, result.exit_signal_hits,
+                pool_key, "sell_signal", result_as_of, exit_signal_hits,
             ),
             "pool_entry": set() if prev_pool is None else current_pool - prev_pool,
             "pool_exit": set() if prev_pool is None else prev_pool - current_pool,
@@ -1396,7 +1441,7 @@ class MonitorRuleEngine:
             },
             "sell_signal": {
                 str(hit["symbol"]): list(hit.get("signals") or [])
-                for hit in result.exit_signal_hits
+                for hit in exit_signal_hits
             },
         }
         action_labels = {
@@ -1409,7 +1454,7 @@ class MonitorRuleEngine:
             if event_type not in notify_events or not symbols:
                 continue
             symbol_list = sorted(symbols)
-            if len(symbol_list) > 5:
+            if len(symbol_list) > 5 and not str(rule["id"]).startswith("paper_follow_"):
                 names = [
                     str(row_map.get(symbol, {}).get("name") or self._name_map.get(symbol, symbol))
                     for symbol in symbol_list
@@ -1435,8 +1480,8 @@ class MonitorRuleEngine:
                     row.get("close"),
                     row.get("change_pct"),
                     signal_map.get(event_type, {}).get(symbol, []),
-                    row.get("score", result.scores.get(symbol)),
-                    row.get("strategy_snapshot"),
+                    row.get("score", result_scores.get(symbol)),
+                    strategy_snapshot,
                 ))
 
         return results
@@ -1458,7 +1503,7 @@ class MonitorRuleEngine:
         if previous is None:
             for symbol in current:
                 self._strategy_signal_seen[(*state_key, symbol)] = date_key
-            return set()
+            return current if rule_id.startswith("paper_follow_") else set()
 
         previous_date, previous_symbols = previous
         candidates = current if previous_date != date_key else current - previous_symbols

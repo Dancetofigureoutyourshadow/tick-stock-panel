@@ -37,6 +37,7 @@ import { PageHeader } from '@/components/PageHeader'
 import { useAdjFactorSyncGate } from '@/components/AdjFactorSyncGate'
 import { formatScheduleDatePart, formatScheduleTimePart, isToday } from '@/lib/format'
 import { findDataSource } from '@/lib/dataSources'
+import { toast } from '@/components/Toast'
 
 // 拆分出的子组件
 import { StatCard, type FieldTab, type CapLimitValue } from '@/components/data/StatCard'
@@ -86,6 +87,22 @@ export function Data() {
     queryKey: QK.regimeCoverage,
     queryFn: () => api.regimeCoverage(),
     refetchInterval: activeJobId ? false : 30_000,
+  })
+
+  const recomputeRegime = useMutation({
+    mutationFn: () => api.regimeRecompute(),
+    onSuccess: async (result) => {
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: QK.regimeCoverage }),
+        qc.invalidateQueries({ queryKey: ['regime-history'] }),
+        qc.invalidateQueries({ queryKey: ['regime-latest'] }),
+        qc.invalidateQueries({ queryKey: ['regime-states'] }),
+        qc.invalidateQueries({ queryKey: ['regime-phases'] }),
+        qc.invalidateQueries({ queryKey: ['regime-mainline'] }),
+      ])
+      toast(result.computed > 0 ? `市场环境重算完成 · ${result.computed} 个交易日` : '没有可重算的市场环境数据', result.computed > 0 ? 'success' : 'error')
+    },
+    onError: (error) => toast(`市场环境重算失败 · ${String((error as Error).message || error)}`, 'error'),
   })
 
   const history = useQuery({
@@ -1075,7 +1092,14 @@ export function Data() {
       <AnimatePresence>
         {openSettings === 'regime' && (
           <SettingsModal title="市场环境 · 计算设置" onClose={() => setOpenSettings(null)}>
-            <RegimeConfigCard />
+            <RegimeConfigCard
+              onRecompute={() => recomputeRegime.mutate()}
+              recomputing={recomputeRegime.isPending}
+              recomputeDisabled={!!activeJobId || isStarting}
+              enriched={s?.enriched ?? null}
+              recomputeError={recomputeRegime.isError ? String((recomputeRegime.error as Error)?.message || recomputeRegime.error) : null}
+              recomputeResult={recomputeRegime.data?.computed ?? null}
+            />
           </SettingsModal>
         )}
       </AnimatePresence>

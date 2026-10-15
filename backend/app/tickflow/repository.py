@@ -92,11 +92,15 @@ def _last_available_rows(df: pl.DataFrame, cutoff: date) -> pl.DataFrame:
     """从已按 symbol/date 排序的数据中取每只标的最后一条有效状态。"""
     if df.is_empty():
         return df
-    return (
-        df.filter(pl.col("date") <= cutoff)
+    # 先在两列窄表中确定行号, 避免为少量最新状态复制整段历史指标列。
+    indices = (
+        df.select("symbol", "date").with_row_index("_row_index")
+        .filter(pl.col("date") <= cutoff)
         .group_by("symbol", maintain_order=True)
-        .last()
+        .agg(pl.col("_row_index").last())
+        .get_column("_row_index")
     )
+    return df[indices].select("symbol", *[c for c in df.columns if c != "symbol"])
 
 
 class DataStore:
@@ -572,7 +576,19 @@ class KlineRepository:
         from app.services.heavy_job_limiter import shared_heavy_job_limiter
 
         with shared_heavy_job_limiter.slot("exclusive"):
-            self._refresh_enriched_impl()
+            with self._warmup_lock:
+                was_warming = self._enriched_warming
+                self._enriched_warming = True
+            try:
+                # 新旧完整历史同时驻留会把刷新峰值翻倍。保留最新日和实时聚合供页面
+                # 使用, 历史查询在重建期间走已有的缓存缺失路径, 不重复启动全量重建。
+                self._enriched_history_cache = None
+                self._enriched_history_start = None
+                self._enriched_history_generation = None
+                self._refresh_enriched_impl()
+            finally:
+                with self._warmup_lock:
+                    self._enriched_warming = was_warming
 
     def _refresh_enriched_impl(self) -> None:
         """从 parquet 加载 enriched 最新日到内存 + 构建聚合表。

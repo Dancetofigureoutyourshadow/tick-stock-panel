@@ -357,7 +357,7 @@ def test_detect_stale_dates_by_mtime(tmp_path):
     assert date(2026, 1, 1) not in stale  # 1/1 没更新
 
 
-def test_compute_incremental_missing_dates(tmp_path):
+def test_compute_incremental_missing_dates(tmp_path, monkeypatch):
     """enriched 有但 regime 没有 → 补算缺口。"""
     # regime 只有 1/1
     regime_builder.upsert_regime_history(tmp_path, pl.DataFrame({
@@ -373,12 +373,20 @@ def test_compute_incremental_missing_dates(tmp_path):
     class _FakeRepo:
         class store:
             data_dir = tmp_path
-        def get_enriched_range(self, *a, **k): return None  # 无缓存, 不实际算
+    calls = []
 
-    # compute_regime_incremental 会识别 1/2 缺口, 但 run_regime_batch 因无数据返回空
+    def compute(repo, start, end):
+        calls.append((start, end))
+        return pl.DataFrame({
+            "date": [date(2026, 1, 2)], "state": ["strong"], "score": [80],
+        })
+
+    monkeypatch.setattr(regime_builder, "run_regime_batch", compute)
+    monkeypatch.setattr(regime_builder, "detect_stale_dates", lambda *args: [])
     new = regime_builder.compute_regime_incremental(_FakeRepo(), tmp_path, today=date(2026, 1, 3))
-    # 无真实 enriched 数据 → 不算出新行, 但不报错
-    assert new.is_empty() or new.height >= 0
+    assert calls == [(date(2026, 1, 2), date(2026, 1, 2))]
+    assert new.height == 1
+    assert regime_builder.get_regime_coverage(tmp_path)["latest_date"] == "2026-01-02"
 
 
 # ───────────────────────── 回测环境过滤(T-1 防未来函数) ─────────────────────────

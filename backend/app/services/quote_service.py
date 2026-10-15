@@ -854,7 +854,6 @@ class QuoteService:
         只更新展示缓存, 不写 daily/enriched、不评估监控 —— 防止收盘后数据源仍
         返回竞价前旧价时把陈旧收盘价固化到当日分区。
         """
-        from app.services import preferences
         all_index_symbols = set(self._repo.get_index_symbol_set()) if self._repo else set()
         core_index_symbols = set(CORE_INDEX_SYMBOLS)
         all_index_symbols.update(core_index_symbols)
@@ -1315,6 +1314,8 @@ class QuoteService:
                             logger.warning("告警落盘失败: %s", e)
                         # 转为 SSE 推送格式 (兼容旧 alert schema)
                         for ev in rule_events:
+                            if str(ev.get("rule_id") or "").startswith("paper_follow_"):
+                                continue
                             alert = {
                                 "source": ev["source"],
                                 "type": ev["type"],
@@ -1361,7 +1362,11 @@ class QuoteService:
             # Webhook 推送 (飞书等外部 IM, 由规则 webhook_channels 指定渠道)。
             # 紧随系统通知, 同样静默降级不阻断主流程。
             if rule_events:
-                self._maybe_send_webhook(rule_events, engine)
+                from app.strategy import paper_auto
+                self._maybe_send_webhook([
+                    ev for ev in rule_events
+                    if not str(ev.get("rule_id") or "").startswith(paper_auto.FOLLOW_MONITOR_PREFIX)
+                ], engine)
 
             # 模拟盘钩子: 与监控评估同频 —— ① 用同一份实时快照撮合 pending 即时单;
             # ② rule_events 喂给自动跟单规则触发自动下单。逐账户执行 (账户间规则与订单隔离)。
@@ -1370,7 +1375,7 @@ class QuoteService:
             if stock_ready and self._app_state is not None:
                 try:
                     from app.strategy import paper as paper_trading
-                    from app.strategy import paper_auto
+                    from app.strategy import paper_auto, paper_exit
                     data_dir = self._app_state.repo.store.data_dir
                     snapshot = dict(zip(
                         enriched_today["symbol"].to_list(),
@@ -1378,12 +1383,20 @@ class QuoteService:
                         strict=False,
                     ))
                     paper_events: list[dict] = []
+                    exit_rows = enriched_today.to_dicts()
+                    trade_date = cn_today().isoformat()
                     for acc_id in paper_trading.list_account_ids(data_dir):
                         paper_events.extend(
                             paper_trading.evaluate_intraday(data_dir, snapshot, account_id=acc_id))
+                        paper_events.extend(paper_exit.evaluate(
+                            data_dir, exit_rows, account_id=acc_id, trade_date=trade_date,
+                        ))
                         if rule_events:
                             created = paper_auto.on_rule_events(data_dir, rule_events, account_id=acc_id)
                             paper_events.extend(paper_auto.auto_order_events(created, account_id=acc_id))
+                        # 本轮新建的止损等市价退出单，使用同一份行情即时撮合。
+                        paper_events.extend(
+                            paper_trading.evaluate_intraday(data_dir, snapshot, account_id=acc_id))
                     # 成交/自动跟单下单推送 (V3): 复用监控中心既有管道 —— SSE toast /
                     # 语音 (前端按 source 拼文案) / 系统通知 / alert_store 留痕 /
                     # Webhook。全部静默降级。

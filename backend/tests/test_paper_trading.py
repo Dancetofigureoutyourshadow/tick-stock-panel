@@ -433,27 +433,16 @@ def test_auto_trigger_matches_strategy_event(tmp_path, monkeypatch):
     _cap_account(tmp_path)
     paper_auto.create_auto_rule(tmp_path, _auto_rule())
 
-    ev = {"source": "strategy", "strategy_id": "strat_1", "rule_id": "r1",
+    ev = {"source": "strategy", "type": "buy_signal", "strategy_id": "strat_1", "rule_id": "r1",
           "symbol": SYM, "price": 10.0}
     orders = paper_auto.on_rule_events(tmp_path, [ev])
     assert len(orders) == 1
-    assert orders[0]["qty"] == 500        # 5000 元 / 10 元 → 500 股
+    assert orders[0]["qty"] == 1900  # 旧规则升级后按 50 个最大持仓等分权益，按百股取整
     assert orders[0]["source"].startswith("auto:")
     assert orders[0]["order_type"] == "next_open"
 
-    # 冷却期内同 symbol 不再触发
+    # 待成交单已经占用该策略持仓名额，不重复下单。
     assert paper_auto.on_rule_events(tmp_path, [ev]) == []
-    # 冷却外 (6 天后) 恢复触发
-    paper_auto._now_iso = lambda: ""  # no-op 防误用提示
-    rule_id = orders[0]["source"].split(":", 1)[1]
-    paper_auto.delete_auto_rule(tmp_path, rule_id) if False else None
-    # 直接改订单 created_at 模拟 6 天前
-    orders_loaded = paper.load_orders(tmp_path)
-    for o in orders_loaded:
-        o["created_at"] = "2026-09-18T10:00:00+08:00"
-        paper.save_order(tmp_path, o)
-    orders2 = paper_auto.on_rule_events(tmp_path, [ev])
-    assert len(orders2) == 1
 
 
 def test_auto_trigger_non_matching_events_ignored(tmp_path):
@@ -461,11 +450,11 @@ def test_auto_trigger_non_matching_events_ignored(tmp_path):
     _cap_account(tmp_path)
     paper_auto.create_auto_rule(tmp_path, _auto_rule())
     # strategy_id 不匹配
-    ev1 = {"source": "strategy", "strategy_id": "other", "symbol": SYM, "price": 10.0}
+    ev1 = {"source": "strategy", "type": "buy_signal", "strategy_id": "other", "symbol": SYM, "price": 10.0}
     # 无 symbol (批量事件)
-    ev2 = {"source": "strategy", "strategy_id": "strat_1", "symbol": "", "price": 10.0}
+    ev2 = {"source": "strategy", "type": "buy_signal", "strategy_id": "strat_1", "symbol": "", "price": 10.0}
     # 无价格
-    ev3 = {"source": "strategy", "strategy_id": "strat_1", "symbol": SYM}
+    ev3 = {"source": "strategy", "type": "buy_signal", "strategy_id": "strat_1", "symbol": SYM}
     assert paper_auto.on_rule_events(tmp_path, [ev1, ev2, ev3]) == []
 
 
@@ -473,7 +462,7 @@ def test_auto_rule_disabled_not_triggered(tmp_path):
     from app.strategy import paper_auto
     _cap_account(tmp_path)
     rule = paper_auto.create_auto_rule(tmp_path, _auto_rule(enabled=False))
-    ev = {"source": "strategy", "strategy_id": "strat_1", "symbol": SYM, "price": 10.0}
+    ev = {"source": "strategy", "type": "buy_signal", "strategy_id": "strat_1", "symbol": SYM, "price": 10.0}
     assert paper_auto.on_rule_events(tmp_path, [ev]) == []
     paper_auto.set_enabled(tmp_path, rule["id"], True)
     assert len(paper_auto.on_rule_events(tmp_path, [ev])) == 1
@@ -485,7 +474,7 @@ def test_auto_frozen_account_rejects(tmp_path, monkeypatch):
     acc["status"] = "frozen"
     paper.save_account(tmp_path, acc)
     paper_auto.create_auto_rule(tmp_path, _auto_rule())
-    ev = {"source": "strategy", "strategy_id": "strat_1", "symbol": SYM, "price": 10.0}
+    ev = {"source": "strategy", "type": "buy_signal", "strategy_id": "strat_1", "symbol": SYM, "price": 10.0}
     assert paper_auto.on_rule_events(tmp_path, [ev]) == []
 
 

@@ -20,9 +20,14 @@ from pathlib import Path
 
 import polars as pl
 
+from app.parquet import scan_enriched_parquet
 from app.services.fs_utils import atomic_write_parquet
 
 logger = logging.getLogger(__name__)
+
+
+class RegimeComputationError(RuntimeError):
+    """指标读取或计算失败，不能作为无数据的成功结果返回。"""
 
 # ───────────────────────── 状态分类阈值(可调) ─────────────────────────
 # 评分模型对齐看板情绪分(market_overview_builder): 采用 _score(low,high) 归一化
@@ -341,9 +346,11 @@ def _compute_batch(repo, enriched_dir, instruments, historical_shares,
     返回目标区间(不含 warmup)的含指标列 DataFrame。
     """
     from datetime import timedelta
+
     from app.indicators.pipeline import compute_indicators, compute_limit_signals
     warmup_start = batch_start - timedelta(days=warmup_days)
-    df = pl.scan_parquet(enriched_dir / "**" / "*.parquet").filter(
+    # 历史分区可能保留旧指标列或缺少新增列，统一按存储契约读取后重算。
+    df = scan_enriched_parquet(enriched_dir / "**" / "*.parquet").filter(
         (pl.col("date") >= warmup_start) & (pl.col("date") <= batch_end)
     ).collect()
     if df.is_empty():
@@ -442,9 +449,11 @@ def _scan_enriched_fallback(
         if not daily_parts:
             return None
         return pl.concat(daily_parts, how="vertical_relaxed")
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         logger.warning("regime scan_enriched_fallback failed: %s", e)
-        return None
+        raise RegimeComputationError(
+            "市场环境计算失败：无法读取或计算股票指标数据，请查看后端日志。"
+        ) from e
 
 
 def _load_index_pct(repo, start: date, end: date, symbol: str = "000001.SH") -> dict:

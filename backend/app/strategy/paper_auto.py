@@ -14,6 +14,7 @@ paper_auto.on_rule_events → paper.create_order(source=f"auto:{rule_id}")。
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import uuid
@@ -23,10 +24,33 @@ from pathlib import Path
 
 from app.market_time import cn_now
 from app.services.fs_utils import atomic_write_text
-from app.strategy import paper
-from app.strategy import paper_intents
+from app.strategy import paper, paper_intents
 
 logger = logging.getLogger(__name__)
+
+FOLLOW_MONITOR_PREFIX = "paper_follow_"
+
+
+def strategy_monitor_rules(data_dir: Path) -> list[dict]:
+    """为启用的策略跟单构造内部信号监控，独立于用户的通知偏好。"""
+    strategy_ids = {
+        str(rule["match_id"])
+        for account_id in paper.list_account_ids(data_dir)
+        for rule in load_auto_rules(data_dir, account_id, enabled_only=True)
+        if rule.get("match_kind") == "strategy" and rule.get("_legacy_mode")
+    }
+    return [{
+        "id": FOLLOW_MONITOR_PREFIX + hashlib.sha1(sid.encode("utf-8")).hexdigest()[:16],
+        "name": "模拟盘策略跟单",
+        "type": "strategy",
+        "asset_type": "stock",
+        "scope": "all",
+        "symbols": [],
+        "strategy_id": sid,
+        "notify_events": ["buy_signal", "sell_signal"],
+        "conditions": [],
+        "cooldown_seconds": 0,
+    } for sid in sorted(strategy_ids)]
 
 
 def _dir(data_dir: Path, account_id: str) -> Path:
@@ -124,11 +148,25 @@ def normalize_rule(rule: dict) -> dict:
     return d
 
 
+def _normalize_stored_rule(rule: dict) -> dict:
+    normalized = normalize_rule(rule)
+    if normalized.get("match_kind") == "strategy" and not normalized.get("_legacy_mode"):
+        # 旧版单向策略规则升级为策略买卖双向跟单；普通监控规则仍保留单向行为。
+        normalized = normalize_rule({
+            **normalized,
+            "side": "auto",
+            "auto_follow_enabled": True,
+            "auto_exit_enabled": True,
+            "cooldown_days": 0,
+        })
+    return normalized
+
+
 def load_auto_rules(data_dir: Path, account_id: str = paper.DEFAULT_ACCOUNT_ID, enabled_only: bool = False) -> list[dict]:
     out: list[dict] = []
     for f in sorted(_dir(data_dir, account_id).glob("arule_*.json")):
         try:
-            r = normalize_rule(json.loads(f.read_text(encoding="utf-8")))
+            r = _normalize_stored_rule(json.loads(f.read_text(encoding="utf-8")))
             if enabled_only and not r.get("enabled"):
                 continue
             out.append(r)
@@ -165,7 +203,7 @@ def set_enabled(data_dir: Path, rule_id: str, enabled: bool, account_id: str = p
     p = _dir(data_dir, account_id) / f"{rule_id}.json"
     if not p.exists():
         return None
-    rule = normalize_rule(json.loads(p.read_text(encoding="utf-8")))
+    rule = _normalize_stored_rule(json.loads(p.read_text(encoding="utf-8")))
     rule["enabled"] = enabled
     return save_auto_rule(data_dir, rule, account_id)
 
@@ -174,7 +212,7 @@ def update_auto_rule(data_dir: Path, rule_id: str, values: dict, account_id: str
     path = _dir(data_dir, account_id) / f"{rule_id}.json"
     if not path.exists():
         return None
-    current = normalize_rule(json.loads(path.read_text(encoding="utf-8")))
+    current = _normalize_stored_rule(json.loads(path.read_text(encoding="utf-8")))
     updated = normalize_rule({**current, **values, "id": rule_id, "created_at": current.get("created_at")})
     return save_auto_rule(data_dir, updated, account_id)
 
@@ -183,7 +221,7 @@ def _matches(rule: dict, ev: dict) -> bool:
     if rule["match_kind"] == "strategy":
         if ev.get("source") != "strategy" or ev.get("strategy_id") != rule["match_id"]:
             return False
-        return not rule.get("_legacy_mode") or ev.get("type") in ("buy_signal", "sell_signal", "pool_entry", "pool_exit")
+        return not rule.get("_legacy_mode") or ev.get("type") in ("buy_signal", "sell_signal")
     return ev.get("rule_id") == rule["match_id"]
 
 
@@ -252,7 +290,10 @@ def _legacy_events(data_dir: Path, events: list[dict], rules: list[dict], accoun
         buys: dict[str, dict] = {}
         for event in matched:
             side = _strategy_event_side(event) if rule["match_kind"] == "strategy" else rule["side"]
-            if side != "buy" or _in_cooldown(data_dir, rule, str(event["symbol"]), int(rule.get("cooldown_days", 0)), account_id, "buy"):
+            if side != "buy" or (
+                rule["match_kind"] != "strategy"
+                and _in_cooldown(data_dir, rule, str(event["symbol"]), int(rule.get("cooldown_days", 0)), account_id, "buy")
+            ):
                 continue
             symbol = str(event["symbol"]).strip()
             if symbol not in buys or float(event.get("score") or 0) > float(buys[symbol].get("score") or 0):
@@ -264,29 +305,51 @@ def _legacy_events(data_dir: Path, events: list[dict], rules: list[dict], accoun
             for pos in positions.values() for lot in (pos.get("lots", []) or [])
             if not scope or lot.get("strategy_id") == scope
         )
-        budget = max(0.0, equity * float(rule["max_total_position"]) / 100 - scoped_value)
-        scores = [max(float(event.get("score") or 0), 0.0) for event in buy_events]
-        score_total = sum(scores)
+        pending = [
+            order for order in paper.load_orders(data_dir, account_id)
+            if order.get("status") == "pending" and order.get("side") == "buy"
+            and order.get("strategy_scope_id") == scope
+        ]
+        scoped_value += sum(
+            int(order.get("qty", 0)) * float(order.get("ref_price") or 0)
+            for order in pending
+        )
         occupied = {
             symbol for symbol, pos in positions.items()
             if sum(int(lot.get("qty", 0)) for lot in (pos.get("lots", []) or []) if not scope or lot.get("strategy_id") == scope) > 0
         }
-        for event in buy_events:
+        occupied.update(str(order.get("symbol")) for order in pending)
+        slots = max(0, int(rule["max_positions"]) - len(occupied))
+        buy_events.sort(key=lambda event: float(event.get("score") or 0), reverse=True)
+        selected = [event for event in buy_events if str(event["symbol"]).strip() not in occupied][:slots]
+
+        max_exposure = float(rule["max_total_position"]) / 100
+        exposure_capacity = max(0.0, equity * max_exposure - scoped_value)
+        per_position_cap = equity * max_exposure / max(1, int(rule["max_positions"]))
+        total_budget = min(float(account.get("cash", 0)), exposure_capacity, per_position_cap * len(selected))
+        scores = [max(float(event.get("score") or 0), 0.0) for event in selected]
+        score_total = sum(scores)
+        weights = (
+            [score / score_total for score in scores]
+            if rule["position_sizing"] == "score_weight" and score_total > 0
+            else [1 / len(selected)] * len(selected) if selected else []
+        )
+        order_type = "close" if rule["entry_fill"] == "close_t" else "next_open"
+        for event, weight in zip(selected, weights, strict=True):
             symbol = str(event["symbol"]).strip()
-            if symbol not in occupied and len(occupied) >= int(rule["max_positions"]):
-                continue
-            score = max(float(event.get("score") or 0), 0.0)
-            weight = score / score_total if rule["position_sizing"] == "score_weight" and score_total > 0 else 1 / max(1, len(buy_events))
-            qty = paper.qty_from_amount(budget * weight, float(event["price"]))
+            allocation = min(total_budget * weight, per_position_cap, float(account.get("cash", 0)))
+            commission_pct = float(account.get("commission_pct", paper.DEFAULT_COMMISSION_PCT))
+            slippage_bps = float(account.get("slippage_bps", paper.DEFAULT_SLIPPAGE_BPS))
+            estimated_unit_cost = float(event["price"]) * (1 + commission_pct + slippage_bps / 10000)
+            qty = paper.qty_from_amount(allocation, estimated_unit_cost)
             if qty <= 0:
                 continue
             auto_enabled = bool(rule.get("auto_follow_enabled", True))
-            order_type = "market" if rule["entry_fill"] == "close_t" else "next_open"
             common = {
                 "strategy_id": event.get("strategy_id"), "strategy_snapshot": event.get("strategy_snapshot") or {},
                 "buy_score": event.get("score"), "strategy_scope_id": scope,
                 "auto_rule_id": rule["id"], "automation_source": "auto_follow",
-                "max_positions": None, "max_total_position": None,
+                "max_positions": rule["max_positions"], "max_total_position": max_exposure,
             }
             if not auto_enabled:
                 intent = paper_intents.create(
@@ -306,7 +369,9 @@ def _legacy_events(data_dir: Path, events: list[dict], rules: list[dict], accoun
         sell_events = [event for event in matched if ( _strategy_event_side(event) if rule["match_kind"] == "strategy" else rule["side"] ) == "sell"]
         for event in sell_events:
             symbol = str(event["symbol"]).strip()
-            if _in_cooldown(data_dir, rule, symbol, int(rule.get("cooldown_days", 0)), account_id, "sell"):
+            if rule["match_kind"] != "strategy" and _in_cooldown(
+                data_dir, rule, symbol, int(rule.get("cooldown_days", 0)), account_id, "sell"
+            ):
                 continue
             position = paper.load_positions(data_dir, account_id).get(symbol) or {}
             lots = [lot for lot in position.get("lots", []) if int(lot.get("qty", 0)) > 0 and str(lot.get("date", "")) < today and (rule["match_kind"] != "strategy" or lot.get("strategy_id") == event.get("strategy_id"))]
@@ -315,7 +380,7 @@ def _legacy_events(data_dir: Path, events: list[dict], rules: list[dict], accoun
                 if qty <= 0:
                     continue
                 auto_enabled = bool(rule.get("auto_exit_enabled", False)) if rule["match_kind"] == "strategy" else bool(rule.get("auto_follow_enabled", True))
-                order_type = "market" if rule["exit_fill"] == "close_t" else "next_open"
+                order_type = "close" if rule["exit_fill"] == "close_t" else "next_open"
                 common = {
                     "strategy_id": event.get("strategy_id"), "strategy_snapshot": event.get("strategy_snapshot") or lot.get("strategy_snapshot") or {},
                     "exit_reason": "signal" if rule["match_kind"] == "strategy" else None,

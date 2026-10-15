@@ -11,7 +11,7 @@ import pytest
 from app.backtest.matrix import build_market_data_matrix, make_signal_matrix
 from app.services import alert_store, preferences, quote_service
 from app.services.quote_service import QuoteService
-from app.strategy import monitor_rules
+from app.strategy import monitor_rules, paper, paper_auto
 from app.strategy.engine import StrategyDataContext, StrategyDef, StrategyEngine, StrategyResult
 from app.strategy.monitor import MonitorRuleEngine
 
@@ -83,6 +83,33 @@ def _quotes() -> pl.DataFrame:
         "close": [10.0, 20.0],
         "change_pct": [0.01, -0.02],
     })
+
+
+def test_auto_follow_registers_its_own_per_symbol_signals(tmp_path):
+    """跟单不依赖通知规则；一轮超过五只也不能合并成无法交易的批量事件。"""
+    paper.create_account(tmp_path, 100_000)
+    paper_auto.create_auto_rule(tmp_path, {
+        "name": "自动跟单", "match_kind": "strategy", "match_id": "demo",
+        "side": "auto", "entry_fill": "close_t", "exit_fill": "close_t",
+        "position_sizing": "equal", "max_positions": 2, "max_total_position": 100,
+        "auto_follow_enabled": True, "auto_exit_enabled": True,
+    })
+    engine = MonitorRuleEngine()
+    engine.set_strategy_engine(_SequenceStrategyEngine([
+        _result(date(2026, 7, 24), pool=("A", "B", "C", "D", "E", "F"),
+                buys=("A", "B", "C", "D", "E", "F"),
+                scores={letter: float(index) for index, letter in enumerate("ABCDEF", 1)}),
+    ]))
+    rules = paper_auto.strategy_monitor_rules(tmp_path)
+    assert len(rules) == 1
+    engine.set_rules(rules)
+    events = engine.evaluate(_quotes())
+    assert len(events) == 6
+    assert {event["type"] for event in events} == {"buy_signal"}
+    assert {event["symbol"] for event in events} == set("ABCDEF")
+    orders = paper_auto.on_rule_events(tmp_path, events)
+    assert {order["symbol"] for order in orders} == {"E", "F"}
+    assert {order["order_type"] for order in orders} == {"close"}
 
 
 def test_strategy_rule_compatibility_and_validation(tmp_path):

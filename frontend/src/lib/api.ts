@@ -1293,6 +1293,13 @@ export interface PaperArenaSource {
   size_value?: number
   order_type?: 'market' | 'next_open' | 'close'
   cooldown_days?: number
+  position_sizing?: 'equal' | 'score_weight'
+  max_positions?: number
+  max_total_position?: number
+  auto_follow_enabled?: boolean
+  auto_exit_enabled?: boolean
+  entry_fill?: 'close_t' | 'open_t+1'
+  exit_fill?: 'close_t' | 'open_t+1'
 }
 
 export interface PaperHolding {
@@ -1391,10 +1398,17 @@ export interface PaperAutoRule {
   name: string
   match_kind: 'strategy' | 'rule'
   match_id: string
-  side: 'buy' | 'sell'
-  size_mode: 'fixed_amount' | 'pct_equity'
-  size_value: number
-  order_type: 'market' | 'next_open' | 'close'
+  side: 'buy' | 'sell' | 'auto'
+  size_mode?: 'fixed_amount' | 'pct_equity'
+  size_value?: number
+  order_type?: 'market' | 'next_open' | 'close'
+  position_sizing?: 'equal' | 'score_weight'
+  max_positions?: number
+  max_total_position?: number
+  auto_follow_enabled?: boolean
+  auto_exit_enabled?: boolean
+  entry_fill?: 'close_t' | 'open_t+1'
+  exit_fill?: 'close_t' | 'open_t+1'
   cooldown_days: number
   enabled: boolean
   created_at: string
@@ -4284,7 +4298,7 @@ export const api = {
     request<{ ok: boolean }>(accUrl(`/api/paper/auto_rules/${encodeURIComponent(id)}`, account), { method: 'DELETE' }),
 
   /** 对比批量创建: 同本金/同费率一次开 N 个账户, 各绑一条自动跟单规则 */
-  paperArenaCreate: (body: { initial_cash: number; sources: PaperArenaSource[]; name_prefix?: string; commission_pct?: number; stamp_tax_pct?: number; slippage_bps?: number }) =>
+  paperArenaCreate: (body: { initial_cash: number; sources: PaperArenaSource[]; name_prefix?: string; commission_pct?: number; stamp_tax_pct?: number; slippage_bps?: number; queue_limit_orders?: boolean }) =>
     request<{ created: Array<{ account: string; name: string; rule_id: string }> }>('/api/paper/arena/batch_create', {
       method: 'POST',
       body: JSON.stringify(body),

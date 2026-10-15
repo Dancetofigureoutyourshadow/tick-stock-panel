@@ -92,7 +92,7 @@ def test_strategy_auto_sell_targets_only_its_own_lot(tmp_path, monkeypatch):
     paper_auto.create_auto_rule(tmp_path, {
         "name": "策略 A 自动跟单", "match_kind": "strategy", "match_id": "strategy_a",
             "side": "auto", "entry_fill": "open_t+1", "exit_fill": "close_t",
-            "position_sizing": "equal", "max_positions": 10, "max_total_position": 10,
+            "position_sizing": "equal", "max_positions": 1, "max_total_position": 10,
             "auto_follow_enabled": True, "auto_exit_enabled": True,
             "cooldown_days": 0, "enabled": True,
     })
@@ -113,7 +113,7 @@ def test_two_strategy_buy_events_keep_two_orders_and_event_direction(tmp_path):
         paper_auto.create_auto_rule(tmp_path, {
             "name": f"{strategy_id} 自动跟单", "match_kind": "strategy", "match_id": strategy_id,
             "side": "auto", "entry_fill": "open_t+1", "exit_fill": "close_t",
-            "position_sizing": "equal", "max_positions": 10, "max_total_position": 10,
+            "position_sizing": "equal", "max_positions": 1, "max_total_position": 10,
             "auto_follow_enabled": True, "auto_exit_enabled": False,
             "cooldown_days": 0, "enabled": True,
         })

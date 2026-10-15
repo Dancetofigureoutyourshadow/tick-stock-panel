@@ -15,11 +15,9 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
-from app.strategy import paper
-from app.strategy import paper_exit
-from app.strategy import paper_intents
-from app.strategy import config as strategy_config
 from app.services import preferences
+from app.strategy import config as strategy_config
+from app.strategy import paper, paper_exit, paper_intents
 
 logger = logging.getLogger(__name__)
 
@@ -37,14 +35,17 @@ def _acc(request: Request, account: str) -> str:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
 
-class AccountModel(BaseModel):
+class AccountConfigModel(BaseModel):
     initial_cash: float
-    account_id: str = paper.DEFAULT_ACCOUNT_ID
-    name: str | None = None
     commission_pct: float = paper.DEFAULT_COMMISSION_PCT
     stamp_tax_pct: float = paper.DEFAULT_STAMP_TAX_PCT
     slippage_bps: float = paper.DEFAULT_SLIPPAGE_BPS
     queue_limit_orders: bool = False
+
+
+class AccountModel(AccountConfigModel):
+    account_id: str = paper.DEFAULT_ACCOUNT_ID
+    name: str | None = None
 
 
 class OrderModel(BaseModel):
@@ -541,6 +542,8 @@ def create_auto_rule(request: Request, body: AutoRuleModel, account: str = Query
         rule = paper_auto.create_auto_rule(_data_dir(request), body.model_dump(exclude_none=True), _acc(request, account))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+    from app.api.monitor_rules import _sync_engine
+    _sync_engine(request)
     return {"rule": rule}
 
 
@@ -555,6 +558,8 @@ def update_auto_rule(request: Request, rule_id: str, body: AutoRuleModel, accoun
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if rule is None:
         raise HTTPException(status_code=404, detail=f"规则不存在: {rule_id}")
+    from app.api.monitor_rules import _sync_engine
+    _sync_engine(request)
     return {"rule": rule}
 
 
@@ -564,6 +569,8 @@ def set_auto_rule_enabled(request: Request, rule_id: str, enabled: bool, account
     rule = paper_auto.set_enabled(_data_dir(request), rule_id, enabled, _acc(request, account))
     if rule is None:
         raise HTTPException(status_code=404, detail=f"规则不存在: {rule_id}")
+    from app.api.monitor_rules import _sync_engine
+    _sync_engine(request)
     return {"rule": rule}
 
 
@@ -572,6 +579,8 @@ def delete_auto_rule(request: Request, rule_id: str, account: str = Query(paper.
     from app.strategy import paper_auto
     if not paper_auto.delete_auto_rule(_data_dir(request), rule_id, _acc(request, account)):
         raise HTTPException(status_code=404, detail=f"规则不存在: {rule_id}")
+    from app.api.monitor_rules import _sync_engine
+    _sync_engine(request)
     return {"ok": True}
 
 
@@ -585,16 +594,18 @@ class ArenaSourceModel(BaseModel):
     size_value: float = 10.0
     order_type: str = "next_open"
     cooldown_days: int = 5
+    position_sizing: str | None = None
+    max_positions: int | None = None
+    max_total_position: float | None = None
+    auto_follow_enabled: bool | None = None
+    auto_exit_enabled: bool | None = None
+    entry_fill: str | None = None
+    exit_fill: str | None = None
 
 
-class ArenaBatchModel(BaseModel):
-    initial_cash: float
+class ArenaBatchModel(AccountConfigModel):
     sources: list[ArenaSourceModel]
     name_prefix: str = ""                # 账户名前缀 (如 "第一期-", 可空)
-    commission_pct: float = paper.DEFAULT_COMMISSION_PCT
-    stamp_tax_pct: float = paper.DEFAULT_STAMP_TAX_PCT
-    slippage_bps: float = paper.DEFAULT_SLIPPAGE_BPS
-    queue_limit_orders: bool = False
 
 
 @router.post("/arena/batch_create")
@@ -614,6 +625,12 @@ def arena_batch_create(request: Request, body: ArenaBatchModel):
 
     data_dir = _data_dir(request)
     try:
+        paper.validate_account_config(
+            body.initial_cash,
+            body.commission_pct,
+            body.stamp_tax_pct,
+            body.slippage_bps,
+        )
         prepared = []
         for src in body.sources:
             rule = {
@@ -627,6 +644,18 @@ def arena_batch_create(request: Request, body: ArenaBatchModel):
                 "cooldown_days": src.cooldown_days,
                 "enabled": True,
             }
+            if src.match_kind == "strategy":
+                rule.update({
+                    "side": "auto",
+                    "entry_fill": src.entry_fill or paper.DEFAULT_ENTRY_FILL,
+                    "exit_fill": src.exit_fill or paper.DEFAULT_EXIT_FILL,
+                    "position_sizing": src.position_sizing or paper.DEFAULT_POSITION_SIZING,
+                    "max_positions": src.max_positions if src.max_positions is not None else paper.DEFAULT_MAX_POSITIONS,
+                    "max_total_position": src.max_total_position if src.max_total_position is not None else paper.DEFAULT_MAX_TOTAL_POSITION * 100,
+                    "auto_follow_enabled": True if src.auto_follow_enabled is None else src.auto_follow_enabled,
+                    "auto_exit_enabled": True if src.auto_exit_enabled is None else src.auto_exit_enabled,
+                    "cooldown_days": 0,
+                })
             paper_auto.validate_rule(rule)  # 全部通过前不落盘 (fail-closed)
             suffix = (src.name or "").strip() or src.match_id
             prefix = (body.name_prefix or "").strip()
@@ -647,6 +676,8 @@ def arena_batch_create(request: Request, body: ArenaBatchModel):
             )
             saved = paper_auto.create_auto_rule(data_dir, rule, account_id=account_id)
             created.append({"account": account_id, "name": acc_name, "rule_id": saved["id"]})
+        from app.api.monitor_rules import _sync_engine
+        _sync_engine(request)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     return {"created": created}

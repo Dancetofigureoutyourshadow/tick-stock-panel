@@ -109,3 +109,7 @@ TickFlowStockPanel.app/
 TickFlowStockPanel-macos*.dmg
 TickFlowStockPanel-macos*.zip
 reports/cursor_tickflow_pro_rate_limit_p0.bundle
+/.claude/**
+/.codegraph/**
+/generated/**
+/.codegraph/.gitignore

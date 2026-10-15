@@ -10,7 +10,7 @@ from datetime import date
 from typing import Annotated, Any
 
 import polars as pl
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 
 from app.services import regime_builder
 
@@ -156,7 +156,10 @@ def regime_recompute(request: Request, start: date | None = None, end: date | No
             invalidate_regime_cache()
             return {"ok": True, "computed": 0}
         start = earliest
-    new_rows = regime_builder.run_regime_batch(repo, start=start, end=end)
+    try:
+        new_rows = regime_builder.run_regime_batch(repo, start=start, end=end)
+    except regime_builder.RegimeComputationError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
     if not new_rows.is_empty():
         regime_builder.upsert_regime_history(data_dir, new_rows)
     phase_days = regime_builder.refresh_phase_labels(data_dir)

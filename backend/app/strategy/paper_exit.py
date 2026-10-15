@@ -5,10 +5,8 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
-from app.market_time import cn_now
 from app.services.fs_utils import atomic_write_text
 from app.strategy import paper, paper_intents
-
 
 _REASON_LABELS = {
     "stop_loss": "止损",
@@ -207,7 +205,10 @@ def _evaluate_unlocked(
                     if take_profit is not None and high >= buy_price * (1 + take_profit):
                         reason = "take_profit"
                 if reason is None:
-                    hit_signals = [signal for signal in snapshot.get("exit_signals") or [] if bool(row.get(signal))]
+                    hit_signals = [
+                        signal for signal in snapshot.get("exit_signals") or []
+                        if bool(row.get(signal) or row.get(f"signal_{signal}"))
+                    ]
                     if hit_signals:
                         reason = "signal"
                 if reason is None:
@@ -251,7 +252,10 @@ def _evaluate_unlocked(
             action = None
             auto_exit_enabled = bool(follow_rule and follow_rule.get("auto_exit_enabled", paper.DEFAULT_AUTO_EXIT_ENABLED))
             exit_fill = follow_rule.get("exit_fill", paper.DEFAULT_EXIT_FILL) if follow_rule else paper.DEFAULT_EXIT_FILL
-            order_type = "market" if exit_fill == "close_t" else "next_open"
+            order_type = (
+                "market" if reason in ("stop_loss", "trailing_stop", "trailing_take_profit", "take_profit")
+                else "close" if exit_fill == "close_t" else "next_open"
+            )
             if auto_exit_enabled:
                 order, error = paper.create_order(
                     data_dir, symbol, "sell", account_id=account_id, qty=available,

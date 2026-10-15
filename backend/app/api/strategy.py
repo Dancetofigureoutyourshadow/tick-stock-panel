@@ -132,7 +132,8 @@ def _cleanup_deleted_strategy(request: Request, strategy_id: str) -> list[str]:
 
         monitor_engine = getattr(request.app.state, "monitor_engine", None)
         if rules_changed and monitor_engine is not None:
-            monitor_engine.set_rules(monitor_rules.load_all(data_dir))
+            from app.strategy import paper_auto
+            monitor_engine.set_rules(monitor_rules.load_all(data_dir) + paper_auto.strategy_monitor_rules(data_dir))
     except Exception as e:
         warnings.append(f"关联监控清理失败: {e}")
 

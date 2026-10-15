@@ -5,12 +5,37 @@
 #   ./dev.sh                          # 默认 backend:3018  frontend:3011
 #   BACKEND_PORT=8000 ./dev.sh        # 改后端端口
 #   FRONTEND_PORT=5173 ./dev.sh       # 改前端端口
+#   Windows: Git Bash 使用 ./dev.sh；PowerShell 使用 .\dev.ps1。
+#   Windows 始终使用本机 Python / Node，不在 WSL 中安装或启动服务。
+#   IDE 的解释器须选择 Git 安装目录的 bin/bash.exe；系统 bash.exe 是 WSL 入口，
+#   若选错会在读取此脚本前失败，脚本内的 WSL 检查无法拦截。
 #
 # Ctrl-C 同时关闭两端。
 
 set -euo pipefail
 
+# WSL 的 Linux 依赖/虚拟环境不能与 Windows 源码目录中的依赖混用。
+# 在读取配置、检查端口或安装依赖前退出，避免改动已有的本机环境。
+if [[ -n "${WSL_DISTRO_NAME:-}" || -n "${WSL_INTEROP:-}" || "$(uname -r)" == *[Mm]icrosoft* ]]; then
+  echo '[dev] 不支持 WSL 启动。请在 Windows PowerShell 中运行 .\dev.ps1，或在 Git Bash 中运行 ./dev.sh。' >&2
+  exit 1
+fi
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Git Bash / MSYS / Cygwin 只负责转交入口，依赖安装、源码热重载和
+# Ctrl-C 清理由已有的 Windows 原生启动器统一处理。
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*)
+    if ! command -v powershell.exe >/dev/null 2>&1; then
+      echo '[dev] 找不到 powershell.exe，请在 Windows PowerShell 中运行 .\dev.ps1。' >&2
+      exit 1
+    fi
+    exec powershell.exe -NoProfile -ExecutionPolicy Bypass \
+      -File "$(cygpath -w "$ROOT/dev.ps1")" "$@"
+    ;;
+esac
+
 BACKEND_DIR="$ROOT/backend"
 FRONTEND_DIR="$ROOT/frontend"
 

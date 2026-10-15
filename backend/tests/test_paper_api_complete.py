@@ -117,7 +117,7 @@ def test_intent_confirm_reject_and_revalidation_http(tmp_path):
         "match_id": "s1",
         "side": "auto",
         "entry_fill": "open_t+1", "exit_fill": "close_t",
-        "position_sizing": "equal", "max_positions": 10, "max_total_position": 10,
+        "position_sizing": "equal", "max_positions": 2, "max_total_position": 40,
         "auto_follow_enabled": False, "auto_exit_enabled": False,
         "cooldown_days": 0,
     })

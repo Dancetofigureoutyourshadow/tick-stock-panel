@@ -1223,7 +1223,8 @@ def update_realtime_monitor_config(req: RealtimeMonitorConfigIn, request: Reques
                     # 关闭策略监控: 停用所有策略规则
                     mr_store.migrate_strategy_monitors(data_dir, [], {})
                 # reload 规则到引擎
-                monitor_engine.set_rules(mr_store.load_all(data_dir))
+                from app.strategy import paper_auto
+                monitor_engine.set_rules(mr_store.load_all(data_dir) + paper_auto.strategy_monitor_rules(data_dir))
             except Exception:
                 pass
 

@@ -55,9 +55,13 @@ def test_arena_batch_create_accounts_and_rules(tmp_path: Path):
     r0 = c.get(f"/api/paper/auto_rules?account={ids[0]}").json()["rules"]
     assert len(r0) == 1 and r0[0]["enabled"] is True
     assert r0[0]["match_kind"] == "strategy" and r0[0]["match_id"] == "sg_macd_golden"
-    assert r0[0]["side"] == "buy" and r0[0]["size_mode"] == "pct_equity" and r0[0]["size_value"] == 10
+    assert r0[0]["side"] == "auto"
+    assert r0[0]["position_sizing"] == "equal"
+    assert r0[0]["max_total_position"] == 100
+    assert r0[0]["auto_follow_enabled"] is True and r0[0]["auto_exit_enabled"] is True
     r1 = c.get(f"/api/paper/auto_rules?account={ids[1]}").json()["rules"]
     assert r1[0]["side"] == "sell" and r1[0]["size_value"] == 20
+    assert "position_sizing" not in r1[0]
 
     # compare 聚合出新账户与对比字段
     rows = {r["account"]: r for r in c.get("/api/paper/compare").json()["accounts"]}
@@ -68,13 +72,84 @@ def test_arena_batch_create_accounts_and_rules(tmp_path: Path):
     assert row["auto_rules"][0]["match_id"] == "sg_macd_golden" and row["auto_rules"][0]["enabled"] is True
 
 
+def test_single_and_batch_account_config_are_identical(tmp_path: Path):
+    c = _client(tmp_path)
+    settings = {
+        "initial_cash": 250000,
+        "commission_pct": 0.0003,
+        "stamp_tax_pct": 0.0008,
+        "slippage_bps": 7,
+        "queue_limit_orders": True,
+    }
+    single = c.post("/api/paper/account", json={**settings, "account_id": "single"})
+    batch = c.post("/api/paper/arena/batch_create", json={
+        **settings,
+        "sources": [{"match_kind": "strategy", "match_id": "sg_macd_golden"}],
+    })
+    assert single.status_code == 200, single.text
+    assert batch.status_code == 200, batch.text
+
+    single_account = c.get("/api/paper/account?account=single").json()["account"]
+    batch_id = batch.json()["created"][0]["account"]
+    batch_account = c.get(f"/api/paper/account?account={batch_id}").json()["account"]
+    for key in ("initial_cash", "commission_pct", "stamp_tax_pct", "slippage_bps", "queue_limit_orders"):
+        assert single_account[key] == batch_account[key] == settings[key]
+    assert single_account["queue_limit_orders"] is True
+    assert batch_account["queue_limit_orders"] is True
+    assert single_account["status"] == batch_account["status"] == "active"
+
+
+def test_arena_strategy_uses_same_follow_configuration_as_single_rule(tmp_path: Path):
+    c = _client(tmp_path)
+    response = c.post("/api/paper/arena/batch_create", json={
+        "initial_cash": 150000,
+        "commission_pct": 0.0003,
+        "stamp_tax_pct": 0.0005,
+        "slippage_bps": 8,
+        "sources": [{
+            "match_kind": "strategy", "match_id": "demo", "position_sizing": "score_weight",
+            "max_positions": 3, "max_total_position": 60,
+            "entry_fill": "close_t", "exit_fill": "open_t+1",
+        }],
+    })
+    assert response.status_code == 200, response.text
+    account_id = response.json()["created"][0]["account"]
+    rule = c.get(f"/api/paper/auto_rules?account={account_id}").json()["rules"][0]
+    assert rule["side"] == "auto"
+    assert rule["position_sizing"] == "score_weight"
+    assert rule["max_positions"] == 3
+    assert rule["max_total_position"] == 60
+    assert rule["entry_fill"] == "close_t" and rule["exit_fill"] == "open_t+1"
+    assert rule["auto_follow_enabled"] is True and rule["auto_exit_enabled"] is True
+    account = c.get(f"/api/paper/account?account={account_id}").json()["account"]
+    assert account["initial_cash"] == 150000
+    assert account["commission_pct"] == 0.0003
+    assert account["stamp_tax_pct"] == 0.0005
+    assert account["slippage_bps"] == 8
+
+
+def test_single_and_batch_account_config_reject_same_invalid_fee(tmp_path: Path):
+    c = _client(tmp_path)
+    settings = {"initial_cash": 100000, "commission_pct": 0.02}
+    single = c.post("/api/paper/account", json={**settings, "account_id": "single"})
+    batch = c.post("/api/paper/arena/batch_create", json={
+        **settings,
+        "sources": [{"match_kind": "strategy", "match_id": "sg_macd_golden"}],
+    })
+    assert single.status_code == batch.status_code == 400
+    assert single.json()["detail"] == batch.json()["detail"]
+    assert c.get("/api/paper/compare").json()["accounts"] == []
+
+
 def test_arena_batch_create_validates_before_writing(tmp_path: Path):
     """任一来源非法 → 400 且不产生任何账户/规则 (fail-closed, 无半创建)。"""
     c = _client(tmp_path)
     for bad_sources in (
         [{"match_kind": "strategy", "match_id": ""}],                      # match_id 为空
         [{"match_kind": "nope", "match_id": "x"}],                         # match_kind 非法
-        [{"match_kind": "strategy", "match_id": "x", "size_value": -1}],   # size_value 非正
+        [{"match_kind": "strategy", "match_id": "x", "max_total_position": 110}],   # 总仓位超限
+        [{"match_kind": "strategy", "match_id": "x", "max_positions": 0}],   # 不能回退默认值
+        [{"match_kind": "strategy", "match_id": "x", "max_total_position": 0}],
     ):
         r = c.post("/api/paper/arena/batch_create", json={"initial_cash": 100000, "sources": bad_sources})
         assert r.status_code == 400, bad_sources

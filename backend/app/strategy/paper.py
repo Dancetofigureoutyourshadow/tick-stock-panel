@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 import shutil
 import threading
@@ -175,12 +176,11 @@ def create_account(
 ) -> dict:
     """创建账户 (同 id 已存在则原样返回, 不覆盖 — 幂等)。"""
     validate_account_id(account_id)
+    validate_account_config(initial_cash, commission_pct, stamp_tax_pct, slippage_bps)
     with PAPER_LOCK:
         existing = get_account(data_dir, account_id)
         if existing is not None:
             return existing
-        if isinstance(initial_cash, bool) or not isinstance(initial_cash, (int, float)) or initial_cash <= 0:
-            raise ValueError("初始资金必须是正数")
         acc = {
             "id": account_id,
             "name": (name or "").strip() or account_id,
@@ -195,6 +195,34 @@ def create_account(
         }
         atomic_write_text(_root(data_dir, account_id) / "account.json", json.dumps(acc, ensure_ascii=False, indent=2))
         return acc
+
+
+def validate_account_config(
+    initial_cash: float,
+    commission_pct: float = DEFAULT_COMMISSION_PCT,
+    stamp_tax_pct: float = DEFAULT_STAMP_TAX_PCT,
+    slippage_bps: float = DEFAULT_SLIPPAGE_BPS,
+) -> None:
+    """校验账户创建配置; 与 update_settings 使用相同的费率范围。"""
+    if (
+        isinstance(initial_cash, bool)
+        or not isinstance(initial_cash, (int, float))
+        or not math.isfinite(initial_cash)
+        or initial_cash <= 0
+    ):
+        raise ValueError("初始资金必须是正数")
+    for key, value, lo, hi in (
+        ("commission_pct", commission_pct, 0.0, 0.01),
+        ("stamp_tax_pct", stamp_tax_pct, 0.0, 0.05),
+        ("slippage_bps", slippage_bps, 0.0, 200.0),
+    ):
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or not lo <= value <= hi
+        ):
+            raise ValueError(f"{key} 超出合理范围 ({lo}~{hi})")
 
 
 def save_account(data_dir: Path, acc: dict, account_id: str = DEFAULT_ACCOUNT_ID) -> None:
@@ -586,7 +614,11 @@ def create_order(
                     for order in load_orders(data_dir, account_id)
                     if order.get("status") == "pending" and order.get("side") == "buy" and order.get("strategy_scope_id") == strategy_scope_id
                 )
-                cap = float(acc.get("initial_cash", 0)) * float(max_total_position or 0)
+                account_equity = acc_cash + sum(
+                    int(pos.get("qty", 0)) * float(pos.get("avg_cost", 0))
+                    for pos in load_positions(data_dir, account_id).values()
+                )
+                cap = account_equity * float(max_total_position or 0)
                 if cap > 0 and scoped_value + reserved_value + qty * est_price > cap:
                     return None, "最大总仓位预算不足"
         else:
@@ -933,7 +965,6 @@ def _fill_order(data_dir: Path, order: dict, raw_price: float, day: str, account
         "price": price,
         "fee": fee,
         "kind": "fill",
-        "source": order.get("source", "manual"),
         "automation_source": order.get("automation_source"),
         "source": order.get("source", "manual"),
         "strategy_id": order.get("strategy_id"),

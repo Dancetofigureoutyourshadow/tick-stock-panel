@@ -105,7 +105,7 @@ export function StrategyPoolDialog({ pool, onConfirm, onClose }: Props) {
   const filteredAvailable = useMemo(() => {
     if (activeTab === 'all') return available
     if (activeTab === 'custom') {
-      return available.filter(s => s.source === 'custom' || s.source === 'composite')
+      return available.filter(s => s.source === 'custom')
     }
     return available.filter(s => s.source === activeTab)
   }, [available, activeTab])
@@ -249,7 +249,7 @@ export function StrategyPoolDialog({ pool, onConfirm, onClose }: Props) {
                     const count = tab.id === 'all'
                       ? available.length
                       : tab.id === 'custom'
-                        ? available.filter(s => s.source === 'custom' || s.source === 'composite').length
+                        ? available.filter(s => s.source === 'custom').length
                         : available.filter(s => s.source === tab.id).length
                     return (
                       <button

@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Check, Loader2, Activity, Layers } from 'lucide-react'
-import { api } from '@/lib/api'
+import { Check, Loader2, Activity, Layers, RefreshCw } from 'lucide-react'
+import { api, type DataStatus } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
 import { toast } from '@/components/Toast'
 
@@ -12,7 +12,15 @@ import { toast } from '@/components/Toast'
  * 内存与耗时较高。分批参数控制全量回填的内存峰值: 范围超过「每批天数」时
  * 切成多批独立算后拼接, 每批带 warmup 前缀保证滚动窗口指标(ma20)边界正确。
  */
-export function RegimeConfigCard() {
+export function RegimeConfigCard({ onRecompute, recomputing, recomputeDisabled, enriched, recomputeError, recomputeResult }: {
+  onRecompute: () => void
+  recomputing: boolean
+  recomputeDisabled: boolean
+  enriched: DataStatus['enriched']
+  recomputeError: string | null
+  recomputeResult: number | null
+}) {
+  const hasEnriched = (enriched?.trading_days ?? 0) > 0
   const qc = useQueryClient()
   const prefs = useQuery({ queryKey: QK.preferences, queryFn: api.preferences })
 
@@ -71,6 +79,31 @@ export function RegimeConfigCard() {
 
   return (
     <div className="space-y-3">
+      <div className="rounded-card border border-border bg-base/30 px-3 py-2.5">
+        <div className="flex items-center gap-1.5">
+          <RefreshCw className="h-3.5 w-3.5 text-accent" />
+          <span className="text-xs font-medium text-foreground">手动执行重算</span>
+        </div>
+        <div className="mt-1 text-[10px] leading-snug text-muted">
+          根据已有指标数据全量重算市场环境，并更新情绪阶段与市场主线。关闭盘后自动计算时也可执行。
+        </div>
+        <button
+          type="button"
+          onClick={onRecompute}
+          disabled={!hasEnriched || recomputeDisabled || recomputing}
+          className="mt-2.5 inline-flex items-center gap-1.5 rounded-btn border border-accent/40 bg-accent/10 px-3 py-1.5 text-xs font-medium text-accent transition-colors hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          {recomputing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+          {recomputing ? '重算中…' : '全量重算'}
+        </button>
+        {!hasEnriched && <div className="mt-1.5 text-[10px] text-muted">请先生成股票指标数据。</div>}
+        {hasEnriched && recomputeDisabled && !recomputing && <div className="mt-1.5 text-[10px] text-muted">请等待当前数据任务完成。</div>}
+        {recomputeError && <div role="alert" className="mt-1.5 text-[10px] text-danger">重算失败：{recomputeError}</div>}
+        {recomputeResult !== null && !recomputing && !recomputeError && (
+          <div role="status" className="mt-1.5 text-[10px] text-secondary">本次重算 {recomputeResult} 个交易日。</div>
+        )}
+      </div>
+
       {/* 盘后自动计算开关 */}
       <label className={`flex items-start gap-2.5 rounded-card border px-3 py-2.5 transition-colors cursor-pointer ${
         on ? 'border-accent/40 bg-accent/[0.05]' : 'border-border bg-base/30 hover:border-border/70'

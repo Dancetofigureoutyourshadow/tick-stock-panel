@@ -52,7 +52,8 @@ def _sync_engine(request: Request) -> None:
             _reconcile_index_asset_type(r, repo)
             for r in monitor_rules.load_all(_data_dir(request))
         ]
-        engine.set_rules(rules)
+        from app.strategy import paper_auto
+        engine.set_rules(rules + paper_auto.strategy_monitor_rules(_data_dir(request)))
 
 
 # ── Pydantic 模型 ───────────────────────────────────────

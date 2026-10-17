@@ -22,6 +22,7 @@ from app.services import watchlist
 from app.services.watchlist_csv import import_watchlist_codes, import_watchlist_csv
 from app.services.watchlist_ocr import import_watchlist_image
 from app.services.watchlist_ocr.provider import get_ocr_provider
+from app.services.watchlist_performance import get_reference_prices
 
 logger = logging.getLogger(__name__)
 

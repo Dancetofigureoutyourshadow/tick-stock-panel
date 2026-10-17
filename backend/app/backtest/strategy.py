@@ -1297,22 +1297,17 @@ class StrategyBacktestService:
                 s.max_hold_days,
             )
             profile_forward = max(int(max_hold_for_profile or config.holding_days or 5), 1)
-            cache_profile = build_matrix_cache_profile(
-                self.strategy_engine,
-                config.asset_type,
-                requested_plan=feature_plan,
-                requested_forward_bars=profile_forward,
-                max_disk_bytes=settings.backtest_matrix_cache_max_mb * 1024 * 1024,
-            )
+            # 单次回测只构建当前策略的字段与预热窗口；全策略缓存档留给预热/优化。
+            # 否则未运行策略的长周期参数也会把短区间回测扩大到多年历史。
             cache_warmup_days = max(
                 120,
-                int(max(cache_profile.warmup_bars, 1) * 1.6),
+                int(max(feature_plan.warmup_bars, 1) * 1.6),
             )
             coverage_start = config.start - timedelta(days=cache_warmup_days)
             coverage_end = config.end
             if config.mode == "full":
                 coverage_end = config.end + timedelta(
-                    days=(cache_profile.forward_bars + 5) * 2
+                    days=(profile_forward + 5) * 2
                 )
             try:
                 market_data = self.engine.load_market_data_matrix_for_backtest(
@@ -1321,7 +1316,6 @@ class StrategyBacktestService:
                     load_end,
                     feature_plan,
                     asset_type=config.asset_type,
-                    cache_profile=cache_profile,
                     coverage_start=coverage_start,
                     coverage_end=coverage_end,
                 )

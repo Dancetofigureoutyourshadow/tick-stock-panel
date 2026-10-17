@@ -189,7 +189,9 @@ def _worker_entry(task: dict[str, Any], event_queue, cancel_event) -> None:
         from app.tickflow.repository import DataStore, KlineRepository
 
         data_dir = Path(task["data_dir"])
-        store = DataStore(data_dir)
+        # 回测按需直接读取 Parquet；预先绑定全部历史宽表会与主服务重复占内存。
+        # 自定义策略若通过 repository 执行 SQL，首次查询仍会按原契约注册视图。
+        store = DataStore(data_dir, register_views=False)
         repo = KlineRepository(store)
         # 子进程不继承主进程的因子注册表; 自定义/复合因子 (uf_/cf_) 在任何
         # 涉及因子物化的 worker 任务里都依赖注册表, 启动时从存储加载。
@@ -288,6 +290,9 @@ def run_worker_task(
     cancel_event: threading.Event | None = None,
 ) -> dict[str, Any]:
     """Run one complete task in a spawned process and wait for deterministic exit."""
+    from app.services.memory_reclaim import release_unused_memory
+
+    release_unused_memory()
     context = mp.get_context("spawn")
     events = context.Queue()
     process_cancel = context.Event()

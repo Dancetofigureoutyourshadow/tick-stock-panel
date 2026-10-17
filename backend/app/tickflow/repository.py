@@ -12,6 +12,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import sys
@@ -106,7 +107,7 @@ def _last_available_rows(df: pl.DataFrame, cutoff: date) -> pl.DataFrame:
 class DataStore:
     """唯一的存储入口 — 进程启动时创建。"""
 
-    def __init__(self, data_dir: Path | None = None) -> None:
+    def __init__(self, data_dir: Path | None = None, *, register_views: bool = True) -> None:
         self.data_dir = Path(data_dir or settings.data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
@@ -147,7 +148,9 @@ class DataStore:
 
         # DuckDB 内存模式 — 不建 .db 文件(§7.1)
         self.db = duckdb.connect(database=":memory:")
-        self._register_views()
+        self._views_registered = False
+        if register_views:
+            self._register_views()
 
     def _migrate_legacy_data_dir(self) -> None:
         """把旧版数据目录迁移到当前位置 (打包桌面版, 首次启动自动搬迁)。
@@ -277,6 +280,7 @@ class DataStore:
                 # (后续同步写入数据后会重新刷新视图),这里一律降级为 debug 日志。
                 logger.debug("view registration skipped (no parquet yet): %s", sql[:60])
         self._register_unified_views()
+        self._views_registered = True
 
     def _has_parquet(self, subdir: str) -> bool:
         return any((self.data_dir / subdir).rglob("*.parquet"))
@@ -425,6 +429,8 @@ class KlineRepository:
     def execute_all(self, sql: str, params: list | None = None) -> list[tuple]:
         """线程安全的 SELECT → fetchall。DuckDB 单 connection 非线程安全，所有读路径须走此方法。"""
         with self._lock:
+            if not getattr(self.store, "_views_registered", True):
+                self.store._register_views()
             cursor = self.db.cursor()
             try:
                 return cursor.execute(sql, params or []).fetchall()
@@ -434,6 +440,8 @@ class KlineRepository:
     def execute_one(self, sql: str, params: list | None = None) -> tuple | None:
         """线程安全的 SELECT → fetchone。"""
         with self._lock:
+            if not getattr(self.store, "_views_registered", True):
+                self.store._register_views()
             cursor = self.db.cursor()
             try:
                 return cursor.execute(sql, params or []).fetchone()
@@ -512,6 +520,9 @@ class KlineRepository:
             except Exception:  # noqa: BLE001
                 logger.exception("enriched warmup thread failed")
             finally:
+                from app.services.memory_reclaim import release_unused_memory
+
+                release_unused_memory()
                 with self._warmup_lock:
                     self._enriched_warming = False
                 cb = self._on_warmup_done
@@ -2102,6 +2113,16 @@ class KlineRepository:
     def get_matrix_data_generation(self, asset_type: str = "stock") -> str:
         """Return the stable generation for managed enriched readers."""
         return get_enriched_generation(self.store.data_dir, asset_type)
+
+    def get_backtest_data_generation(self, asset_type: str = "stock") -> str:
+        """Track enriched publications and raw benchmark updates without loading bars."""
+        digest = hashlib.sha256(self.get_matrix_data_generation(asset_type).encode())
+        base = self.store.data_dir / "kline_index_daily"
+        for path in sorted(base.glob("date=*/*.parquet")):
+            stat = path.stat()
+            digest.update(str(path.relative_to(base)).encode())
+            digest.update(f"{stat.st_size}:{stat.st_mtime_ns}".encode())
+        return digest.hexdigest()
 
     def _bump_matrix_data_generation(self, asset_type: str) -> str:
         return bump_enriched_generation(self.store.data_dir, asset_type)

@@ -424,7 +424,7 @@ import hashlib
 
 class _BacktestJob:
     """单个回测任务的状态, 存模块级供重连使用。"""
-    __slots__ = ("key", "cancel_event", "progress", "result", "error", "done", "finish_ts")
+    __slots__ = ("key", "cancel_event", "progress", "result", "error", "done", "finish_ts", "data_generation")
 
     def __init__(self, key: str):
         self.key = key
@@ -434,6 +434,7 @@ class _BacktestJob:
         self.error: str | None = None
         self.done = False
         self.finish_ts: float = 0.0
+        self.data_generation: str | None = None
 
 
 # 模块级任务表: key -> _BacktestJob
@@ -449,6 +450,21 @@ def _cleanup_stale_jobs():
         stale = [k for k, j in _running_jobs.items() if j.done and now - j.finish_ts > _JOB_TTL]
         for k in stale:
             _running_jobs.pop(k, None)
+
+
+def _backtest_data_generation(request: Request, asset_type: str) -> str | None:
+    from app.enriched_generation import EnrichedGenerationUnavailableError
+
+    repo = getattr(request.app.state, "repo", None)
+    getter = getattr(repo, "get_backtest_data_generation", None)
+    if getter is None:
+        return None
+    try:
+        return getter(asset_type)
+    except EnrichedGenerationUnavailableError:
+        # Updating data must never validate an old completed result. The worker
+        # will wait for capacity and capture the stable generation before running.
+        return None
 
 
 def _finish_job(job: _BacktestJob, *, result=None, error: str | None = None) -> None:
@@ -560,10 +576,14 @@ async def strategy_stream(
     _cleanup_stale_jobs()
 
     # 获取或创建任务
+    data_generation = _backtest_data_generation(request, asset_type)
     with _jobs_lock:
         job = _running_jobs.get(job_key)
+        if job is not None and job.done and (data_generation is None or job.data_generation != data_generation):
+            job = None
         if job is None:
             job = _BacktestJob(job_key)
+            job.data_generation = data_generation
             _running_jobs[job_key] = job
             is_new = True
         else:
@@ -630,11 +650,13 @@ async def strategy_stream(
                         cancel_event=job.cancel_event,
                     ):
                         task = make_worker_task("backtest", settings.data_dir, cfg)
+                        job.data_generation = _backtest_data_generation(request, asset_type)
                         result = run_worker_task(
                             task,
                             lambda d: job.progress.append(d),
                             job.cancel_event,
                         )
+                        result.setdefault("stats", {})["data_generation"] = job.data_generation
                     _finish_job(job, result=result)
                 except HeavyJobCancelledError:
                     _finish_job(job, error="回测已取消")

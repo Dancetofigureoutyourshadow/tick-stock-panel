@@ -62,6 +62,35 @@ MATRIX_STRATEGY = AlwaysEntry()
     )
 
 
+def test_single_backtest_does_not_expand_cache_to_unrelated_strategies(tmp_path, monkeypatch):
+    from app.backtest.engine import BacktestEngine
+    from app.backtest.strategy import StrategyBacktestService
+    from app.strategy.engine import StrategyEngine
+    from app.tickflow.repository import DataStore, KlineRepository
+
+    start = date(2024, 1, 1)
+    _write_worker_strategy(tmp_path)
+    _write_market_data(tmp_path, start)
+    strategies = StrategyEngine(strategy_dirs=[tmp_path / "strategies" / "custom"])
+
+    def unrelated_definitions():
+        raise AssertionError("single backtest must not load unrelated strategy dependencies")
+
+    monkeypatch.setattr(strategies, "strategy_definitions", unrelated_definitions)
+    store = DataStore(tmp_path, register_views=False)
+    try:
+        service = StrategyBacktestService(BacktestEngine(KlineRepository(store)), strategies)
+        result = service.run(StrategyBacktestConfig(
+            strategy_id="worker_always_entry", symbols=["600000.SH"],
+            start=start, end=start + timedelta(days=2),
+            overrides={"basic_filter": {"enabled": False}},
+        ))
+        assert result.error is None
+        assert result.stats["selection"]["entry_candidates"] > 0
+    finally:
+        store.db.close()
+
+
 def _write_market_data(data_dir, start: date, days: int = 3) -> None:
     rows = []
     for offset in range(days):

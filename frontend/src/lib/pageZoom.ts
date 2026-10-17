@@ -31,6 +31,8 @@ function clamp(v: number): number {
 /** 把缩放应用到 #root 并通知图表重排, 返回 clamp 后的实际值。 */
 export function applyPageZoom(v: number): number {
   const z = clamp(v)
+  // 清除旧版本遗留的 html zoom，避免它和 root 的 transform 叠加。
+  document.documentElement.style.zoom = ''
   const root = document.getElementById('root')
   if (root) {
     if (z === 1) {

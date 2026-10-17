@@ -21,8 +21,9 @@
   - 涨跌停: 触及涨停的买单 / 跌停的卖单默认拒单 (expired 留痕); 账户开启
     queue_limit_orders 后转「排队次日重试」(转 next_open, 计顺延, 超限过期);
   - 停牌/缺行情: 顺延, 连续顺延超过 max_postpone 日自动过期;
-  - 除权: 按 ex_factor 调整持仓数量(乘 factor)与成本(除以 factor), 台账记 corp_action;
-    现金分红金额不在因子数据中, 不处理。
+  - 送转: 只按明确的 bonus (每股送转比例) 调整数量和成本, 台账记 corp_action;
+    ex_factor 是价格复权比例, 不能推导股数。缺少明细或涉及配股时跳过。
+    现金分红缺少到账日/税务契约, 暂不入账, 也不转换为股数。
 """
 from __future__ import annotations
 
@@ -41,6 +42,7 @@ from pathlib import Path
 import polars as pl
 
 from app.market_time import CN_TZ, cn_now, cn_today
+from app.parquet import scan_daily_parquet
 from app.services.fs_utils import atomic_write_text
 
 logger = logging.getLogger(__name__)
@@ -1139,7 +1141,7 @@ def read_daily_bar(data_dir: Path, symbol: str, asset_type: str, day: str) -> di
         return None
     try:
         df = (
-            pl.scan_parquet((base / "**" / "*.parquet").as_posix())
+            scan_daily_parquet((base / "**" / "*.parquet").as_posix())
             .filter((pl.col("symbol") == symbol) & (pl.col("date") == _date.fromisoformat(day)))
             .select(["open", "close"])
             .collect()
@@ -1159,7 +1161,7 @@ def _prev_close(data_dir: Path, symbol: str, asset_type: str, day: str) -> float
         return None
     try:
         df = (
-            pl.scan_parquet((base / "**" / "*.parquet").as_posix())
+            scan_daily_parquet((base / "**" / "*.parquet").as_posix())
             .filter((pl.col("symbol") == symbol) & (pl.col("date") < _date.fromisoformat(day)))
             .sort("date")
             .select(pl.col("close").last())
@@ -1180,7 +1182,7 @@ def _index_close(data_dir: Path, day: str) -> float | None:
         return None
     try:
         df = (
-            pl.scan_parquet((base / "**" / "*.parquet").as_posix())
+            scan_daily_parquet((base / "**" / "*.parquet").as_posix())
             .filter((pl.col("symbol") == "000300.SH") & (pl.col("date") == _date.fromisoformat(day)))
             .select("close")
             .collect()
@@ -1194,25 +1196,38 @@ def _index_close(data_dir: Path, day: str) -> float | None:
 
 
 def _factor_on(data_dir: Path, symbol: str, asset_type: str, day: str) -> float | None:
-    """symbol 在 day 的除权因子 (无因子文件/无当日事件返回 None)。"""
+    """明确送转事件的股数倍率; 不使用价格复权因子推断持仓变化。"""
     sub = "adj_factor_etf" if asset_type == "etf" else "adj_factor"
     p = data_dir / sub / "all.parquet"
     if not p.exists():
         return None
     try:
+        scan = pl.scan_parquet(p.as_posix())
+        if not {"bonus", "allot"}.issubset(scan.collect_schema().names()):
+            logger.warning("paper share adjustment skipped %s %s: missing event details", symbol, day)
+            return None
         df = (
-            pl.scan_parquet(p.as_posix())
+            scan
             .filter((pl.col("symbol") == symbol) & (pl.col("trade_date") == _date.fromisoformat(day)))
-            .select("ex_factor")
+            .select("bonus", "allot")
             .collect()
         )
     except Exception as e:
         logger.warning("paper factor read failed %s: %s", symbol, e)
         return None
-    if df.is_empty() or df["ex_factor"][0] is None:
+    if df.is_empty():
         return None
-    f = float(df["ex_factor"][0])
-    return f if f > 0 else None
+    if df.height != 1:
+        logger.warning("paper share adjustment skipped %s %s: duplicate events", symbol, day)
+        return None
+    bonus, allot = df.row(0)
+    if bonus is None or allot is None or not math.isfinite(bonus) or not math.isfinite(allot):
+        logger.warning("paper share adjustment skipped %s %s: incomplete event details", symbol, day)
+        return None
+    if bonus < 0 or allot != 0:
+        logger.warning("paper share adjustment skipped %s %s: unsupported share event", symbol, day)
+        return None
+    return 1.0 + bonus
 
 
 # ── 盘后结算 ────────────────────────────────────────────
@@ -1414,6 +1429,8 @@ def overview(data_dir: Path, price_map: dict[str, float] | None = None, account_
         if pos["qty"] <= 0:
             continue
         price = (price_map or {}).get(symbol)
+        if price is not None and (not math.isfinite(price) or price <= 0):
+            price = None
         last = price if price is not None else pos["avg_cost"]
         mv += pos["qty"] * last
         raw_lots = [lot for lot in pos.get("lots", []) if float(lot.get("qty", 0)) > 0]
@@ -1447,7 +1464,7 @@ def overview(data_dir: Path, price_map: dict[str, float] | None = None, account_
             "asset_type": pos.get("asset_type", "stock"),
             "qty": pos["qty"],
             "avg_cost": pos["avg_cost"],
-            "last_price": round(last, 4),
+            "last_price": round(price, 4) if price is not None else None,
             "market_value": round(pos["qty"] * last, 2),
             "pnl": round(pos["qty"] * (last - pos["avg_cost"]), 2),
             "pnl_pct": round((last / pos["avg_cost"] - 1) * 100, 2) if pos["avg_cost"] else 0.0,

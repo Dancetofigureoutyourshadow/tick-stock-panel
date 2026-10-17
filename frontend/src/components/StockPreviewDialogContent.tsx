@@ -24,6 +24,7 @@ import { navItemKey, type NavItem } from '@/lib/listNav'
 import { useListNav } from '@/lib/useListNav'
 import { DEFAULT_INTRADAY_DAYS } from '@/lib/kline'
 import { ExtensionSlot } from '@/extensions/ExtensionSlot'
+import type { ChartMarker } from '@/components/EChartsCandlestick'
 
 export interface Props {
   symbol: string | null
@@ -41,6 +42,8 @@ export interface Props {
   navList?: NavItem[]
   /** 切股回调: 收到目标 symbol/name, 由调用方更新预览状态 */
   onNavigate?: (symbol: string, name?: string) => void
+  /** 调用方提供的成交标记，按交易日标在日K上。 */
+  markers?: ChartMarker[]
 }
 
 // ===== 板块标识（与 Screener 列表一致）=====
@@ -89,7 +92,7 @@ function fmtAbnormalCalcTime(asofSec: number): string {
 }
 
 
-export function StockPreviewDialogContent({ symbol, name, onClose, triggerInfo, navList: navListSource, onNavigate }: Props) {
+export function StockPreviewDialogContent({ symbol, name, onClose, triggerInfo, navList: navListSource, onNavigate, markers }: Props) {
   const [view, setView] = useState<PreviewView>('daily')
   const [intradayDays, setIntradayDays] = useState<number | null>(loadIntradayDays)
   const [dateRange, setDateRange] = useState(getDefaultRange)
@@ -536,6 +539,7 @@ export function StockPreviewDialogContent({ symbol, name, onClose, triggerInfo, 
                 <StockPanel
                   symbol={symbol}
                   height={420}
+                  markers={markers}
                   showIntraday
                   dateRange={dateRange}
                   priceLines={monitorPriceLines}

@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import uuid
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,35 @@ from app.strategy import paper, paper_exit, paper_intents
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/paper", tags=["paper"])
+
+
+def _raw_snapshot_prices(frame) -> dict[str, float]:
+    """只接受可用的原始价, 不把前复权 close 当作成交/估值价。"""
+    if not {"symbol", "raw_close"}.issubset(frame.columns):
+        return {}
+    return {
+        symbol: float(price)
+        for symbol, price in frame.select("symbol", "raw_close").iter_rows()
+        if price is not None and math.isfinite(price) and price > 0
+    }
+
+
+def _closing_prices(request: Request) -> dict[str, float]:
+    """复用仓库最新日缓存, 不在持仓轮询中扫描全量历史。"""
+    from app.market_time import cn_today
+
+    repo = request.app.state.repo
+    if not hasattr(repo, "get_enriched_latest_asset"):
+        return {}
+    prices: dict[str, float] = {}
+    for asset_type in ("stock", "etf"):
+        try:
+            frame, as_of = repo.get_enriched_latest_asset(asset_type, refresh=False)
+            if as_of is not None and as_of <= cn_today():
+                prices.update(_raw_snapshot_prices(frame))
+        except Exception as exc:  # noqa: BLE001 — 缓存未就绪时保留缺行情状态
+            logger.warning("paper closing prices unavailable (%s): %s", asset_type, exc)
+    return prices
 
 
 def _data_dir(request: Request) -> Path:
@@ -217,7 +247,9 @@ def overview(request: Request, account: str = Query(paper.DEFAULT_ACCOUNT_ID)):
     acc = paper.get_account(data_dir, acc_id)
     if acc is None:
         return {"initialized": False, "account_id": acc_id}
-    ov = paper_exit.enrich_overview(data_dir, paper.overview(data_dir, account_id=acc_id), acc_id)
+    closing_prices = _closing_prices(request)
+    ov = paper_exit.enrich_overview(data_dir, paper.overview(data_dir, closing_prices, account_id=acc_id), acc_id)
+    ov["estimating"] = False
     ov["fees"] = {k: acc[k] for k in ("commission_pct", "stamp_tax_pct", "slippage_bps")}
 
     # 盘中实时估算: 从行情服务的当日 enriched 快照取 raw_close (软失败, 降级日线)
@@ -227,10 +259,11 @@ def overview(request: Request, account: str = Query(paper.DEFAULT_ACCOUNT_ID)):
             enriched, enriched_date = qs.get_enriched_today()
             from app.market_time import cn_today
             if not enriched.is_empty() and enriched_date == cn_today() and ov.get("holdings"):
-                snapshot = dict(zip(enriched["symbol"].to_list(), enriched["raw_close"].to_list(), strict=False))
-                live = paper_exit.enrich_overview(data_dir, paper.overview(data_dir, snapshot, account_id=acc_id), acc_id)
-                live["fees"] = ov["fees"]
-                return live
+                snapshot = _raw_snapshot_prices(enriched)
+                if snapshot:
+                    live = paper_exit.enrich_overview(data_dir, paper.overview(data_dir, closing_prices | snapshot, account_id=acc_id), acc_id)
+                    live["fees"] = ov["fees"]
+                    return live
         except Exception as e:
             logger.warning("paper overview 实时估算失败, 降级日线口径: %s", e)
     return ov
@@ -410,9 +443,7 @@ def continue_holding(request: Request, lot_id: str, account: str = Query(paper.D
 
 @router.get("/positions")
 def list_positions(request: Request, account: str = Query(paper.DEFAULT_ACCOUNT_ID)):
-    data_dir = _data_dir(request)
-    acc_id = _acc(request, account)
-    ov = paper_exit.enrich_overview(data_dir, paper.overview(data_dir, account_id=acc_id), acc_id)
+    ov = overview(request, account)
     return {"holdings": ov.get("holdings", []), "initialized": ov.get("initialized", False)}
 
 
@@ -453,18 +484,17 @@ def compare_accounts(request: Request):
             enriched, enriched_date = qs.get_enriched_today()
             from app.market_time import cn_today
             if not enriched.is_empty() and enriched_date == cn_today():
-                live_snapshot = dict(
-                    zip(enriched["symbol"].to_list(), enriched["raw_close"].to_list(), strict=False)
-                )
+                live_snapshot = _raw_snapshot_prices(enriched) or None
         except Exception as e:  # noqa: BLE001 — 快照来源不定 (行情服务/数据缺失), 软失败降级定版口径
             logger.warning("paper compare 实时快照不可用, 用定版口径: %s", e)
 
+    closing_prices = _closing_prices(request)
     rows = []
     for acc_id in paper.list_account_ids(data_dir):
         acc = paper.get_account(data_dir, acc_id)
         if acc is None:
             continue
-        ov = paper.overview(data_dir, account_id=acc_id)
+        ov = paper.overview(data_dir, closing_prices, account_id=acc_id)
         if not ov.get("initialized"):
             continue  # 空壳目录 (懒创建) 不进对比
         st = paper.stats(data_dir, acc_id)
@@ -477,7 +507,7 @@ def compare_accounts(request: Request):
         # 盘中估算字段 (加法扩展): live_* 为快照价口径, 旧前端忽略不影响
         live_total = live_pnl_pct = None
         if live_snapshot is not None and acc.get("status") == "active":
-            live_ov = paper.overview(data_dir, live_snapshot, account_id=acc_id)
+            live_ov = paper.overview(data_dir, closing_prices | live_snapshot, account_id=acc_id)
             if live_ov.get("initialized"):
                 live_total = live_ov.get("total")
                 if initial > 0:

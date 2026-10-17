@@ -5,14 +5,17 @@
 """
 from __future__ import annotations
 
+from datetime import date, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
+import polars as pl
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api.paper import router
+from app.strategy import paper
 
 
 @pytest.fixture
@@ -30,6 +33,49 @@ def test_overview_before_init(client: TestClient):
     r = client.get("/api/paper/overview")
     assert r.status_code == 200
     assert r.json() == {"initialized": False, "account_id": "default"}
+
+
+@pytest.mark.parametrize("live_price", [None, 27.0, 0.0, float("nan")])
+def test_holding_valuation_uses_raw_cache_and_valid_live_price(client, tmp_path, monkeypatch, live_price):
+    today = date(2026, 10, 16)
+    monkeypatch.setattr(paper, "cn_today", lambda: today)
+    monkeypatch.setattr("app.market_time.cn_today", lambda: today)
+    paper.create_account(tmp_path, 30000)
+    paper._append_fill(tmp_path, {
+        "seq": 1, "date": "2026-09-16", "symbol": "603995.SH", "kind": "fill",
+        "side": "buy", "qty": 200, "price": 25.1702, "fee": 5,
+    })
+    paper.rebuild_positions(tmp_path)
+    cached = pl.DataFrame({"symbol": ["603995.SH"], "raw_close": [25.45], "close": [19.0]})
+    client.app.state.repo.get_enriched_latest_asset = lambda asset, refresh=False: (cached, today - timedelta(days=1)) if asset == "stock" else (pl.DataFrame(), None)
+    if live_price is not None:
+        client.app.state.quote_service = SimpleNamespace(get_enriched_today=lambda: (
+            pl.DataFrame({"symbol": ["603995.SH"], "raw_close": [live_price]}), today,
+        ))
+    expected = 27.0 if live_price == 27.0 else 25.45
+    for endpoint in ("overview", "positions"):
+        response = client.get("/api/paper/" + endpoint)
+        assert response.status_code == 200
+        holding = response.json()["holdings"][0]
+        assert holding["avg_cost"] == 25.1952
+        assert holding["last_price"] == expected
+        assert holding["market_value"] == 200 * expected
+        assert holding["pnl"] == round(200 * (expected - 25.1952), 2)
+    comparison = client.get("/api/paper/compare").json()["accounts"][0]
+    assert comparison["market_value"] == 5090.0
+    assert comparison["total_pnl"] == 50.96
+
+
+def test_missing_quote_does_not_present_cost_as_last_price(client, tmp_path):
+    paper.create_account(tmp_path, 30000)
+    paper._append_fill(tmp_path, {
+        "seq": 1, "date": "2026-09-16", "symbol": "603995.SH", "kind": "fill",
+        "side": "buy", "qty": 200, "price": 25.1702, "fee": 5,
+    })
+    paper.rebuild_positions(tmp_path)
+    for endpoint in ("overview", "positions"):
+        holding = client.get("/api/paper/" + endpoint).json()["holdings"][0]
+        assert holding["last_price"] is None
 
 
 def test_multi_account_isolation_and_settings(client: TestClient):

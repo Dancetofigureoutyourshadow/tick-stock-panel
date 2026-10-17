@@ -39,14 +39,17 @@ def _write_daily(tmp_path, rows: list[tuple[date, float, float]]) -> None:
     repo.append_daily(df)
 
 
-def _write_factor(tmp_path, day: date, factor: float, asset_type: str = "stock") -> None:
+def _write_factor(tmp_path, day: date, factor: float, asset_type: str = "stock", **details) -> None:
     sub = "adj_factor_etf" if asset_type == "etf" else "adj_factor"
     out = tmp_path / sub / "all.parquet"
     out.parent.mkdir(parents=True, exist_ok=True)
-    pl.DataFrame(
+    df = pl.DataFrame(
         {"symbol": [SYM], "trade_date": [day], "ex_factor": [factor]},
         schema={"symbol": pl.String, "trade_date": pl.Date, "ex_factor": pl.Float64},
-    ).write_parquet(out)
+    )
+    if details:
+        df = df.with_columns([pl.lit(value, dtype=pl.Float64).alias(key) for key, value in details.items()])
+    df.write_parquet(out)
 
 
 # ── 纯函数口径 ──────────────────────────────────────────
@@ -325,7 +328,8 @@ def test_corporate_action_adjusts_position_and_idempotent(tmp_path):
     paper.settle_day(tmp_path, (day - timedelta(days=1)).isoformat())
     assert paper.load_positions(tmp_path)[SYM]["qty"] == 1000
 
-    _write_factor(tmp_path, day, 1.25)
+    # 价格因子包含现金分红影响，股数只由明确的送转比例决定。
+    _write_factor(tmp_path, day, 1.3, bonus=0.25, dividend=0.3, allot=0.0)
     paper.settle_day(tmp_path, day.isoformat())
     pos = paper.load_positions(tmp_path)[SYM]
     assert pos["qty"] == pytest.approx(1250)
@@ -340,6 +344,51 @@ def test_corporate_action_adjusts_position_and_idempotent(tmp_path):
     assert paper.load_positions(tmp_path)[SYM]["qty"] == pytest.approx(1250)
     corp = [f for f in paper.load_fills(tmp_path) if f.get("kind") == "corp_action"]
     assert len(corp) == 1
+
+
+@pytest.mark.parametrize("details", [
+    {},
+    {"bonus": None, "dividend": 0.3, "allot": 0.0},
+    {"bonus": 0.0, "dividend": 0.3, "allot": 0.0},
+    {"bonus": 0.1, "dividend": 0.0, "allot": 0.2},
+    {"bonus": float("nan"), "allot": 0.0},
+    {"bonus": 0.1, "allot": None},
+])
+def test_price_factor_does_not_create_shares(tmp_path, details):
+    day = date(2026, 10, 14)
+    _cap_account(tmp_path)
+    paper._append_fill(tmp_path, {
+        "seq": 1, "ts": "", "date": "2026-09-16", "order_id": "seed",
+        "symbol": SYM, "asset_type": "stock", "side": "buy", "qty": 200,
+        "price": 25.1702, "fee": 5, "kind": "fill",
+    })
+    paper._materialize(tmp_path)
+    before = paper.replay_positions(tmp_path)
+    _write_factor(tmp_path, day, 1.0119379228014327, **details)
+    paper.settle_day(tmp_path, day.isoformat())
+    paper.settle_day(tmp_path, day.isoformat())
+    assert paper.load_positions(tmp_path)[SYM]["qty"] == 200
+    assert paper.replay_positions(tmp_path) == before
+    assert len(paper.load_fills(tmp_path)) == 1
+
+
+def test_erroneous_legacy_factor_can_be_reversed_without_editing_fills(tmp_path):
+    _cap_account(tmp_path)
+    buy = {
+        "seq": 1, "ts": "", "date": "2026-09-16", "order_id": "seed",
+        "symbol": SYM, "asset_type": "stock", "side": "buy", "qty": 200,
+        "price": 25.1702, "fee": 5, "kind": "fill",
+    }
+    paper._append_fill(tmp_path, buy)
+    original = paper.replay_positions(tmp_path)
+    factor = 1.0119379228014327
+    action = {"seq": 2, "ts": "", "date": "2026-10-14", "symbol": SYM,
+              "kind": "corp_action", "factor": factor}
+    paper._append_fill(tmp_path, action)
+    assert paper.replay_positions(tmp_path)[0][SYM]["qty"] == 202.387585
+    paper._append_fill(tmp_path, {**action, "seq": 3, "factor": 1 / factor, "correction_of_seq": 2})
+    assert paper.replay_positions(tmp_path) == original
+    assert paper.load_fills(tmp_path)[:2] == [buy, action]
 
 
 def test_nav_and_overview_math(tmp_path, monkeypatch):

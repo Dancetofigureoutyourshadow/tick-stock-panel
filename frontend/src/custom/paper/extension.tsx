@@ -28,6 +28,8 @@ import { PageHeader } from '@/components/PageHeader'
 import { Modal } from '@/components/Modal'
 import type { FrontendExtension } from '@/extensions/types'
 import { IconPaper } from '@/components/BrandIcons'
+import { StockPreviewDialog } from '@/components/StockPreviewDialog'
+import { buildPaperTradeMarkers } from './tradeMarkers'
 
 const ORDER_TYPE_LABEL: Record<string, string> = {
   market: '即时',
@@ -2227,10 +2229,15 @@ function AccountPanel({ acc, name, onDeleted }: { acc: string; name?: string; on
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [showAllOrders, setShowAllOrders] = useState(false)
   const [showAllTrades, setShowAllTrades] = useState(false)
+  const [previewSymbol, setPreviewSymbol] = useState<string | null>(null)
 
   const overviewQ = useQuery({ queryKey: QK.paperOverview(acc), queryFn: () => api.paperOverview(acc) })
   const ordersQ = useQuery({ queryKey: QK.paperOrders(acc), queryFn: () => api.paperOrders(undefined, acc) })
   const tradesQ = useQuery({ queryKey: QK.paperTrades(acc), queryFn: () => api.paperTrades(acc) })
+  const tradeMarkers = useMemo(
+    () => buildPaperTradeMarkers(tradesQ.data?.fills ?? [], previewSymbol),
+    [tradesQ.data?.fills, previewSymbol],
+  )
   const navQ = useQuery({ queryKey: QK.paperNav(acc), queryFn: () => api.paperNav(acc) })
   const statsQ = useQuery({ queryKey: QK.paperStats(acc), queryFn: () => api.paperStats(acc) })
   const roundsQ = useQuery({ queryKey: QK.paperRounds(acc), queryFn: () => api.paperRounds(acc) })
@@ -2399,10 +2406,17 @@ function AccountPanel({ acc, name, onDeleted }: { acc: string; name?: string; on
                     {holdings.map(h => (
                       <tr key={h.symbol} className="border-t border-border/50 transition-colors hover:bg-elevated/40">
                         <td className="py-1.5 font-sans">
-                          {h.symbol}
-                          {symbolNames[h.symbol] && (
-                            <span className="ml-1.5 text-[10px] text-muted">{symbolNames[h.symbol]}</span>
-                          )}
+                          <button
+                            type="button"
+                            onClick={() => setPreviewSymbol(h.symbol)}
+                            className="rounded-sm text-accent hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+                            title="查看股票 K 线详情"
+                          >
+                            {h.symbol}
+                            {symbolNames[h.symbol] && (
+                              <span className="ml-1.5 text-[10px] text-muted">{symbolNames[h.symbol]}</span>
+                            )}
+                          </button>
                         </td>
                         <td className="py-1.5 text-right">{h.qty}</td>
                         <td className="py-1.5 text-right text-muted">{h.available_qty}</td>
@@ -2623,6 +2637,14 @@ function AccountPanel({ acc, name, onDeleted }: { acc: string; name?: string; on
           onClose={() => setFeeOpen(false)}
         />
       )}
+      <StockPreviewDialog
+        symbol={previewSymbol}
+        markers={tradeMarkers}
+        name={previewSymbol ? symbolNames[previewSymbol] : undefined}
+        onClose={() => setPreviewSymbol(null)}
+        navList={holdings.map(h => ({ symbol: h.symbol, name: symbolNames[h.symbol] }))}
+        onNavigate={symbol => setPreviewSymbol(symbol)}
+      />
       {deleteOpen && (
         <DeleteAccountModal
           acc={acc}

@@ -1323,7 +1323,7 @@ export interface PaperHolding {
   asset_type: string
   qty: number
   avg_cost: number
-  last_price: number
+  last_price: number | null
   market_value: number
   pnl: number
   pnl_pct: number

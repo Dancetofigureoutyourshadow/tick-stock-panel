@@ -652,20 +652,12 @@ def create_order(
                 if cap > 0 and scoped_value + reserved_value + qty * est_price > cap:
                     return None, "最大总仓位预算不足"
         else:
-            pos = load_positions(data_dir, account_id).get(symbol)
-            if pos is None or pos["qty"] <= 0:
+            held = sell_capacity(data_dir, symbol, account_id)
+            if held is None:
                 return None, f"无 {symbol} 持仓, 不能卖出"
-            # 可卖数量按当前交易日现算 (与 _fill_order / overview 同口径): 物化文件里的
-            # available_qty 是上次重建时的 T+1 口径, 跨日后不会更新, 次日仍会是 0
-            available = _available_of(pos, cn_today().isoformat())
+            available, pending_sell = held
             if qty > available:
                 return None, f"可卖数量不足 (T+1): 可卖 {available}, 请求数量 {qty}"
-            # 超卖防护: pending 卖出单占用可卖额度 — 同 symbol 的 pending 卖出合计
-            # 不得超过可卖数量, 否则多张单各自通过校验、成交时逐张扣减会超额
-            pending_sell = sum(
-                int(o["qty"]) for o in load_orders(data_dir, account_id)
-                if o["status"] == "pending" and o["side"] == "sell" and o["symbol"] == symbol
-            )
             if pending_sell + qty > available:
                 return None, (
                     f"可卖数量不足 (T+1): 可卖 {available}, "
@@ -842,6 +834,26 @@ def replay_positions(
         pos["available_qty"] = _available_of(pos)
     cash += sum(float(flow.get("cash_delta", 0)) for flow in load_cash_flows(data_dir, account_id))
     return positions, round(cash, 2)
+
+
+def sell_capacity(
+    data_dir: Path, symbol: str, account_id: str = DEFAULT_ACCOUNT_ID,
+) -> tuple[int, int] | None:
+    """(T+1 可卖数量, 同 symbol 已挂 pending 卖出合计); 无持仓返回 None。
+
+    可卖数量按当前交易日现算 (与 _fill_order / overview 同口径): 物化文件里的
+    available_qty 是上次重建时的 T+1 口径, 跨日后不会更新, 次日仍会是 0。
+    pending 卖出单占用可卖额度, 否则多张单各自通过校验、成交时逐张扣减会超额。
+    """
+    pos = load_positions(data_dir, account_id).get(symbol)
+    if pos is None or pos["qty"] <= 0:
+        return None
+    available = _available_of(pos, cn_today().isoformat())
+    pending_sell = sum(
+        int(o["qty"]) for o in load_orders(data_dir, account_id)
+        if o["status"] == "pending" and o["side"] == "sell" and o["symbol"] == symbol
+    )
+    return available, pending_sell
 
 
 def _available_of(pos: dict, today: str | None = None) -> int:

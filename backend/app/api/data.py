@@ -13,6 +13,7 @@ from fastapi import APIRouter, Request
 
 from app.enriched_generation import EnrichedPublication
 from app.indicators.pipeline import ENRICHED_COLUMNS
+from app.services.data_statistics import parquet_kline_stats
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +28,7 @@ _TABLE_TTL_LARGE = 120.0  # 大表(分钟K等)单独 TTL，避免多分区聚合
 _STORAGE_TTL = 60.0  # storage 文件扫描独立 TTL,stage 写完不触发重算
 
 # 聚合慢的大表（分区数多、行数多），使用更长的 TTL
-_LARGE_TABLES = {"minute"}
+_LARGE_TABLES = {"minute", "index_daily", "index_enriched", "etf_daily", "etf_enriched"}
 
 _storage_cache: dict[str, Any] | None = None
 _storage_cache_ts: float = 0.0
@@ -49,9 +50,17 @@ _table_cache: dict[str, dict | None] = {
 }
 _table_cache_ts: dict[str, float] = {k: 0.0 for k in _table_cache}
 _table_cache_lock = threading.Lock()
+_table_refresh_locks = {name: threading.Lock() for name in _table_cache}
+_table_generations = {name: 0 for name in _table_cache}
 
 _last_finished_cache: dict[str, str | None] | None = None
 _last_finished_lock = threading.Lock()
+_status_lock = threading.Lock()
+_status_snapshot: dict | None = None
+_status_snapshot_dir: Path | None = None
+_status_snapshot_ts = 0.0
+_status_generation = 0
+_status_refreshing = False
 
 
 def invalidate_data_cache(table: str | None = None) -> None:
@@ -69,9 +78,15 @@ def invalidate_data_cache(table: str | None = None) -> None:
             for k in _table_cache:
                 _table_cache[k] = None
                 _table_cache_ts[k] = 0.0
+                _table_generations[k] += 1
         elif table in _table_cache:
             _table_cache[table] = None
             _table_cache_ts[table] = 0.0
+            _table_generations[table] += 1
+    global _status_snapshot_ts, _status_generation
+    with _status_lock:
+        _status_snapshot_ts = 0.0
+        _status_generation += 1
 
 
 def invalidate_storage_cache() -> None:
@@ -80,46 +95,25 @@ def invalidate_storage_cache() -> None:
 
 
 def _get_table_stats(name: str, fetch: Callable[[], dict | None]) -> dict | None:
-    """走 TTL+事件 双重缓存。fetch 在锁外执行避免阻塞别的请求。"""
+    """同表只刷新一次；不同表可独立刷新，空结果也遵循 TTL。"""
     ttl = _TABLE_TTL_LARGE if name in _LARGE_TABLES else _TABLE_TTL
-    now = time.time()
-    with _table_cache_lock:
-        cached = _table_cache.get(name)
-        cached_ts = _table_cache_ts.get(name, 0.0)
-        if cached is not None and (now - cached_ts) < ttl:
-            return cached
-
-    fresh = fetch()
-
-    with _table_cache_lock:
-        _table_cache[name] = fresh
-        _table_cache_ts[name] = now
-    return fresh
+    with _table_refresh_locks[name]:
+        with _table_cache_lock:
+            cached_ts = _table_cache_ts[name]
+            if cached_ts > 0 and (time.time() - cached_ts) < ttl:
+                return _table_cache[name]
+            generation = _table_generations[name]
+        fresh = fetch()
+        with _table_cache_lock:
+            if _table_generations[name] == generation:
+                _table_cache[name] = fresh
+                _table_cache_ts[name] = time.time()
+        return fresh
 
 
 def _safe_aggregate(repo, view: str) -> dict | None:
-    """聚合视图基础统计;视图不存在或为空时返 None。"""
-    try:
-        row = repo.execute_one(
-            f"""SELECT count(*) AS rows,
-                       min(date) AS earliest,
-                       max(date) AS latest,
-                       count(DISTINCT symbol) AS symbols,
-                       count(DISTINCT date) AS trading_days
-                FROM {view}"""
-        )
-    except Exception as e:  # noqa: BLE001
-        logger.debug("aggregate %s failed: %s", view, e)
-        return None
-    if not row or not row[0]:
-        return None
-    return {
-        "rows": int(row[0]),
-        "earliest_date": str(row[1]) if row[1] else None,
-        "latest_date": str(row[2]) if row[2] else None,
-        "symbols_covered": int(row[3] or 0),
-        "trading_days": int(row[4] or 0),
-    }
+    """按物理分区分批统计，避免历史宽表挤占共享数据库内存。"""
+    return parquet_kline_stats(repo.store.data_dir / view)
 
 
 def _safe_aggregate_daily(repo, view: str = "kline_daily") -> dict | None:
@@ -150,20 +144,38 @@ def _safe_aggregate_daily(repo, view: str = "kline_daily") -> dict | None:
     }
 
 
+def _enriched_field_count(repo, folder: str) -> int:
+    """读取最新分区的单文件 schema，避免 DuckDB 绑定全部历史文件。"""
+    import pyarrow.parquet as pq
+
+    root = repo.store.data_dir / folder
+    if not root.exists():
+        return 0
+    latest = max(
+        (p for p in root.iterdir() if p.is_dir() and p.name.startswith("date=")),
+        key=lambda p: p.name,
+        default=root,
+    )
+    try:
+        path = next(latest.rglob("*.parquet"), None)
+        if path is None:
+            return 0
+        fields = set(pq.read_schema(path).names)
+        if latest.name.startswith("date="):
+            fields.add("date")  # Hive 分区列可能不在物理文件中。
+        return len(fields)
+    except Exception:  # noqa: BLE001
+        return 0
+
+
 def _safe_aggregate_enriched(repo) -> dict | None:
     """Enriched 轻量统计 — 零数据扫描。
 
-    字段数从 DESCRIBE 读 schema（不碰数据），毫秒级。
-    日期范围从分区目录名获取（同 minute 策略），不读任何 parquet。
+    字段数从最新分区的单文件读 schema，不绑定全量历史视图。
+    日期范围从分区目录名获取（同 minute 策略），不读取行情列。
     标的数从 instruments 小表取。
     """
-    # 字段数：读 schema，不碰数据
-    fields = 0
-    try:
-        cols = repo.execute_all("DESCRIBE kline_enriched")
-        fields = len(cols)
-    except Exception:  # noqa: BLE001
-        pass
+    fields = _enriched_field_count(repo, "kline_daily_enriched")
 
     # 日期范围：从分区目录名获取，不扫数据
     enriched_dir = repo.store.data_dir / "kline_daily_enriched"
@@ -232,12 +244,7 @@ def _safe_aggregate_index_daily(repo) -> dict | None:
 
 def _safe_aggregate_index_enriched(repo) -> dict | None:
     """指数 enriched 统计。指数数据量较小，直接读取 parquet 元数据统计真实行数。"""
-    fields = 0
-    try:
-        cols = repo.execute_all("DESCRIBE kline_index_enriched")
-        fields = len(cols)
-    except Exception:  # noqa: BLE001
-        pass
+    fields = _enriched_field_count(repo, "kline_index_enriched")
     stats = _safe_aggregate(repo, "kline_index_enriched")
     if not stats:
         return None
@@ -297,12 +304,7 @@ def _safe_aggregate_etf_instruments(repo) -> dict | None:
 
 def _safe_aggregate_etf_enriched(repo) -> dict | None:
     """ETF enriched 统计 — 独立 kline_etf_enriched。"""
-    fields = 0
-    try:
-        cols = repo.execute_all("DESCRIBE kline_etf_enriched")
-        fields = len(cols)
-    except Exception:  # noqa: BLE001
-        pass
+    fields = _enriched_field_count(repo, "kline_etf_enriched")
     stats = _safe_aggregate(repo, "kline_etf_enriched")
     if not stats:
         return None
@@ -311,6 +313,9 @@ def _safe_aggregate_etf_enriched(repo) -> dict | None:
 
 def _safe_aggregate_etf_daily(repo) -> dict | None:
     """ETF 日K统计 — 优先独立 kline_etf_daily，兼容旧 index 存储。"""
+    stats = _safe_aggregate(repo, "kline_etf_daily")
+    if stats is not None:
+        return stats
     queries = [
         """SELECT count(*) AS rows,
                   min(date) AS earliest,
@@ -348,13 +353,15 @@ def _safe_aggregate_etf_daily(repo) -> dict | None:
 def _safe_aggregate_adj_factor(repo) -> dict | None:
     """adj_factor 视图统计,日期范围对齐日 K 覆盖区间。"""
     try:
-        # 取日 K 的日期范围作为过滤条件
-        dr = repo.execute_one(
-            "SELECT min(date), max(date) FROM kline_daily"
-        )
-        if not dr or not dr[0]:
+        # 日 K 已按交易日分区，无需为日期范围绑定全部股票历史文件。
+        daily_dir = repo.store.data_dir / "kline_daily"
+        dates = sorted(
+            p.name[5:] for p in daily_dir.iterdir()
+            if p.is_dir() and p.name.startswith("date=")
+        ) if daily_dir.exists() else []
+        if not dates:
             return None
-        d_min, d_max = dr[0], dr[1]
+        d_min, d_max = dates[0], dates[-1]
         row = repo.execute_one(
             """SELECT count(*) AS rows,
                       count(DISTINCT symbol) AS symbols,
@@ -416,11 +423,14 @@ def _safe_aggregate_financials(repo) -> dict | None:
         path = data_dir / "financials" / table / "part.parquet"
         if path.exists():
             try:
-                import polars as pl
-                df = pl.read_parquet(path, columns=["symbol"])
-                rows = len(df)
-                symbols = df["symbol"].n_unique() if not df.is_empty() else 0
-                tables_info[table] = {"rows": rows, "symbols": symbols}
+                import pyarrow.parquet as pq
+
+                symbols = set()
+                with pq.ParquetFile(path) as source:
+                    rows = source.metadata.num_rows
+                    for batch in source.iter_batches(columns=["symbol"], batch_size=8192, use_threads=False):
+                        symbols.update(batch.column("symbol").unique().to_pylist())
+                tables_info[table] = {"rows": rows, "symbols": len(symbols)}
                 total_rows += rows
             except Exception:
                 tables_info[table] = {"rows": 0, "symbols": 0}
@@ -582,6 +592,55 @@ def _last_finished(job_label: str) -> str | None:
 
 @router.get("/status")
 def status(request: Request) -> dict:
+    """页面只读最近完成的统计；首次计算和刷新均不占用 HTTP 请求。"""
+    from app.services.data_statistics import _read_cache, _write_cache
+
+    global _status_snapshot, _status_snapshot_dir, _status_snapshot_ts, _status_refreshing
+    data_dir = request.app.state.repo.store.data_dir
+    ready = getattr(request.app.state, "indicators_ready", True)
+    warming = bool(getattr(request.app.state.repo, "_enriched_warming", not ready))
+    path = data_dir / ".data_statistics" / "status.json"
+    with _status_lock:
+        if _status_snapshot_dir != data_dir:
+            cached = _read_cache(path)
+            value = cached.get("data")
+            _status_snapshot = value if cached.get("version") == 1 and isinstance(value, dict) else None
+            _status_snapshot_dir = data_dir
+            _status_snapshot_ts = 0.0
+        if not warming and not _status_refreshing and (_status_snapshot_ts == 0 or time.monotonic() - _status_snapshot_ts >= _TABLE_TTL):
+            _status_refreshing = True
+            generation = _status_generation
+
+            def refresh() -> None:
+                global _status_snapshot, _status_snapshot_ts, _status_refreshing
+                try:
+                    fresh = _compute_status(request)
+                    with _status_lock:
+                        publish = _status_generation == generation and _status_snapshot_dir == data_dir
+                        if publish:
+                            _status_snapshot = fresh
+                    if publish:
+                        _write_cache(path, {"version": 1, "data": fresh})
+                except Exception:
+                    logger.exception("data status background refresh failed")
+                finally:
+                    with _status_lock:
+                        _status_snapshot_ts = time.monotonic() if _status_generation == generation else 0.0
+                        _status_refreshing = False
+
+            threading.Thread(target=refresh, name="data-status-refresh", daemon=True).start()
+        snapshot = dict(_status_snapshot) if _status_snapshot is not None else {
+            **{name: None for name in _table_cache}, "storage": {
+                **{f"{name}_{suffix}": 0 for name in ("daily", "enriched", "minute", "adj_factor", "instruments") for suffix in ("files", "size_mb")},
+                "total_size_mb": 0,
+            }, "checked_at": None,
+            "next_instruments_run": None, "next_pipeline_run": None,
+            "last_instruments_run": None, "last_pipeline_run": None,
+        }
+        return {**snapshot, "indicators_ready": ready, "statistics_loading": warming or _status_refreshing or _status_snapshot is None}
+
+
+def _compute_status(request: Request) -> dict:
     repo = request.app.state.repo
     scheduler = getattr(request.app.state, "scheduler", None)
     data_dir = repo.store.data_dir

@@ -100,6 +100,18 @@ def test_minute_live_param_bypasses_local_first_during_session(monkeypatch):
     assert body["rows"][0]["close"] == 11.11
 
 
+def test_empty_full_minute_source_keeps_single_stock_live_minute_available(monkeypatch):
+    from app.services import preferences
+
+    _patch_market(monkeypatch, in_session=True)
+    _patch_live_fetch(monkeypatch)
+    monkeypatch.setattr(preferences, "get_full_minute_data_provider", lambda: "none")
+    response = _client().get("/api/kline/minute", params={"symbol": "600000.SH", "live": 1})
+    assert response.status_code == 200
+    assert response.json()["source"] == "live"
+    assert response.json()["rows"][0]["close"] == 11.11
+
+
 def test_minute_without_live_keeps_local_first(monkeypatch):
     _patch_market(monkeypatch, in_session=True)
     _patch_live_fetch(monkeypatch)

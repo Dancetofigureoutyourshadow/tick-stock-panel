@@ -2186,6 +2186,8 @@ export interface CapabilityRoute {
   tf_tier: string                                  // TickFlow 所需最低订阅档位
   tf_available: boolean                            // 当前 TickFlow 档位是否提供该能力
   usable: boolean                                  // 生效源当前能否真正提供 (各页能力门控的统一判定)
+  disabled_option?: { name: string; display: string } | null
+  disabled?: boolean
   current: string                                  // 原始偏好值
   current_display: string
   effective: string                                // 当前生效源 (独立路由, current 即生效)
@@ -4540,6 +4542,7 @@ interface InstrumentsStats {
 }
 
 export interface DataStatus {
+  statistics_loading?: boolean
   daily: TableStats | null
   enriched: TableStats | null
   index_daily: TableStats | null
@@ -4587,7 +4590,7 @@ export interface DataStatus {
   next_instruments_run: string | null
   last_pipeline_run: string | null
   last_instruments_run: string | null
-  checked_at: string
+  checked_at: string | null
   indicators_ready?: boolean
 }
 

@@ -334,7 +334,7 @@ def _augment_custom_sources(capset: CapabilitySet) -> None:
         }
         for dataset, cap in _DATASET_CAP_MAP:
             provider = active_providers[dataset]
-            if provider != "tickflow" and custom_sources.provider_has_dataset(provider, dataset):
+            if provider not in {"tickflow", "none"} and custom_sources.provider_has_dataset(provider, dataset):
                 capset.grant(cap)
                 logger.info(
                     "custom source '%s' provides dataset '%s': granted %s",

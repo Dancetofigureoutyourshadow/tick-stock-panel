@@ -76,7 +76,7 @@ export function Data() {
     refetchInterval: (query) => {
       const data = query.state.data
       // 指标异步预热中 或 有活跃 job → 加快轮询到 2s
-      if (activeJobId || data?.indicators_ready === false) return 2_000
+      if (activeJobId || data?.indicators_ready === false || data?.statistics_loading) return 2_000
       return 30_000
     },
   })
@@ -336,7 +336,7 @@ export function Data() {
   }, [history.data?.active_id])
 
   const s = status.data
-  const isLoading = status.isLoading
+  const isLoading = status.isLoading || (!!s?.statistics_loading && !s.daily && !s.instruments)
   const isRunning = job.data?.status === 'running' || job.data?.status === 'pending'
   const isStarting = startSync.isPending
   const hasData = !!(s?.instruments?.rows || s?.daily?.rows)

@@ -51,6 +51,18 @@ def test_registry_covers_all_routing_fields():
         assert "follow" not in cap
 
 
+def test_full_minute_has_explicit_empty_source_without_granting_data_capability(monkeypatch):
+    _fake_sources(monkeypatch, [])
+    caps = _by_id(build_capability_matrix({**DEFAULT_CURRENT, "full_minute_data_provider": "none"}, tickflow_tier="expert"))
+    empty = caps["full_minute"]
+    assert empty["disabled_option"] == {"name": "none", "display": "空源（不调用）"}
+    assert empty["disabled"] is True
+    assert empty["usable"] is False
+    assert empty["effective_display"] == "空源（不调用）"
+    assert caps["minute"]["usable"] is True
+    assert caps["realtime"]["usable"] is True
+
+
 def test_matrix_without_third_party_sources(monkeypatch):
     """无插件无自定义源: 每个能力只剩 TickFlow 候选, 默认路由全部生效。"""
     _fake_sources(monkeypatch, [])

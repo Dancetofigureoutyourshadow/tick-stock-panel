@@ -261,6 +261,8 @@ def sync_daily_batch(symbols: list[str],
             logger.warning("batch fetch failed for %d symbols (chunk %d/%d): %s",
                            len(chunk), i + 1, len(chunks), e)
             failed_syms.extend(chunk)
+            if on_chunk_done:
+                on_chunk_done(i + 1, len(chunks))
             continue
 
         # False 直转: timestamp(UTC 毫秒) → 北京墙钟 datetime 列,
@@ -295,6 +297,7 @@ def sync_and_persist_daily_batch(
     end_date: datetime | None = None,
     on_chunk_done: Callable[[int, int], None] | None = None,
     zero_row_out: list[str] | None = None,
+    failed_out: list[str] | None = None,
 ) -> int:
     """批量同步日 K 并落到 Parquet。返回写入的行数。
 
@@ -303,12 +306,15 @@ def sync_and_persist_daily_batch(
     zero_row_out: 可选出参。本轮实际入库 0 行的标的(含无法识别被跳过的裸符号、
                   上游 200 空 payload 的静默 0 行)按调用方原始写法追加进该 list,
                   供上层 fail-loud 展示, 不再"显示成功实则全空" (#302)。
+    failed_out: 可选出参，回传请求失败的标的，与合法的空结果区分。
     """
     seen: set[str] = set()
     failed_syms: list[str] = []
     skipped_bare: list[str] = []
 
     def _finalize(written: int) -> int:
+        if failed_out is not None:
+            failed_out.extend(failed_syms)
         zero_full = [s for s in requested if s not in seen and s not in failed_syms]
         if zero_full or skipped_bare:
             zero = [orig_by_full.get(s, s) for s in zero_full] + skipped_bare
@@ -626,7 +632,8 @@ def sync_adj_factor(symbols: list[str], repo: KlineRepository,
                     start_time: datetime | None = None,
                     end_time: datetime | None = None,
                     on_chunk_done: Callable[[int, int], None] | None = None,
-                    asset_type: str = "stock") -> tuple[int, list[str]]:
+                    asset_type: str = "stock",
+                    failed_out: list[str] | None = None) -> tuple[int, list[str]]:
     """同步除权因子(Starter+)。SDK 接口:`tf.klines.ex_factors(symbols=...)`。
 
     支持增量: 传 start_time/end_time 只拉取该时间范围内的新除权事件。
@@ -715,6 +722,8 @@ def sync_adj_factor(symbols: list[str], repo: KlineRepository,
     if failed_syms:
         logger.warning("adj_factor 同步部分失败: %d/%d 标的未获取复权因子, 将保持旧复权价 (样例: %s)",
                        len(failed_syms), len(symbols), failed_syms[:10])
+        if failed_out is not None:
+            failed_out.extend(failed_syms)
 
     if not all_dfs:
         return 0, []
@@ -1535,6 +1544,8 @@ def _resolve_full_minute_provider(
 
     与 _resolve_minute_provider 同构, 仅数据集名不同。
     """
+    if provider_name == "none":
+        return (None, False, None)
     if provider_name == "tickflow":
         return (None, True, None)
     from app.data_providers import custom as custom_sources

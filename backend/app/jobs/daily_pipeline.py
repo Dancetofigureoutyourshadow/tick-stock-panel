@@ -264,6 +264,7 @@ def run_now(
     # 日K范围拉取的起点(分支3补缺口/分支4首次/数据修正); 实时增量/跳过时为 None。
     # 供 Step 1.5 除权因子回溯范围对齐: 范围拉取→用日K范围, 非范围→最近N天兜底。
     daily_range_start: _date | None = None
+    daily_failed: list[str] = []
 
     # A 股日K拉取开关(默认开);关闭时跳过日K同步,保留已有数据。
     # 数据修正(override_start_date)时即使关闭开关也强制拉取 — 修正就是来补数据的。
@@ -286,6 +287,7 @@ def run_now(
             start_date=_dt.combine(start_date, _dt.min.time()),
             end_date=_dt.combine(today, _dt.min.time()),
             on_chunk_done=_daily_chunk_progress,
+            failed_out=daily_failed,
         )
         gap_days = (today - start_date).days
         new_daily_days = gap_days
@@ -296,6 +298,7 @@ def run_now(
         and stale_day is None
         and capset.has(Cap.QUOTE_POOL)
         and _prefs.get_daily_data_provider() == "tickflow"
+        and _should_refresh_today_from_quotes()
     ):
         # 付费档:今天有数据(QuoteService 已落盘)→ 实时行情覆写,确保最新。
         # stale_day 非空时禁用本分支: "只刷今天"会让停机日的盘中快照永久留存,
@@ -327,6 +330,7 @@ def run_now(
             start_date=_dt.combine(start_date, _dt.min.time()),
             end_date=_dt.combine(today, _dt.min.time()),
             on_chunk_done=_daily_chunk_progress,
+            failed_out=daily_failed,
         )
         gap_days = (today - start_date).days
         new_daily_days = gap_days
@@ -347,11 +351,14 @@ def run_now(
             start_date=_dt.combine(start_date, _dt.min.time()),
             end_date=_dt.combine(today, _dt.min.time()),
             on_chunk_done=_daily_chunk_progress,
+            failed_out=daily_failed,
         )
         new_daily_days = 365
         emit("sync_daily", 45, "日K 完成")
         logger.info("sync_daily: [%s ~ %s] done", start_date, today)
     _invalidate("daily")
+    if daily_failed:
+        stage_errors.append(f"sync_daily: {len(set(daily_failed))} 只标的请求失败，数据未全部更新")
 
     # 完整性修复时删除股票 enriched 的坏分区: 增量重算只算 enriched 里不存在
     # 的日期, 盘中快照日分区已存在(虽是错的), 不删永远不会被重算。删除后
@@ -390,6 +397,7 @@ def run_now(
     #   日K实时增量/跳过(分支2/分支1) → 除权兜底拉最近 30 天, 补可能遗漏的新除权
     #     (这两类分支不拉历史日K, 除权不能用日K范围, 只能兜底最近几日)
     written_adj = 0
+    adj_failed: list[str] = []
     affected_symbols: list[str] = []
     adj_provider = _prefs.get_adj_factor_provider()
     can_sync_adj = capset.has(Cap.ADJ_FACTOR) or adj_provider != "tickflow"
@@ -414,7 +422,10 @@ def run_now(
             universe, repo, capset,
             start_time=adj_start, end_time=adj_end,
             on_chunk_done=_adj_chunk_progress,
+            failed_out=adj_failed,
         )
+        if adj_failed:
+            stage_errors.append(f"sync_adj: {len(set(adj_failed))} 只标的请求失败，复权数据未全部更新")
         if affected_symbols:
             _refresh_single_view(repo, "adj_factor")
             emit("sync_adj", 60, f"除权因子完成,新增 {len(affected_symbols)} 只个股")
@@ -645,9 +656,11 @@ def run_now(
     # Step 2.5: 分钟 K 同步(可选) — 未启用或无 capability 时静默跳过(不 emit)
     from app.services import preferences
     minute_on = preferences.get_minute_sync_enabled()
+    # 空源禁止全市场分钟拉取, 包括盘后批量补数; 单股分钟查询独立路由。
+    full_minute_disabled = preferences.get_full_minute_data_provider() == "none"
     minute_days = preferences.get_minute_sync_days()
     written_minute = 0
-    if minute_on and capset.has(Cap.KLINE_MINUTE_BATCH):
+    if minute_on and not full_minute_disabled and capset.has(Cap.KLINE_MINUTE_BATCH):
         minute_start = today - _td(days=minute_days)
         emit("sync_minute", 90, f"获取分钟K [{minute_start} ~ {today}]…")
         logger.info("sync_minute: [%s ~ %s] start", minute_start, today)
@@ -673,7 +686,9 @@ def run_now(
         _invalidate("minute")
     else:
         skipped.append("sync_minute")
-        if minute_on:
+        if full_minute_disabled:
+            logger.info("sync_minute skipped: full-minute source disabled")
+        elif minute_on:
             logger.info("sync_minute skipped: no KLINE_MINUTE_BATCH capability")
         else:
             logger.info("sync_minute skipped: user disabled")

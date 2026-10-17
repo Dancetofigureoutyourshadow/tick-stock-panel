@@ -139,6 +139,8 @@ class MinuteRefreshService:
         full_minute 数据集且被路由时, 由 policy._augment_custom_sources 补授
         同一能力键 — 门控口径对两类源统一。
         """
+        if self.active_provider() == "none":
+            return False
         capset = getattr(self._app_state, "capabilities", None) if self._app_state else None
         if capset is None:
             return False
@@ -166,6 +168,8 @@ class MinuteRefreshService:
         from app.services import kline_sync
 
         name = self.active_provider()
+        if name == "none":
+            return (None, "none")
         if name == "tickflow":
             return (None, "tickflow")
         provider, use_tickflow, err = kline_sync._resolve_full_minute_provider(name)
@@ -195,6 +199,8 @@ class MinuteRefreshService:
 
     def _gate_reason(self) -> str | None:
         """返回本轮不执行的原因 (None = 放行)。"""
+        if self.active_provider() == "none":
+            return "provider_disabled"
         if not preferences.get_minute_refresh_enabled():
             return "disabled"
         if not self.capability_ok():
@@ -278,6 +284,8 @@ class MinuteRefreshService:
         return "increment"
 
     def _run_round(self) -> None:
+        if self.active_provider() == "none":
+            return
         from app.services import kline_sync
 
         t0 = time.perf_counter()
@@ -288,6 +296,8 @@ class MinuteRefreshService:
             mode = "full"
         mode_label = "增量" if mode == "increment" else "全天修复"
         with self._round_lock:
+            if self.active_provider() == "none":
+                return
             if mode == "increment":
                 # fetch 计时只覆盖网络取数; full 分支的 universe 维表读取不计入
                 fetch_started = time.perf_counter()
@@ -363,7 +373,7 @@ class MinuteRefreshService:
         连续失败轮不更新 last_round_at → 自动超时判不健康, 无需单独盯 last_error。
         """
         try:
-            if not preferences.get_minute_refresh_enabled():
+            if self.active_provider() == "none" or not preferences.get_minute_refresh_enabled():
                 return False
         except Exception:  # noqa: BLE001 — 偏好文件异常按不健康处理
             return False

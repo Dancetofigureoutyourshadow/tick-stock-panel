@@ -122,6 +122,7 @@ function displayOfName(matrix: CapabilityMatrix | undefined, name: string): stri
   if (name === 'tickflow') return 'TickFlow'
   if (name === 'same_as_daily') return '跟随日K'
   for (const cap of matrix?.capabilities ?? []) {
+    if (cap.disabled_option?.name === name) return cap.disabled_option.display
     const hit = cap.candidates.find(c => c.name === name) ?? cap.pending.find(c => c.name === name)
     if (hit) return hit.display
   }
@@ -141,6 +142,8 @@ function patchMatrix(
       cap.current_display = displayOfName({ capabilities: caps }, value)
       cap.effective = value
       cap.effective_display = cap.current_display
+      cap.disabled = cap.disabled_option?.name === value
+      cap.usable = !cap.disabled && cap.candidates.some(c => c.name === value)
     }
   }
   return { ...matrix, capabilities: caps }
@@ -167,8 +170,8 @@ function CapabilityCard({ cap, pendingKey, onSelect }: {
   const Icon = CAP_ICON[cap.id] ?? Database
   const busy = (provider: string) => pendingKey === `${cap.field}:${provider}`
   // 能力中立判定: usable=False 即当前路由的源供不了 (TickFlow 档位不足或插件未就绪同待遇)
-  const unmet = !cap.usable
-  const chipsEmpty = cap.candidates.length === 0 && cap.pending.length === 0
+  const unmet = !cap.usable && !cap.disabled
+  const chipsEmpty = cap.candidates.length === 0 && cap.pending.length === 0 && !cap.disabled_option
   return (
     <div className="rounded-lg border border-border/50 bg-elevated/20 px-3 py-2.5 flex flex-col transition-colors hover:border-border">
       <div className="flex items-center gap-1.5">
@@ -200,6 +203,18 @@ function CapabilityCard({ cap, pendingKey, onSelect }: {
 
       {/* 候选标签: 点谁该能力就由谁提供 */}
       <div className="flex flex-wrap gap-1 mt-2 pt-2 border-t border-border/50 min-h-[26px] items-center">
+        {cap.disabled_option && cap.field && (
+          <button
+            type="button"
+            disabled={pendingKey != null}
+            onClick={() => onSelect(cap.field!, cap.disabled_option!.name)}
+            title={`关闭${cap.label}的数据调用，不影响其他数据能力`}
+            className={tagCls(!!cap.disabled)}
+          >
+            {busy(cap.disabled_option.name) && <Loader2 className="h-2.5 w-2.5 animate-spin" />}
+            {cap.disabled_option.display}
+          </button>
+        )}
         {cap.candidates.map(c => {
           const active = cap.current === c.name
           // field=null → 不可路由能力 (仅 TickFlow 提供): 渲染为非交互标签,

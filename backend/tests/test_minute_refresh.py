@@ -100,6 +100,35 @@ def test_gate_disabled(tmp_path, monkeypatch):
     assert _svc(tmp_path, monkeypatch, enabled=False)._gate_reason() == "disabled"
 
 
+def test_empty_source_blocks_automatic_manual_and_direct_rounds(tmp_path, monkeypatch):
+    from unittest.mock import Mock
+
+    from app.services import kline_sync
+
+    svc = _svc(tmp_path, monkeypatch, full_minute_provider="none")
+    resolve = Mock(side_effect=AssertionError("empty source must not resolve a provider"))
+    monkeypatch.setattr(kline_sync, "_resolve_full_minute_provider", resolve)
+    fetch = Mock(side_effect=AssertionError("empty source must not fetch data"))
+    monkeypatch.setattr(kline_sync, "fetch_intraday_universe_increment", fetch)
+    monkeypatch.setattr(kline_sync, "fetch_intraday_full_market_burst", fetch)
+    monkeypatch.setattr(svc, "_universe", fetch)
+    assert svc._gate_reason() == "provider_disabled"
+    assert svc.capability_ok() is False
+    assert svc.trigger_manual_round() == {"ok": False, "reason": "provider_disabled"}
+    svc._run_round()
+    assert svc.status()["provider_effective"] == "none"
+    assert svc.status()["healthy"] is False
+    resolve.assert_not_called()
+    fetch.assert_not_called()
+
+
+def test_empty_source_preference_is_independent_of_single_stock_minute(tmp_path, monkeypatch):
+    _isolated_prefs(tmp_path, monkeypatch)
+    preferences.save({"full_minute_data_provider": "none", "minute_data_provider": "tickflow"})
+    assert preferences.get_full_minute_data_provider() == "none"
+    assert preferences.get_minute_data_provider() == "tickflow"
+
+
 def test_gate_full_minute_custom_provider_runs(tmp_path, monkeypatch):
     """全量分钟路由到自定义源: 不再让位 — 能力口径统一 (capset 增广后放行)。"""
     class _P:  # noqa: D401 — fake provider

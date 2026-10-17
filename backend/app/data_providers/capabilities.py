@@ -81,6 +81,7 @@ CAPABILITY_REGISTRY: list[dict] = [
         "label": "全量分钟",
         "desc": "盘中全市场当日分钟落盘 (冷启动全天 + 标的池增量)",
         "field": "full_minute_data_provider",
+        "disabled_option": {"name": "none", "display": "空源（不调用）"},
         "default": "tickflow",
         "tf_tier": "expert",
         # TickFlow 侧需 Expert 档; 插件/自定义源声明 full_minute 数据集即可提供
@@ -135,6 +136,8 @@ def _declared_sources() -> list[dict]:
 
 
 def _display_of(sources: list[dict], name: str) -> str:
+    if name == "none":
+        return "空源（不调用）"
     if name == "tickflow":
         return "TickFlow"
     for s in sources:
@@ -190,6 +193,8 @@ def build_capability_matrix(current: dict[str, str], tickflow_tier: str = "none"
             "tf_tier": cap["tf_tier"],
             "tf_available": tf_available,
             "usable": usable,
+            "disabled_option": cap.get("disabled_option"),
+            "disabled": bool(cap.get("disabled_option") and effective == "none"),
             "current": effective,
             "current_display": _display_of(sources, effective),
             "effective": effective,
@@ -281,7 +286,9 @@ def capability_gate(cap_id: str, tickflow_tier: str | None = None) -> tuple[bool
     for row in resolve_capability_sources(tickflow_tier):
         if row["id"] == cap_id:
             label = f"{row['label']} ← {row['source_display']}"
-            if not row["usable"] and row["source"] == "tickflow" and not row["tf_available"]:
+            if row["source"] == "none":
+                label += "(已关闭)"
+            elif not row["usable"] and row["source"] == "tickflow" and not row["tf_available"]:
                 label += "(档位不足)"
             elif not row["usable"]:
                 label += "(当前源不可用)"

@@ -49,6 +49,8 @@ export const QK = {
   screenerCached:       (asOf?: string, ext?: string) => ['screener-cached', 'all', asOf ?? '', ext ?? ''] as const,
   screenerCurrentPrices: (assetType: string, symbols: string) => ['screener-current-prices', assetType, symbols] as const,
   screenerKlineBatch:   (symbols: string) => ['screener-kline-batch', symbols] as const,
+  /** 日内多盘扩展列迷你图序列 (集合竞价等): 列集 + 日期 + 标的集 */
+  extSeries:           (colsKey: string, date?: string | null, symbolsKey?: string) => ['ext-series', colsKey, date ?? '', symbolsKey ?? ''] as const,
   marketSnapshot:       ['market-snapshot'] as const,
   limitLadder:          (asOf?: string) => ['limit-ladder', asOf] as const,
 

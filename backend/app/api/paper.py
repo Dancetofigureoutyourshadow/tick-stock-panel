@@ -605,8 +605,24 @@ class AutoRuleModel(BaseModel):
 
 @router.get("/auto_rules")
 def list_auto_rules(request: Request, account: str = Query(paper.DEFAULT_ACCOUNT_ID)):
-    from app.strategy import paper_auto
-    return {"rules": paper_auto.load_auto_rules(_data_dir(request), _acc(request, account))}
+    from app.strategy import paper_auto, paper_daily
+    account_id = _acc(request, account)
+    coordinator = paper_daily.DailyCoordinator(
+        request.app.state.repo, getattr(request.app.state, "strategy_engine", None),
+    )
+    rules = paper_auto.load_auto_rules(_data_dir(request), account_id)
+    for rule in rules:
+        batch = coordinator.latest(account_id, rule["id"])
+        rule["latest_batch"] = None if batch is None else {
+            key: batch.get(key) for key in (
+                "id", "signal_date", "quote_time", "confirmed_at", "submitted_at", "status", "reason", "mode",
+            )
+        }
+        if batch and any(action.get("reason") for action in batch["actions"]):
+            rule["latest_batch"]["reason"] = "；".join(dict.fromkeys(
+                action["reason"] for action in batch["actions"] if action.get("reason")
+            ))
+    return {"rules": rules}
 
 
 @router.post("/auto_rules")

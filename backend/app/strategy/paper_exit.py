@@ -116,6 +116,7 @@ def evaluate(
     account_id: str = paper.DEFAULT_ACCOUNT_ID,
     trade_date: str,
     now_ms: int | None = None,
+    daily_strategy_ids: set[str] | None = None,
 ) -> list[dict]:
     """并发安全地评估持仓退出规则并创建最多一个动作。"""
     with paper.PAPER_LOCK:
@@ -125,6 +126,7 @@ def evaluate(
             account_id=account_id,
             trade_date=trade_date,
             now_ms=now_ms,
+            daily_strategy_ids=daily_strategy_ids,
         )
 
 
@@ -135,6 +137,7 @@ def _evaluate_unlocked(
     account_id: str = paper.DEFAULT_ACCOUNT_ID,
     trade_date: str,
     now_ms: int | None = None,
+    daily_strategy_ids: set[str] | None = None,
 ) -> list[dict]:
     account = paper.get_account(data_dir, account_id)
     if account is None:
@@ -204,14 +207,15 @@ def _evaluate_unlocked(
                     take_profit = _abs_pct(snapshot.get("take_profit"))
                     if take_profit is not None and high >= buy_price * (1 + take_profit):
                         reason = "take_profit"
-                if reason is None:
+                daily_managed = lot.get("strategy_id") in (daily_strategy_ids or set())
+                if reason is None and not daily_managed:
                     hit_signals = [
                         signal for signal in snapshot.get("exit_signals") or []
                         if bool(row.get(signal) or row.get(f"signal_{signal}"))
                     ]
                     if hit_signals:
                         reason = "signal"
-                if reason is None:
+                if reason is None and not daily_managed:
                     try:
                         max_hold_days = int(snapshot.get("max_hold_days")) if snapshot.get("max_hold_days") is not None else None
                     except (TypeError, ValueError):

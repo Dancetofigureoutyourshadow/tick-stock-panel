@@ -1406,7 +1406,29 @@ export interface PaperOverview {
   fees?: { commission_pct: number; stamp_tax_pct: number; slippage_bps: number }
 }
 
+export interface PaperConfirmation {
+  batch_id: string
+  action_key: string
+  signal_date: string
+  target_trade_date?: string | null
+  quote_time: string
+  confirmed_at: string
+  submitted_at: string
+}
+
+export interface PaperDailyBatch {
+  id: string
+  signal_date: string
+  quote_time?: string | null
+  confirmed_at?: string | null
+  submitted_at?: string | null
+  status: 'prescanned' | 'confirmed' | 'submitted' | 'filled' | 'partial' | 'skipped' | 'awaiting_confirmation'
+  reason?: string | null
+  mode: 'close' | 'open'
+}
+
 export interface PaperOrder {
+  daily_review_required?: boolean
   id: string
   symbol: string
   asset_type: string
@@ -1419,12 +1441,14 @@ export interface PaperOrder {
   source: string
   created_at: string
   filled_at?: string | null
+  confirmation?: PaperConfirmation | null
   fill_price?: number | null
   fees?: number | null
   reason?: string | null
 }
 
 export interface PaperAutoRule {
+  latest_batch?: PaperDailyBatch | null
   id: string
   name: string
   match_kind: 'strategy' | 'rule'
@@ -1448,6 +1472,7 @@ export interface PaperAutoRule {
 }
 
 export interface PaperFill {
+  confirmation?: PaperConfirmation | null
   seq: number
   ts: string
   date: string
@@ -3731,7 +3756,7 @@ export const api = {
   analysisMenus: () =>
     request<{ items: AnalysisMenu[] }>('/api/analysis-menus'),
 
-  // ===== 页面插件 (运行时扩展页面, 见 docs/page-sdk.md) =====
+  // ===== 页面插件 (运行时扩展页面, 见 docs/development/page-sdk.md) =====
   extPagesList: () =>
     request<RuntimePagePack[]>('/api/ext-pages'),
 

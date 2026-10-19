@@ -1,6 +1,6 @@
 """模拟盘盘后结算不按下单时刻之前已经打印的价格成交。
 
-次日开盘单 = 次一交易日 raw_open 成交 (docs/paper-trading-plan.md 撮合规则表)。
+次日开盘单 = 次一交易日 raw_open 成交 (docs/design/paper-trading-plan.md 撮合规则表)。
 settle_day(当日) 却把当日开盘之后才创建 (或涨跌停排队) 的 next_open 单按当日
 09:30 的开盘价成交, 收盘后才下的 close / 即时单也按当日 15:00 的收盘价兜底成交 ——
 都是拿下单时已经知道的价格回填成交。盘中自动跟单 (缺省 next_open) 因此系统性

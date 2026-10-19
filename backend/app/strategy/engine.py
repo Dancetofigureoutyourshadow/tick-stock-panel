@@ -867,6 +867,11 @@ class StrategyEngine:
             )
             return buffer.snapshot()
 
+    def invalidate_realtime_matrix(self, cache_key: str) -> None:
+        """权威日线更新后，定点失效对应业务的实时历史矩阵。"""
+        with self._realtime_matrix_lock:
+            self._realtime_matrices.pop(cache_key, None)
+
     def realtime_matrix_stats(self, cache_key: str) -> dict[str, int]:
         with self._realtime_matrix_lock:
             entry = self._realtime_matrices.get(cache_key)

@@ -78,6 +78,7 @@ def create(
     strategy_scope_id: str | None = None,
     max_positions: int | None = None,
     max_total_position: float | None = None,
+    confirmation: dict | None = None,
 ) -> dict:
     if side not in ("buy", "sell"):
         raise ValueError("意图方向非法")
@@ -106,6 +107,7 @@ def create(
         "strategy_scope_id": strategy_scope_id,
         "max_positions": max_positions,
         "max_total_position": max_total_position,
+        "confirmation": confirmation,
         "status": "pending",
         "created_at": _now_iso(),
         "resolved_at": None,
@@ -140,6 +142,15 @@ def confirm(
             return None, None, "待确认意图不存在"
         if intent.get("status") != "pending":
             return intent, None, f"意图状态为 {intent.get('status')}, 不可确认"
+        if intent.get("daily_review_required"):
+            return intent, None, "旧操作归属待核对，请拒绝该操作后重新扫描"
+        if intent.get("confirmation"):
+            from app.strategy.paper_daily import submission_error
+            error = submission_error(intent["confirmation"], order_type, data_dir=data_dir)
+            if error or order_type != intent["order_type"]:
+                if error and "无法确认" not in error:
+                    resolve(data_dir, intent, "expired", error, account_id)
+                return intent, None, error or "确认批次不能更改成交方式"
         account = paper.get_account(data_dir, account_id)
         if account is not None and not account.get("queue_limit_orders"):
             limit_error = paper.limit_reference_error(
@@ -162,6 +173,7 @@ def confirm(
             strategy_scope_id=intent.get("strategy_scope_id"),
             max_positions=intent.get("max_positions"),
             max_total_position=intent.get("max_total_position"),
+            confirmation=intent.get("confirmation"),
         )
         if error:
             intent["last_validation_error"] = error

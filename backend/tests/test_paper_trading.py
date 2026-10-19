@@ -1,6 +1,6 @@
 """虚拟账户(模拟盘)域模块测试 — 撮合口径 / 账务一致性 / 管道幂等。
 
-设计文档: docs/paper-trading-plan.md。价格全程不复权 raw 价;
+设计文档: docs/design/paper-trading-plan.md。价格全程不复权 raw 价;
 台账 append-only, 持仓/现金由重放推导, 修复以追加记录表达。
 """
 from __future__ import annotations

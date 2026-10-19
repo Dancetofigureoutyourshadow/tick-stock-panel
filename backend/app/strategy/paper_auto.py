@@ -286,7 +286,7 @@ def _sizing_qty(data_dir: Path, rule: dict, ref_price: float, account_id: str) -
     return paper.qty_from_amount(amount, ref_price)
 
 
-def _legacy_events(data_dir: Path, events: list[dict], rules: list[dict], account_id: str) -> list[dict]:
+def _legacy_events(data_dir: Path, events: list[dict], rules: list[dict], account_id: str, *, dry_run: bool = False) -> list[dict]:
     created: list[dict] = []
     today = cn_now().date().isoformat()
     account = paper.get_account(data_dir, account_id)
@@ -335,7 +335,7 @@ def _legacy_events(data_dir: Path, events: list[dict], rules: list[dict], accoun
         }
         occupied.update(str(order.get("symbol")) for order in pending)
         slots = max(0, int(rule["max_positions"]) - len(occupied))
-        buy_events.sort(key=lambda event: float(event.get("score") or 0), reverse=True)
+        buy_events.sort(key=lambda event: event.get("_rank", -float(event.get("score") or 0)))
         selected = [event for event in buy_events if str(event["symbol"]).strip() not in occupied][:slots]
 
         max_exposure = float(rule["max_total_position"]) / 100
@@ -366,7 +366,13 @@ def _legacy_events(data_dir: Path, events: list[dict], rules: list[dict], accoun
                 "auto_rule_id": rule["id"], "automation_source": "auto_follow",
                 "max_positions": rule["max_positions"], "max_total_position": max_exposure,
             }
-            if not auto_enabled:
+            if dry_run:
+                created.append({
+                    "symbol": symbol, "side": "buy", "qty": qty, "order_type": order_type,
+                    "ref_price": float(event["price"]), "source": f"auto:{rule['id']}",
+                    "auto_enabled": auto_enabled, **common,
+                })
+            elif not auto_enabled:
                 intent = paper_intents.create(
                     data_dir, account_id=account_id, symbol=symbol, side="buy", qty=qty,
                     order_type=order_type, ref_price=float(event["price"]), source=f"auto:{rule['id']}",
@@ -391,6 +397,8 @@ def _legacy_events(data_dir: Path, events: list[dict], rules: list[dict], accoun
             position = paper.load_positions(data_dir, account_id).get(symbol) or {}
             lots = [lot for lot in position.get("lots", []) if int(lot.get("qty", 0)) > 0 and str(lot.get("date", "")) < today and (rule["match_kind"] != "strategy" or lot.get("strategy_id") == event.get("strategy_id"))]
             for lot in lots:
+                if event.get("_lot_id") and str(lot.get("lot_id")) != event["_lot_id"]:
+                    continue
                 qty = paper.normalize_qty(int(lot.get("qty", 0)))
                 if qty <= 0:
                     continue
@@ -398,11 +406,17 @@ def _legacy_events(data_dir: Path, events: list[dict], rules: list[dict], accoun
                 order_type = "close" if rule["exit_fill"] == "close_t" else "next_open"
                 common = {
                     "strategy_id": event.get("strategy_id"), "strategy_snapshot": event.get("strategy_snapshot") or lot.get("strategy_snapshot") or {},
-                    "exit_reason": "signal" if rule["match_kind"] == "strategy" else None,
+                    "exit_reason": event.get("exit_reason", "signal") if rule["match_kind"] == "strategy" else None,
                     "target_lot_id": str(lot.get("lot_id")), "strategy_scope_id": scope,
                     "auto_rule_id": rule["id"], "automation_source": "strategy_exit" if rule["match_kind"] == "strategy" else "auto_follow",
                 }
-                if not auto_enabled:
+                if dry_run:
+                    created.append({
+                        "symbol": symbol, "side": "sell", "qty": qty, "order_type": order_type,
+                        "ref_price": float(event["price"]), "source": f"auto:{rule['id']}",
+                        "auto_enabled": auto_enabled, **common,
+                    })
+                elif not auto_enabled:
                     intent = paper_intents.create(
                         data_dir, account_id=account_id, symbol=symbol, side="sell", qty=qty,
                         order_type=order_type, ref_price=float(event["price"]), source=f"auto:{rule['id']}",
@@ -455,7 +469,10 @@ def _held_qty(data_dir: Path, symbol: str, account_id: str) -> int:
     return int(p["qty"]) if p else 0
 
 
-def on_rule_events(data_dir: Path, events: list[dict], account_id: str = paper.DEFAULT_ACCOUNT_ID) -> list[dict]:
+def on_rule_events(
+    data_dir: Path, events: list[dict], account_id: str = paper.DEFAULT_ACCOUNT_ID,
+    *, excluded_strategy_ids: set[str] | None = None,
+) -> list[dict]:
     """监控事件 → 自动下单。返回本次创建的订单列表 (被拒订单只记日志)。
 
     触发条件: 事件带 symbol 与价格、有规则匹配、未冷却; 下单复用 paper.create_order
@@ -467,6 +484,10 @@ def on_rule_events(data_dir: Path, events: list[dict], account_id: str = paper.D
     if not events:
         return created
     rules = load_auto_rules(data_dir, account_id, enabled_only=True)
+    if excluded_strategy_ids:
+        rules = [r for r in rules if not (
+            r.get("match_kind") == "strategy" and r.get("match_id") in excluded_strategy_ids
+        )]
     if not rules:
         return created
     legacy_rules = [rule for rule in rules if rule.get("_legacy_mode")]

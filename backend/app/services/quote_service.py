@@ -1372,11 +1372,18 @@ class QuoteService:
             # ② rule_events 喂给自动跟单规则触发自动下单。逐账户执行 (账户间规则与订单隔离)。
             # 即时撮合仅股票 (ETF 即时单在下单时已转次日开盘); 独立 try ——
             # 模拟盘任何异常只留痕, 不得影响监控告警链路。
-            if stock_ready and self._app_state is not None:
+            if stock_ready and self._app_state is not None and getattr(self._app_state, "strategy_engine", None) is not None:
                 try:
                     from app.strategy import paper as paper_trading
-                    from app.strategy import paper_auto, paper_exit
+                    from app.strategy import paper_auto, paper_daily, paper_exit
                     data_dir = self._app_state.repo.store.data_dir
+                    daily_ids = paper_daily.daily_strategy_ids(
+                        data_dir, getattr(self._app_state, "strategy_engine", None),
+                    )
+                    if daily_ids:
+                        paper_daily.DailyCoordinator(
+                            self._app_state.repo, getattr(self._app_state, "strategy_engine", None), self,
+                        ).migrate()
                     snapshot = dict(zip(
                         enriched_today["symbol"].to_list(),
                         enriched_today["raw_close"].to_list(),
@@ -1390,9 +1397,13 @@ class QuoteService:
                             paper_trading.evaluate_intraday(data_dir, snapshot, account_id=acc_id))
                         paper_events.extend(paper_exit.evaluate(
                             data_dir, exit_rows, account_id=acc_id, trade_date=trade_date,
+                            daily_strategy_ids=daily_ids,
                         ))
                         if rule_events:
-                            created = paper_auto.on_rule_events(data_dir, rule_events, account_id=acc_id)
+                            created = paper_auto.on_rule_events(
+                                data_dir, rule_events, account_id=acc_id,
+                                excluded_strategy_ids=daily_ids,
+                            )
                             paper_events.extend(paper_auto.auto_order_events(created, account_id=acc_id))
                         # 本轮新建的止损等市价退出单，使用同一份行情即时撮合。
                         paper_events.extend(

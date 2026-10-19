@@ -18,7 +18,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import * as echarts from 'echarts'
 import { Banknote, ChevronDown, ChevronUp, CircleDollarSign, GitCompare, History, ListChecks, PieChart, Plus, RefreshCw, Settings, ShieldAlert, SlidersHorizontal, Snowflake, Trash2, TrendingUp, Wallet, X, Zap } from 'lucide-react'
 import { createPortal } from 'react-dom'
-import { api, type PaperCompareRow, type PaperFill, type PaperHolding, type PaperOrder, type PaperRound } from '@/lib/api'
+import { api, type PaperCompareRow, type PaperConfirmation, type PaperFill, type PaperHolding, type PaperOrder, type PaperRound } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
 import { useQuoteStatus } from '@/lib/useSharedQueries'
 import { cn } from '@/lib/cn'
@@ -42,6 +42,27 @@ const STATUS_LABEL: Record<string, string> = {
   filled: '已成交',
   cancelled: '已撤单',
   expired: '已过期',
+}
+
+const BATCH_STATUS_LABEL: Record<string, string> = {
+  prescanned: '已预扫', confirmed: '已确认', submitted: '已提交',
+  filled: '已成交', partial: '部分提交', skipped: '已跳过',
+  awaiting_confirmation: '待人工确认',
+}
+
+function DailyTimingNotice() {
+  return <div className="text-[11px] leading-relaxed text-muted">
+    日线策略：14:50 预扫，14:55 完整确认，14:57 提交，按最终收盘价模拟撮合；
+    次日开盘模式在盘后全量同步及指标更新成功后确认。盘中止损止盈仍实时评估。
+    14:55 信号可能与最终日 K 不同。
+  </div>
+}
+
+function ConfirmationDetails({ value }: { value?: PaperConfirmation | null }) {
+  if (!value) return null
+  return <span className="w-full break-words font-sans text-[10px] leading-relaxed text-muted" title={`确认批次 ${value.batch_id} · 行情 ${value.quote_time} · 确认 ${value.confirmed_at} · 提交 ${value.submitted_at}`}>
+    信号 {value.signal_date} · 行情 {value.quote_time.slice(11, 19)} · 确认 {value.confirmed_at.slice(11, 19)} · 提交 {value.submitted_at.slice(11, 19)}（北京时间）
+  </span>
 }
 
 function fmtMoney(v: number | null | undefined, digits = 2) {
@@ -1171,7 +1192,7 @@ function CompareChart({ rows }: { rows: PaperCompareRow[] }) {
 
 function AutoRulesPanel({ acc }: { acc: string }) {
   const qc = useQueryClient()
-  const rulesQ = useQuery({ queryKey: QK.paperAutoRules(acc), queryFn: () => api.paperAutoRules(acc) })
+  const rulesQ = useQuery({ queryKey: QK.paperAutoRules(acc), queryFn: () => api.paperAutoRules(acc), refetchInterval: 15000 })
   const rules = rulesQ.data?.rules ?? []
   const [creating, setCreating] = useState(false)
 
@@ -1198,14 +1219,17 @@ function AutoRulesPanel({ acc }: { acc: string }) {
         </button>
       </div>
       <div className="mt-1 text-[11px] leading-relaxed text-muted">
-        监控规则/策略触发时自动按规则下单 (默认次日开盘成交), 同标的 {`冷却 N 天`}内不重复触发
+        普通监控及分钟策略按原触发方式执行。日线策略按确认时点提交，订单提交后等待撮合。
       </div>
-      {rules.length === 0 ? (
+      <DailyTimingNotice />
+      {rulesQ.isLoading ? <div className="py-6 text-center text-xs text-muted">加载规则状态…</div> : rulesQ.isError ? (
+        <div className="py-6 text-center text-xs text-danger">规则状态加载失败 <button onClick={() => rulesQ.refetch()} className="text-accent underline">重试</button></div>
+      ) : rules.length === 0 ? (
         <div className="py-8 text-center text-xs text-muted">暂无规则 — 新建一条, 让策略信号自动进入模拟盘</div>
       ) : (
         <div className="mt-2 space-y-1">
           {rules.map(r => (
-            <div key={r.id} className="flex items-center gap-2 rounded-btn px-2 py-1.5 text-xs transition-colors hover:bg-elevated/40">
+            <div key={r.id} className="flex flex-wrap items-center gap-2 rounded-btn px-2 py-1.5 text-xs transition-colors hover:bg-elevated/40">
               <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full', r.enabled ? 'bg-bear' : 'bg-muted')} />
               <span className="w-28 shrink-0 truncate font-medium">{r.name}</span>
               <span className="w-20 shrink-0 text-muted">{r.match_kind === 'strategy' ? '跟策略' : '跟规则'}</span>
@@ -1228,6 +1252,16 @@ function AutoRulesPanel({ acc }: { acc: string }) {
               <button onClick={() => deleteM.mutate(r.id)} className="shrink-0 rounded p-0.5 text-muted hover:text-danger" title="删除规则">
                 <X className="h-3.5 w-3.5" />
               </button>
+              {r.latest_batch && <div className="w-full break-words text-[11px] leading-relaxed text-muted">
+                <span className={r.latest_batch.status === 'skipped' || r.latest_batch.status === 'partial' ? 'text-warning' : 'text-accent'}>
+                  {BATCH_STATUS_LABEL[r.latest_batch.status]}
+                </span>
+                {' · '}{r.latest_batch.mode === 'close' ? '收盘撮合' : '次日开盘'} · 信号 {r.latest_batch.signal_date}
+                {r.latest_batch.quote_time && <> · 行情 {r.latest_batch.quote_time.slice(11, 19)}</>}
+                {r.latest_batch.confirmed_at && <> · 确认 {r.latest_batch.confirmed_at.slice(11, 19)}</>}
+                {r.latest_batch.submitted_at && <> · 提交 {r.latest_batch.submitted_at.slice(11, 19)}</>}
+                {r.latest_batch.reason && <div className="text-warning">{r.latest_batch.reason}</div>}
+              </div>}
             </div>
           ))}
         </div>
@@ -1385,7 +1419,7 @@ function AutoRuleForm({ acc, onDone, onCancel }: { acc: string; onDone: () => vo
                 <button key={value} onClick={() => setEntryFill(value)}
                   className={cn('flex-1 rounded-btn border py-1 text-[11px] transition-colors',
                     entryFill === value ? 'border-accent/40 bg-accent/10 text-accent' : 'border-border text-muted')}>
-                  {value === 'open_t+1' ? '次日开盘' : '信号日收盘'}
+                  {value === 'open_t+1' ? '盘后确认→次日开盘' : '14:57提交→收盘撮合'}
                 </button>
               ))}
             </div>
@@ -1397,13 +1431,14 @@ function AutoRuleForm({ acc, onDone, onCancel }: { acc: string; onDone: () => vo
                 <button key={value} onClick={() => setExitFill(value)}
                   className={cn('flex-1 rounded-btn border py-1 text-[11px] transition-colors',
                     exitFill === value ? 'border-accent/40 bg-accent/10 text-accent' : 'border-border text-muted')}>
-                  {value === 'open_t+1' ? '次日开盘' : '信号日收盘'}
+                  {value === 'open_t+1' ? '盘后确认→次日开盘' : '14:57提交→收盘撮合'}
                 </button>
               ))}
             </div>
           </div>
           <div className="md:col-span-2 rounded-btn bg-base/60 px-3 py-2 text-[11px] leading-relaxed text-muted">
-            自动执行策略买入信号与卖出信号；止损、止盈、移动止损及最大持有期按策略配置生效。初始资金与交易费用在账户设置中管理。
+            <DailyTimingNotice />
+            最大持有期随日线信号确认；初始资金与交易费用在账户设置中管理。
           </div>
         </> : <>
           <div>
@@ -1721,7 +1756,7 @@ function CompareView({ onCreateSingle }: { onCreateSingle: () => void }) {
                   {rows.some(r => r.estimating) ? '总资产 / 收益为盘中实时估算 · 其余截至最近结算日' : '数据截至最近结算日'}
                 </span>
               </div>
-              <div className="mt-2 overflow-x-auto">
+              <div className="mt-2 overflow-x-auto [container-type:inline-size]">
                 <table className="w-full min-w-[1100px] text-xs">
                   <thead>
                     <tr className="border-b border-border text-left text-[10px] text-muted">
@@ -1835,7 +1870,9 @@ function CompareView({ onCreateSingle }: { onCreateSingle: () => void }) {
                           {open && (
                             <tr className="border-t border-border/50 bg-base/40">
                               <td colSpan={14} className="px-4 py-4">
-                                <AccountPanel acc={r.account} name={r.name} onDeleted={() => setExpanded(null)} />
+                                <div className="w-[calc(100cqw-2rem)]">
+                                  <AccountPanel acc={r.account} name={r.name} onDeleted={() => setExpanded(null)} />
+                                </div>
                               </td>
                             </tr>
                           )}
@@ -2143,7 +2180,7 @@ function BatchCreateModal({ onClose, onCreated }: { onClose: () => void; onCreat
               {(['open_t+1', 'close_t'] as const).map(value => (
                 <button key={value} onClick={() => setEntryFill(value)}
                   className={cn('flex-1 rounded-btn border py-1 text-[10px]', entryFill === value ? 'border-accent/40 bg-accent/10 text-accent' : 'border-border text-muted')}>
-                  {value === 'open_t+1' ? '次日开盘' : '信号日收盘'}
+                  {value === 'open_t+1' ? '盘后确认→次日开盘' : '14:57提交→收盘撮合'}
                 </button>
               ))}
             </div>
@@ -2154,7 +2191,7 @@ function BatchCreateModal({ onClose, onCreated }: { onClose: () => void; onCreat
               {(['close_t', 'open_t+1'] as const).map(value => (
                 <button key={value} onClick={() => setExitFill(value)}
                   className={cn('flex-1 rounded-btn border py-1 text-[10px]', exitFill === value ? 'border-accent/40 bg-accent/10 text-accent' : 'border-border text-muted')}>
-                  {value === 'open_t+1' ? '次日开盘' : '信号日收盘'}
+                  {value === 'open_t+1' ? '盘后确认→次日开盘' : '14:57提交→收盘撮合'}
                 </button>
               ))}
             </div>
@@ -2188,7 +2225,8 @@ function BatchCreateModal({ onClose, onCreated }: { onClose: () => void; onCreat
         </div>
         {m.isError && <div className="mt-2 rounded-btn bg-danger/10 px-2 py-1.5 text-[11px] text-danger">{String((m.error as Error).message)}</div>}
         <div className="mt-2 text-[10px] leading-relaxed text-muted">
-          创建后各账户立即参与盘中自动跟单 (规则触发 → 下单 → T+1 约束), 每交易日盘后管道统一结算定版净值, 对比榜单自动更新。
+          <DailyTimingNotice />
+          每交易日盘后管道统一结算定版净值，对比榜单自动更新。
         </div>
       </div>
     </Modal>
@@ -2310,13 +2348,15 @@ function AccountPanel({ acc, name, onDeleted }: { acc: string; name?: string; on
       const s = v == null ? '' : String(v)
       return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
     }
-    const lines = ['日期,代码,方向,数量,成交价,费用,类型,订单号']
+    const lines = ['日期,代码,方向,数量,成交价,费用,类型,订单号,确认批次,信号日期,行情时间,确认时间,提交时间']
     for (const f of allFills) {
       lines.push([
         f.date, f.symbol,
         f.kind === 'corp_action' ? '除权' : f.side === 'buy' ? '买入' : '卖出',
         f.qty ?? '', f.price ?? '', f.fee ?? '',
         f.kind ?? 'fill', f.order_id ?? '',
+        f.confirmation?.batch_id, f.confirmation?.signal_date, f.confirmation?.quote_time,
+        f.confirmation?.confirmed_at, f.confirmation?.submitted_at,
       ].map(esc).join(','))
     }
     const blob = new Blob(['\ufeff' + lines.join('\n')], { type: 'text/csv;charset=utf-8' })
@@ -2487,7 +2527,7 @@ function AccountPanel({ acc, name, onDeleted }: { acc: string; name?: string; on
                 <div className="mt-2 space-y-1">
                   {orders.length === 0 && <div className="py-6 text-center text-xs text-muted">暂无订单</div>}
                   {orders.map((o: PaperOrder) => (
-                    <div key={o.id} className="flex items-center gap-2 rounded-btn px-2 py-1.5 text-xs hover:bg-elevated/50">
+                    <div key={o.id} className="flex flex-wrap items-center gap-2 rounded-btn px-2 py-1.5 text-xs hover:bg-elevated/50">
                       <span className={cn('w-8 shrink-0 font-medium', o.side === 'buy' ? 'text-bull' : 'text-bear')}>
                         {o.side === 'buy' ? '买入' : '卖出'}
                       </span>
@@ -2503,6 +2543,7 @@ function AccountPanel({ acc, name, onDeleted }: { acc: string; name?: string; on
                       )}>
                         {STATUS_LABEL[o.status]}
                       </span>
+                      {o.daily_review_required && <span className="text-[10px] text-warning">待核对归属 · 已暂停撮合</span>}
                       {o.status === 'pending' && o.postponed > 0 && (
                         <span className="shrink-0 rounded-full bg-accent/10 px-1.5 py-px text-[10px] leading-4 text-accent" title={`涨跌停排队重试中, 已顺延 ${o.postponed}/${3} 日`}>
                           排队 {o.postponed}/3
@@ -2516,6 +2557,7 @@ function AccountPanel({ acc, name, onDeleted }: { acc: string; name?: string; on
                           <X className="h-3.5 w-3.5" />
                         </button>
                       )}
+                      <ConfirmationDetails value={o.confirmation} />
                     </div>
                   ))}
                 </div>
@@ -2523,7 +2565,7 @@ function AccountPanel({ acc, name, onDeleted }: { acc: string; name?: string; on
                 <div className="mt-2 space-y-1">
                   {trades.length === 0 && <div className="py-6 text-center text-xs text-muted">暂无成交</div>}
                   {trades.map((f: PaperFill) => (
-                    <div key={`${f.seq}-${f.order_id ?? 'corp'}`} className="flex items-center gap-2 rounded-btn px-2 py-1.5 font-mono text-xs hover:bg-elevated/50">
+                    <div key={`${f.seq}-${f.order_id ?? 'corp'}`} className="flex flex-wrap items-center gap-2 rounded-btn px-2 py-1.5 font-mono text-xs hover:bg-elevated/50">
                       <span className="w-14 shrink-0 text-muted">{f.date}</span>
                       {f.kind === 'corp_action' ? (
                         <span className="text-accent">除权 ×{f.factor} ({f.symbol}: {f.qty_before} → )</span>
@@ -2538,6 +2580,7 @@ function AccountPanel({ acc, name, onDeleted }: { acc: string; name?: string; on
                           <span className="w-16 shrink-0 text-right text-muted">费 {fmtMoney(f.fee)}</span>
                         </>
                       )}
+                      <ConfirmationDetails value={f.confirmation} />
                     </div>
                   ))}
                 </div>

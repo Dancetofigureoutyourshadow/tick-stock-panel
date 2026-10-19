@@ -236,6 +236,7 @@ def run_now(
     today = cn_today()
     today_exists = latest_daily and latest_daily >= today
     new_daily_days = 0
+    written_daily = 0
 
     # 完整性自愈: 检测最近交易日的盘中快照/缺口 (盘中停机后次日开实时会留下
     # 中午快照, 而下方"今天已有数据→只刷今天"分支会让它永久留存)。
@@ -356,6 +357,13 @@ def run_now(
         new_daily_days = 365
         emit("sync_daily", 45, "日K 完成")
         logger.info("sync_daily: [%s ~ %s] done", start_date, today)
+    # 上游 200 空结果不属于请求异常。全市场零行时旧快照仍在盘上，
+    # 不得继续重算/结算并把同步记为成功；单只停牌造成的空结果不受影响。
+    if (pull_a_share or override_start_date is not None) and universe and written_daily == 0:
+        reason = "sync_daily: no rows written（日K源本轮未返回任何数据，原有数据未更新）"
+        if is_after_official_daily_cutoff():
+            _run_paper_daily_phase("post_close", repo, skip_reason="全量同步未完成：" + reason)
+        raise PipelineStageError([reason])
     _invalidate("daily")
     if daily_failed:
         stage_errors.append(f"sync_daily: {len(set(daily_failed))} 只标的请求失败，数据未全部更新")
@@ -748,50 +756,12 @@ def run_now(
             stage_errors.append(f"compute_mainline: {e}")
             skipped.append("mainline")
 
-    # Step 2.8: 模拟盘结算: 顺延单按当日开盘/收盘撮合 → 除权调整 → 定版净值。
-    # 幂等: 重跑同日不会重复成交/二次除权 (订单状态与 corp_action 台账守卫)。
-    # 必须在日K/除权同步之后, 才能读到当日 raw OHLC 与因子。核心账务不受
-    # 「市场环境」等可选开关控制, 恒运行 (开销可忽略); 软失败不阻断主管道。
     paper_summary: dict = {}
-    try:
-        emit("paper_settle", 94, "模拟盘结算…")
-        from app.strategy import paper as paper_trading
-        # 逐账户结算 (账户间订单/台账隔离), 汇总合并供日志与结果展示
-        totals = {"filled": 0, "expired": 0, "corp_actions": 0, "nav": None, "accounts": []}
-        for acc_id in paper_trading.list_account_ids(repo.store.data_dir):
-            s = paper_trading.settle_day(repo.store.data_dir, today.isoformat(), account_id=acc_id)
-            totals["filled"] += s.get("filled", 0)
-            totals["expired"] += s.get("expired", 0)
-            totals["corp_actions"] += s.get("corp_actions", 0)
-            if s.get("nav") is not None:
-                totals["nav"] = s["nav"]
-            totals["accounts"].append({"account": acc_id, **{k: s.get(k) for k in ("filled", "expired", "corp_actions")}})
-        paper_summary = totals
-        if paper_summary.get("filled") or paper_summary.get("corp_actions"):
-            logger.info("paper_settle: %s", paper_summary)
-        # 结算成交留痕 (V3): next_open/close 单的成交发生在盘后管道内, 盘中钩子
-        # 覆盖不到; 管道无 SSE 广播器, 这里补 alert_store 留痕进监控中心即可见。
-        if totals["filled"]:
-            try:
-                from app.services import alert_store
-                settle_events = []
-                for acc_id in paper_trading.list_account_ids(repo.store.data_dir):
-                    settle_events.extend(paper_trading.day_fill_events(
-                        repo.store.data_dir, today.isoformat(), account_id=acc_id))
-                if settle_events:
-                    alert_store.append_many(repo.store.data_dir, settle_events)
-            except Exception as e:
-                logger.warning("模拟盘结算成交留痕失败: %s", e)
-        emit("paper_settle", 94, "模拟盘结算完成")
-    except Exception as e:
-        logger.warning("paper_settle failed (soft): %s", e)
-        stage_errors.append(f"paper_settle: {e}")
 
     # Step 3: 刷新视图
     emit("refresh_views", 95, "刷新 DuckDB 视图…")
     _refresh_views(repo)
 
-    emit("done", 100, "完成")
     _invalidate(None)  # 兜底:全清
 
     result = {
@@ -816,11 +786,27 @@ def run_now(
         "stage_errors": stage_errors,
     }
 
-    # 有阶段软失败: 进度协议已走完(done/100, 前端进度条正常收尾), 但数据可能陈旧,
-    # 抛出让上层 job_store 把终态标记为 failed —— 不再"部分失败却报成功"。
+    # 阶段软失败意味着数据可能陈旧，禁止进入盘后确认并如实上报 failed。
     if stage_errors:
+        if is_after_official_daily_cutoff():
+            _run_paper_daily_phase("post_close", repo, skip_reason="全量同步未完成：" + "；".join(stage_errors))
         raise PipelineStageError(stage_errors)
 
+    # 手动/定时共用：全量同步、指标及可选阶段全部成功后，刷新缓存再交易。
+    if is_after_official_daily_cutoff():
+        emit("refresh_views", 96, "刷新盘后指标缓存…")
+        repo.refresh_cache()
+        result["cache_refreshed"] = True
+        from app.services.screener import ScreenerService
+        ScreenerService.clear_history_cache()
+        emit("paper_settle", 98, "模拟盘结算…")
+        result["paper_settle"] = _settle_paper_day(repo, today)
+        emit("paper_settle", 99, "确认日线跟单信号…")
+        _run_paper_daily_phase(
+            "post_close", repo,
+            skip_reason="未完成全量A股日K同步" if not pull_a_share else None,
+        )
+    emit("done", 100, "完成")
     return result
 
 
@@ -1314,6 +1300,19 @@ def start_scheduler(repo: KlineRepository, capset: CapabilitySet) -> AsyncIOSche
 
     scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
 
+    # 同步函数由 APScheduler 的线程池执行，不占行情轮询线程或 asyncio 主循环。
+    for phase, minute in (("prescan", 50), ("confirm", 55), ("submit", 57)):
+        scheduler.add_job(
+            _run_paper_daily_phase,
+            args=[phase, repo],
+            trigger=CronTrigger(day_of_week="mon-fri", hour=14, minute=minute,
+                                second="*/5" if phase == "submit" else "0",
+                                timezone="Asia/Shanghai"),
+            id=f"paper_daily_{phase}", max_instances=1, coalesce=True,
+            misfire_grace_time=59 if phase == "submit" else 1,
+            replace_existing=True,
+        )
+
     # 盘前: 同步 instruments（时间由偏好决定）
     def _instruments_task(on_progress=None):
         emit = on_progress or _noop
@@ -1343,6 +1342,7 @@ def start_scheduler(repo: KlineRepository, capset: CapabilitySet) -> AsyncIOSche
         capset_live = getattr(app_state, "capabilities", None) or capset
         # 管道运行期间暂停实时行情取数, 防止覆写同一批 parquet 竞态
         qs = getattr(app_state, "quote_service", None)
+        result = None
         try:
             if qs:
                 with qs.paused():
@@ -1353,7 +1353,8 @@ def start_scheduler(repo: KlineRepository, capset: CapabilitySet) -> AsyncIOSche
             # 即便有阶段软失败(run_now 末尾抛 PipelineStageError), 已落盘的日K/enriched
             # 仍需刷进内存缓存, 否则 live_agg 基准列停留在旧交易日。放 finally 保证部分
             # 成功也生效; 随后异常继续上抛, 由 _run_tracked 标记任务 failed。
-            repo.refresh_cache()
+            if not isinstance(result, dict) or not result.get("cache_refreshed"):
+                repo.refresh_cache()
         return result
 
     scheduler.add_job(
@@ -1443,3 +1444,83 @@ def set_app_state(app_state) -> None:
 
 def _get_app_state():
     return _app_state_ref
+
+
+def _run_paper_daily_phase(phase: str, repo, *, skip_reason: str | None = None) -> None:
+    from app.strategy import paper_daily
+
+    app_state = _get_app_state()
+    engine = getattr(app_state, "strategy_engine", None)
+    if engine is None:
+        return
+    quotes = getattr(app_state, "quote_service", None)
+    coordinator = paper_daily.DailyCoordinator(repo, engine, quotes)
+    if phase == "post_close" and not skip_reason:
+        for sid in paper_daily.daily_strategy_ids(repo.store.data_dir, engine):
+            engine.invalidate_realtime_matrix(f"paper_daily:{sid}")
+    if phase == "submit":
+        created = coordinator.submit()
+        if not created:
+            return
+    else:
+        coordinator.scan(phase, skip_reason=skip_reason)
+        created = coordinator.submit(mode="open") if phase == "post_close" and not skip_reason else []
+    # 通知失败不回滚已提交订单；订单与批次关联可恢复。
+    try:
+        paper_daily.publish_created(quotes, repo.store.data_dir, created)
+        if quotes:
+            quotes._broadcast_alerts([{
+                "source": "paper", "type": "daily_confirmation", "severity": "info",
+                "ts": int(cn_now().timestamp() * 1000),
+                "message": {"prescan": "日线跟单预扫描完成", "confirm": "日线跟单确认完成",
+                            "submit": "日线跟单提交检查完成", "post_close": "日线盘后确认完成"}[phase],
+            }])
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("日线跟单通知失败: %s", exc)
+
+
+def _settle_paper_day(repo, today) -> dict:
+    emit = _noop
+    stage_errors: list[str] = []
+    # Step 2.8: 模拟盘结算: 顺延单按当日开盘/收盘撮合 → 除权调整 → 定版净值。
+    # 幂等: 重跑同日不会重复成交/二次除权 (订单状态与 corp_action 台账守卫)。
+    # 必须在日K/除权同步之后, 才能读到当日 raw OHLC 与因子。核心账务不受
+    # 「市场环境」等可选开关控制；全量管道成功后调用，账务失败须如实上报。
+    paper_summary: dict = {}
+    try:
+        emit("paper_settle", 94, "模拟盘结算…")
+        from app.strategy import paper as paper_trading
+        # 逐账户结算 (账户间订单/台账隔离), 汇总合并供日志与结果展示
+        totals = {"filled": 0, "expired": 0, "corp_actions": 0, "nav": None, "accounts": []}
+        for acc_id in paper_trading.list_account_ids(repo.store.data_dir):
+            s = paper_trading.settle_day(repo.store.data_dir, today.isoformat(), account_id=acc_id)
+            totals["filled"] += s.get("filled", 0)
+            totals["expired"] += s.get("expired", 0)
+            totals["corp_actions"] += s.get("corp_actions", 0)
+            if s.get("nav") is not None:
+                totals["nav"] = s["nav"]
+            totals["accounts"].append({"account": acc_id, **{k: s.get(k) for k in ("filled", "expired", "corp_actions")}})
+        paper_summary = totals
+        if paper_summary.get("filled") or paper_summary.get("corp_actions"):
+            logger.info("paper_settle: %s", paper_summary)
+        # 结算成交留痕 (V3): next_open/close 单的成交发生在盘后管道内, 盘中钩子
+        # 覆盖不到; 管道无 SSE 广播器, 这里补 alert_store 留痕进监控中心即可见。
+        if totals["filled"]:
+            try:
+                from app.services import alert_store
+                settle_events = []
+                for acc_id in paper_trading.list_account_ids(repo.store.data_dir):
+                    settle_events.extend(paper_trading.day_fill_events(
+                        repo.store.data_dir, today.isoformat(), account_id=acc_id))
+                if settle_events:
+                    alert_store.append_many(repo.store.data_dir, settle_events)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("模拟盘结算成交留痕失败: %s", e)
+        emit("paper_settle", 94, "模拟盘结算完成")
+    except Exception as e:  # noqa: BLE001
+        logger.warning("paper_settle failed (soft): %s", e)
+        stage_errors.append(f"paper_settle: {e}")
+
+    if stage_errors:
+        raise PipelineStageError(stage_errors)
+    return paper_summary

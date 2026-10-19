@@ -1,6 +1,6 @@
 """虚拟账户(模拟盘)域模块 — 虚拟资金 + 真实行情价格的模拟撮合, 不接券商不做实盘。
 
-设计文档: docs/paper-trading-plan.md。与回测互补: 回测重放历史, 模拟盘实时向前。
+设计文档: docs/design/paper-trading-plan.md。与回测互补: 回测重放历史, 模拟盘实时向前。
 
 账务正确性原则: fills.jsonl 成交台账是唯一事实源 (append-only), 持仓/现金/净值
 全部可由台账重放推导; 修复一律以追加记录表达 (除权 corp_action / 冲正), 不改历史行。
@@ -579,6 +579,7 @@ def create_order(
     strategy_scope_id: str | None = None,
     max_positions: int | None = None,
     max_total_position: float | None = None,
+    confirmation: dict | None = None,
 ) -> tuple[dict | None, str | None]:
     """创建订单并校验。qty 与 amount 二选一 (amount 按参考价折算百股)。
 
@@ -587,6 +588,14 @@ def create_order(
     返回 (order, None) 或 (None, 错误信息)。
     """
     with PAPER_LOCK:
+        if confirmation:
+            for existing in load_orders(data_dir, account_id):
+                if (existing.get("confirmation") or {}).get("action_key") == confirmation.get("action_key"):
+                    return existing, None
+            from app.strategy.paper_daily import submission_error
+            timing_error = submission_error(confirmation, order_type, data_dir=data_dir)
+            if timing_error:
+                return None, timing_error
         acc = get_account(data_dir, account_id)
         if acc is None:
             raise ValueError("尚未创建模拟账户")
@@ -695,12 +704,17 @@ def create_order(
             "strategy_scope_id": strategy_scope_id,
             "max_positions": max_positions,
             "max_total_position": max_total_position,
+            "confirmation": confirmation,
             "created_at": _now_iso(),
             "filled_at": None,
             "fill_price": None,
             "fees": None,
             "reason": None,
         }
+        if confirmation:
+            timing_error = submission_error(confirmation, order_type, data_dir=data_dir)
+            if timing_error:
+                return None, timing_error
         save_order(data_dir, order, account_id)
         return order, None
 
@@ -1017,6 +1031,7 @@ def _fill_order(data_dir: Path, order: dict, raw_price: float, day: str, account
         "auto_rule_id": order.get("auto_rule_id"),
         "strategy_scope_id": order.get("strategy_scope_id"),
         "lot_allocations": allocations if side == "sell" else [],
+        "confirmation": order.get("confirmation"),
     }
     _append_fill(data_dir, fill, account_id)
 
@@ -1131,6 +1146,8 @@ def evaluate_intraday(data_dir: Path, snapshot: dict[str, float], account_id: st
             key=_order_sort_key,
         )
         for order in pending_orders:
+            if order.get("daily_review_required"):
+                continue
             price = snapshot.get(order["symbol"])
             if price is None or price <= 0:
                 continue  # 无快照顺延
@@ -1146,18 +1163,17 @@ def _daily_path(data_dir: Path, asset_type: str) -> Path:
     return data_dir / sub
 
 
-def read_daily_bar(data_dir: Path, symbol: str, asset_type: str, day: str) -> dict | None:
+def read_daily_bar(data_dir: Path, symbol: str, asset_type: str, day: str, *, authoritative: bool = False) -> dict | None:
     """读某标的某日 raw OHLC (不复权); 无数据返回 None。"""
     base = _daily_path(data_dir, asset_type)
     if not base.exists():
         return None
     try:
-        df = (
-            scan_daily_parquet((base / "**" / "*.parquet").as_posix())
-            .filter((pl.col("symbol") == symbol) & (pl.col("date") == _date.fromisoformat(day)))
-            .select(["open", "close"])
-            .collect()
-        )
+        scan = scan_daily_parquet((base / "**" / "*.parquet").as_posix())
+        scan = scan.filter((pl.col("symbol") == symbol) & (pl.col("date") == _date.fromisoformat(day)))
+        if authoritative and "quote_ts" in scan.collect_schema().names():
+            scan = scan.filter(pl.col("quote_ts").is_null())
+        df = scan.select(["open", "close"]).collect()
     except Exception as e:
         logger.warning("paper read_daily_bar failed %s %s: %s", symbol, day, e)
         return None
@@ -1282,7 +1298,14 @@ def settle_day(data_dir: Path, day: str, account_id: str = DEFAULT_ACCOUNT_ID) -
             key=_order_sort_key,
         )
         for order in pending_orders:
+            if order.get("daily_review_required"):
+                continue
             bar = read_daily_bar(data_dir, order["symbol"], order.get("asset_type", "stock"), day)
+            if order.get("confirmation") and bar is not None:
+                authoritative_bar = read_daily_bar(data_dir, order["symbol"], order.get("asset_type", "stock"), day, authoritative=True)
+                if authoritative_bar is None:
+                    continue  # 确认批次不得用实时残留价结算, 也不计停牌顺延。
+                bar = authoritative_bar
             if bar is None:
                 order["postponed"] = int(order.get("postponed", 0)) + 1
                 if order["postponed"] > MAX_POSTPONE_DAYS:

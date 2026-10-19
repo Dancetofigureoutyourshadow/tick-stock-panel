@@ -82,13 +82,17 @@ async def _submit_job(repo, quote_service, make_run) -> dict:
             loop = asyncio.get_event_loop()
 
             def _run() -> dict:
+                result = None
                 try:
                     if qs:
                         with qs.paused():
-                            return run()
-                    return run()
+                            result = run()
+                    else:
+                        result = run()
+                    return result
                 finally:
-                    repo.refresh_cache()
+                    if not isinstance(result, dict) or not result.get("cache_refreshed"):
+                        repo.refresh_cache()
 
             result = await loop.run_in_executor(_long_task_executor, run_with_capacity, job_id, _run)
             job_store.succeed(job_id, result)

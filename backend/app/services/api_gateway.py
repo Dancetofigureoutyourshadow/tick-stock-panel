@@ -1,4 +1,4 @@
-"""API 开放网关 — Token 请求的网络门禁、scope 校验与限流 (docs/open-platform-plan.md §4-5)。
+"""API 开放网关 — Token 请求的网络门禁、scope 校验与限流 (docs/design/open-platform-plan.md §4-5)。
 
 Token 通道有两道闸, 认证中间件按序调用:
   1. token_network_verdict(client_ip) — 网络门禁: 默认仅本机/内网可调,
@@ -113,7 +113,7 @@ def token_channel_local_only() -> bool:
     """Token 通道是否仅限本机/内网调用 (env API_TOKEN_LOCAL_ONLY, 默认开)。
 
     设 0/false/off/no 显式放开 — 供公网 VPS 部署的远程脚本/门户等场景自主选择,
-    开放后的数据再分发合规责任由部署者承担(见 docs/configuration.md)。
+    开放后的数据再分发合规责任由部署者承担(见 docs/guides/configuration.md)。
     """
     return (os.environ.get("API_TOKEN_LOCAL_ONLY", "1").strip().lower()
             not in ("0", "false", "off", "no"))

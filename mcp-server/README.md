@@ -65,4 +65,4 @@ TSP_TOKEN=tsp_xxx uv run tsp-mcp-server   # stdio JSON-RPC, 供客户端拉起
 
 - **薄桥原则**: 所有权限/限流/契约由面板网关裁决, 本服务器不持有任何业务逻辑, 面板升级自动受益
 - 工具返回原文 JSON, 错误以可读文本返回 — LLM 可据此自行纠正参数
-- 更底层的 REST 契约与示例见 [examples/open-api](../examples/open-api/README.md) 与 [docs/features.md → 开放接口](../docs/features.md)
+- 更底层的 REST 契约与示例见 [examples/open-api](../examples/open-api/README.md) 与 [docs/guides/features.md → 开放接口](../docs/guides/features.md)

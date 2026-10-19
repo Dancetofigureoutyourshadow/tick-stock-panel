@@ -1,10 +1,10 @@
 # 因子体系专业化设计（提案）
 
-> **状态声明**：本文是设计提案，**尚未实现**。凡标注【现状】的条目引用当前仓库真实代码（基于 main@2ce8b4b1），可直接核对；凡标注【设计】的条目是目标契约，**不得当作已存在的 API 导入或调用**（遵循 `docs/secondary-development.md` 第 1 节的状态区分要求）。
+> **状态声明**：本文是设计提案，**尚未实现**。凡标注【现状】的条目引用当前仓库真实代码（基于 main@2ce8b4b1），可直接核对；凡标注【设计】的条目是目标契约，**不得当作已存在的 API 导入或调用**（遵循 `docs/development/secondary-development.md` 第 1 节的状态区分要求）。
 >
 > 全部【现状】引用已于 2026-09-04 逐条核对，Polars API 与依赖可行性已实测（polars 1.40.1），验证记录见 §17；一处初稿引用错误（pipeline.py:1738→1795）已修正。
 >
-> 涉及改动均按二次开发分级标注（L1 配置 / L2 扩展点 / L3 核心源码修改，见 `docs/secondary-development.md` 第 2 节）。
+> 涉及改动均按二次开发分级标注（L1 配置 / L2 扩展点 / L3 核心源码修改，见 `docs/development/secondary-development.md` 第 2 节）。
 
 ---
 
@@ -546,7 +546,7 @@ class CompositeMember:
 
 **`index_ext`**：schema 与 `kline_index_daily` 完全一致（symbol/date/OHLC/volume/amount），仅标的白名单扩展（默认建议：000300.SH 沪深300、000905.SH 中证500、000852.SH 中证1000、000985.SH 中证全指）；白名单由 preset 配置声明，不进代码硬编码（对齐 ext_presets 模式）。
 
-**能力注册示例**（provider 侧 `plugin.yaml` datasets 声明，对齐 `docs/plugin-development.md` 契约）：
+**能力注册示例**（provider 侧 `plugin.yaml` datasets 声明，对齐 `docs/development/plugin-development.md` 契约）：
 
 ```yaml
 datasets:
@@ -581,7 +581,7 @@ datasets:
 
 全部响应新增字段带默认值；错误响应含 `code/message/detail`，不泄漏内部栈（CONTRIBUTING 第 8 节）。SSE 进度复用现有回测 SSE 模式（长任务：批量 IC 扫描）。
 
-**鉴权**：新路由经 `api/routes.py`【现状】注册，继承应用级部署口令鉴权（`docs/deploy-password.md` 模式），不引入独立权限模型。写操作（自定义因子/复合因子/宇宙存档 CRUD）只落 `data/user_data/`，路径校验沿用策略目录的防穿越规则（CONTRIBUTING 5.1 删除策略 fail-closed 要求同样适用）。
+**鉴权**：新路由经 `api/routes.py`【现状】注册，继承应用级部署口令鉴权（`docs/guides/deploy-password.md` 模式），不引入独立权限模型。写操作（自定义因子/复合因子/宇宙存档 CRUD）只落 `data/user_data/`，路径校验沿用策略目录的防穿越规则（CONTRIBUTING 5.1 删除策略 fail-closed 要求同样适用）。
 
 **并发**：批量 IC 扫描与复合分批量计算走 `services/heavy_job_limiter.py`【现状】限流，SSE 进度事件结构复用回测现有契约；用户取消走现有回测 worker 取消机制。
 
@@ -737,7 +737,7 @@ researchUniverses()
 
 **各 PR 回滚要点**：PR-1/3/4/5 新增模块 + 增量字段，回滚 = revert 即可（旧缓存键不含新分量，自动回旧路径）；PR-2 指标统一保留 `metrics_methodology` 开关，回滚 = 切回 v1 计算分支并保留数据；PR-6 注册表重构通过特征化测试保证行为等价，回滚 = revert（无持久化迁移）；PR-7/8 用户数据（自定义因子/复合因子 JSON）为新增目录，回滚代码后文件残留但不再加载，重新部署即恢复——**不存在任何需要用户手动清数据的回滚**（CONTRIBUTING 第 12 节红线）。
 
-**文档同步任务**（各 PR 内完成，不单开）：PR-1/3/4 更新 `docs/features.md` 因子回测章节；PR-5 更新 `docs/mining.md` 门槛说明；PR-7 更新 `docs/strategy.md` 评分字段说明与 `操作说明书.md`；PR-8 更新 `docs/custom-data-source.md` 无关则跳过；本设计文档在每个 PR 合入后把对应条目从【设计】改标【已实现】。
+**文档同步任务**（各 PR 内完成，不单开）：PR-1/3/4 更新 `docs/guides/features.md` 因子回测章节；PR-5 更新 `docs/guides/mining.md` 门槛说明；PR-7 更新 `docs/guides/strategy.md` 评分字段说明与 `操作说明书.md`；PR-8 更新 `docs/development/custom-data-source.md` 无关则跳过；本设计文档在每个 PR 合入后把对应条目从【设计】改标【已实现】。
 
 ---
 
@@ -758,7 +758,7 @@ researchUniverses()
 
 ## 16. 明确不做清单（YAGNI 边界）
 
-以下能力**刻意不在本设计范围内**，防止范围蔓延（依据 `docs/secondary-development.md` 第 10 节：不为未来可能出现的需求预埋框架）。出现真实需求时再按需立项：
+以下能力**刻意不在本设计范围内**，防止范围蔓延（依据 `docs/development/secondary-development.md` 第 10 节：不为未来可能出现的需求预埋框架）。出现真实需求时再按需立项：
 
 | 不做项 | 理由 |
 | --- | --- |

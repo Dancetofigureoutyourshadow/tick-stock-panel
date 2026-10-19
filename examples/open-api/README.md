@@ -37,7 +37,7 @@
 - 限流: 每 Token 默认 120 次/分钟, 响应头 `X-RateLimit-Remaining` 实时可见, 超限 429 + `Retry-After`
 - 错误语义: 401 Token 无效或已吊销 / 403 scope 不足或端点未开放 / 429 超限
 - 机器可读契约: `GET /api/openapi.json?tier=a` — 可直接导入 Postman / 生成客户端
-- 完整文档: [docs/features.md → 开放接口](../../docs/features.md#-开放接口open-api--tier-a)
+- 完整文档: [docs/guides/features.md → 开放接口](../../docs/guides/features.md#-开放接口open-api--tier-a)
 
 ## 注意
 

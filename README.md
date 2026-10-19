@@ -7,7 +7,7 @@
 [![个人开源](https://img.shields.io/badge/%E4%B8%AA%E4%BA%BA%E5%BC%80%E6%BA%90-green?style=for-the-badge&labelColor=red)](https://github.com/shy3130/tick-stock-panel)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow?style=for-the-badge)](./LICENSE)
 [![Engine: Polars](https://img.shields.io/badge/Engine-Polars-6f42c1?style=for-the-badge)](https://pola.rs/)
-[![Open API](https://img.shields.io/badge/Open_API-65_%E7%AB%AF%E7%82%B9-00b386?style=for-the-badge)](./docs/open-platform-plan.md)
+[![Open API](https://img.shields.io/badge/Open_API-65_%E7%AB%AF%E7%82%B9-00b386?style=for-the-badge)](./docs/design/open-platform-plan.md)
 [![MCP](https://img.shields.io/badge/MCP-12_%E5%B7%A5%E5%85%B7-7c3aed?style=for-the-badge)](./mcp-server/README.md)
 
 [![Build: Docker CI](https://github.com/shy3130/tick-stock-panel/actions/workflows/docker.yml/badge.svg)](https://github.com/shy3130/tick-stock-panel/actions/workflows/docker.yml)
@@ -181,7 +181,7 @@
 </tr>
 </table>
 
-> 📄 **19 个页面的完整功能细节**见 [docs/features.md](./docs/features.md) 与 [screenshots/](./screenshots/README.md) —— 上表之外, 回测四种研究视图、异动三时间线、页面插件运行时分发等都在其中。
+> 📄 **19 个页面的完整功能细节**见 [docs/guides/features.md](./docs/guides/features.md) 与 [screenshots/](./screenshots/README.md) —— 上表之外, 回测四种研究视图、异动三时间线、页面插件运行时分发等都在其中。
 
 ---
 
@@ -259,7 +259,7 @@
 | **核心域 · 8**      | 数据底座 / 能力路由 / 订阅锚点(自选) / 策略与回测 / 因子与挖掘 / 环境数据生产 / 监控推送管道 / 扩展数据存储 + 认证配置 | 被多个模块消费其数据与语义,自身不依赖外围 |
 | **扩展域 · 5 通道** | 数据源插件 · 扩展数据表 · 自定义策略/信号 · 页面扩展(单文件源码 + 运行时页面插件) · 后端 custom 模块                       | 只消费核心契约,可整体替换/移除而不伤核心  |
 
-设置 → 菜单设置里每个页面带 `核心 / 扩展` 架构徽标与 `内置 / 自定义 / 扩展` 类型徽标;11 个官方页面(概念/行业/个股/财务分析、监控中心、异动、持仓提醒、模拟盘、信号库、复盘、连板梯队)已全部落地为 `frontend/src/custom/<ns>/extension.tsx` **单文件扩展** —— 删除目录即卸载、复制目录即导入;例如监控中心页面可换,规则引擎与推送管道属核心照常运行。新装默认隐藏这些扩展页面(菜单设置一键开启),老用户升级自动保持原菜单位置与排序。免宿主重建的运行时分发走**页面插件**(设置 → 页面插件,契约见 [docs/page-sdk.md](./docs/page-sdk.md))。详见 [docs/open-platform-plan.md](./docs/open-platform-plan.md)。
+设置 → 菜单设置里每个页面带 `核心 / 扩展` 架构徽标与 `内置 / 自定义 / 扩展` 类型徽标;11 个官方页面(概念/行业/个股/财务分析、监控中心、异动、持仓提醒、模拟盘、信号库、复盘、连板梯队)已全部落地为 `frontend/src/custom/<ns>/extension.tsx` **单文件扩展** —— 删除目录即卸载、复制目录即导入;例如监控中心页面可换,规则引擎与推送管道属核心照常运行。新装默认隐藏这些扩展页面(菜单设置一键开启),老用户升级自动保持原菜单位置与排序。免宿主重建的运行时分发走**页面插件**(设置 → 页面插件,契约见 [docs/development/page-sdk.md](./docs/development/page-sdk.md))。详见 [docs/design/open-platform-plan.md](./docs/design/open-platform-plan.md)。
 
 ### 关键机制
 
@@ -345,9 +345,9 @@
 | **数据写闭环**  | `write:ext` 程序化写入扩展表行数据(与内置数据同台分析),表结构锁死在管理面                                                                                                      |
 | **SSE 事件流**  | 60 秒一次性票据订阅实时告警推送,票据只继承 scope 不放大权限                                                                                                                    |
 | **MCP 服务器**  | 12 个精选工具,按 Token scope 暴露;模拟盘交易刻意不交给 AI                                                                                                                      |
-| **示例与文档**  | [examples/open-api](./examples/open-api/README.md) 四个零依赖可运行示例 · [docs/features.md → 开放接口](./docs/features.md) · [开放平台设计方案](./docs/open-platform-plan.md) |
+| **示例与文档**  | [examples/open-api](./examples/open-api/README.md) 四个零依赖可运行示例 · [docs/guides/features.md → 开放接口](./docs/guides/features.md) · [开放平台设计方案](./docs/design/open-platform-plan.md) |
 
-> 开放接口面向**本部署的二次开发与个人工具集成**(自有页面、脚本、机器人、MCP 客户端),不作为数据对外分发通道;公网部署默认仅接受内网 Token 调用,详见 [configuration.md → 开放接口网络门禁](./docs/configuration.md#开放接口网络门禁默认仅本机内网)。
+> 开放接口面向**本部署的二次开发与个人工具集成**(自有页面、脚本、机器人、MCP 客户端),不作为数据对外分发通道;公网部署默认仅接受内网 Token 调用,详见 [configuration.md → 开放接口网络门禁](./docs/guides/configuration.md#开放接口网络门禁默认仅本机内网)。
 
 ```bash
 # 十行内跑通第一个调用
@@ -429,7 +429,7 @@ docker run -d --name tsp -p 3018:3018 -v ${PWD}/data:/app/data ghcr.io/shy3130/t
 - 需要配置时:从 [.env.example](./.env.example) 复制出 `.env`,命令里加 `--env-file .env`。
 - 跑自己改过的代码:fork 后到仓库 **Actions** 页启用 workflow(fork 默认禁用),构建出的 `ghcr.io/<你的用户名>/tick-stock-panel` 用法相同。
 - 想用 compose 编排(挂载 `.env` / `tiers.yaml`):参考 [docker-compose.yml](./docker-compose.yml),把 `build:` 段换成 `image: ghcr.io/shy3130/tick-stock-panel:latest`。
-- 现成镜像默认不含老 CPU 兼容内核(体积考虑),有此需求请用方式 B 自构建,详见 [docs/deployment.md](./docs/deployment.md)。
+- 现成镜像默认不含老 CPU 兼容内核(体积考虑),有此需求请用方式 B 自构建,详见 [docs/guides/deployment.md](./docs/guides/deployment.md)。
 
 ### 方式 B:Docker Compose(本地构建,全套挂载)
 
@@ -460,7 +460,7 @@ CODEX_CLI_VERSION=0.144.3 docker compose up --build
 
 </details>
 
-> 📖 Docker 进阶、老 CPU 兼容、访问密码设置等见 [docs/deployment.md](./docs/deployment.md)。
+> 📖 Docker 进阶、老 CPU 兼容、访问密码设置等见 [docs/guides/deployment.md](./docs/guides/deployment.md)。
 
 ### 方式 C:本机 AI 代部署(AI玩家首选)
 
@@ -527,7 +527,7 @@ AI_API_KEY=                    # 留空 = 关闭 AI;填 Key 启用策略生成�
 PORT=3018                      # 服务端口
 ```
 
-> 📖 完整配置项(数据源档位、AI、服务、密码、老 CPU 兼容)见 [docs/configuration.md](./docs/configuration.md)。
+> 📖 完整配置项(数据源档位、AI、服务、密码、老 CPU 兼容)见 [docs/guides/configuration.md](./docs/guides/configuration.md)。
 
 ---
 
@@ -552,20 +552,21 @@ PORT=3018                      # 服务端口
 
 | 文档                                                                                               | 内容                                                                 |
 | :------------------------------------------------------------------------------------------------- | :------------------------------------------------------------------- |
-| [docs/deployment.md](./docs/deployment.md)                                                         | 部署方式(Dev / Docker / GH Actions)、老 CPU 兼容、更新代码、访问密码 |
-| [docs/configuration.md](./docs/configuration.md)                                                   | 所有 `.env` 配置项详解(数据源、AI、服务、密码、数据目录)             |
-| [docs/features.md](./docs/features.md)                                                             | 各功能模块详细说明(策略/指标/回测/监控/个股分析/数据扩展/开放接口)   |
-| [docs/open-platform-plan.md](./docs/open-platform-plan.md)                                         | 开放平台设计:核心域/扩展域边界、Token 体系、Tier 契约与分期路线      |
+| [文档分类索引](./docs/README.md)                                                                 | 按使用指南、开发扩展、设计方案和运维数据质量分类                     |
+| [docs/guides/deployment.md](./docs/guides/deployment.md)                                                         | 部署方式(Dev / Docker / GH Actions)、老 CPU 兼容、更新代码、访问密码 |
+| [docs/guides/configuration.md](./docs/guides/configuration.md)                                                   | 所有 `.env` 配置项详解(数据源、AI、服务、密码、数据目录)             |
+| [docs/guides/features.md](./docs/guides/features.md)                                                             | 各功能模块详细说明(策略/指标/回测/监控/个股分析/数据扩展/开放接口)   |
+| [docs/design/open-platform-plan.md](./docs/design/open-platform-plan.md)                                         | 开放平台设计:核心域/扩展域边界、Token 体系、Tier 契约与分期路线      |
 | [mcp-server/README.md](./mcp-server/README.md)                                                     | MCP 服务器配置(AI 客户端接入)与工具清单                              |
 | [examples/open-api](./examples/open-api/README.md)                                                 | 开放接口可运行示例(行情/写入/回测/事件流)                            |
-| [docs/custom-data-source.md](./docs/custom-data-source.md)                                         | 自定义数据源接入、能力路由契约、YAML 配置与 mock 联调示例            |
-| [docs/strategy.md](./docs/strategy.md)                                                             | 策略体系(全自定义化 + 三种扩展方式 + 文件结构)                      |
-| [docs/strategy-iteration.md](./docs/strategy-iteration.md)                                         | AI 策略迭代协议:台账 / 证据包 / 门槛判定 / 提示词卡片                |
-| [docs/mining.md](./docs/mining.md)                                                                 | 因子与策略挖掘口径、防泄漏、任务隔离和发布边界                       |
-| [docs/market-phase.md](./docs/market-phase.md)                                                     | 市场情绪周期 6 阶段与概念/行业主线识别的口径与设计                   |
-| [docs/plugin-development.md](./docs/plugin-development.md)                                         | 数据源插件开发规范(以 fuyao 为参考实现)                  |
-| [docs/secondary-development.md](./docs/secondary-development.md)                                   | 代码二次开发、前端插槽、后端策略接口与 AI 开发模板                   |
-| [docs/page-sdk.md](./docs/page-sdk.md)                                                             | 页面插件开发指南:产物契约、能力桥 ctx、打包与上传、安全边界           |
+| [docs/development/custom-data-source.md](./docs/development/custom-data-source.md)                                         | 自定义数据源接入、能力路由契约、YAML 配置与 mock 联调示例            |
+| [docs/guides/strategy.md](./docs/guides/strategy.md)                                                             | 策略体系(全自定义化 + 三种扩展方式 + 文件结构)                      |
+| [docs/development/strategy-iteration.md](./docs/development/strategy-iteration.md)                                         | AI 策略迭代协议:台账 / 证据包 / 门槛判定 / 提示词卡片                |
+| [docs/guides/mining.md](./docs/guides/mining.md)                                                                 | 因子与策略挖掘口径、防泄漏、任务隔离和发布边界                       |
+| [docs/guides/market-phase.md](./docs/guides/market-phase.md)                                                     | 市场情绪周期 6 阶段与概念/行业主线识别的口径与设计                   |
+| [docs/development/plugin-development.md](./docs/development/plugin-development.md)                                         | 数据源插件开发规范(以 fuyao 为参考实现)                  |
+| [docs/development/secondary-development.md](./docs/development/secondary-development.md)                                   | 代码二次开发、前端插槽、后端策略接口与 AI 开发模板                   |
+| [docs/development/page-sdk.md](./docs/development/page-sdk.md)                                                             | 页面插件开发指南:产物契约、能力桥 ctx、打包与上传、安全边界           |
 | [backend/app/strategy/prompts/strategy-guide.md](./backend/app/strategy/prompts/strategy-guide.md) | 策略开发完整规范(AI 生成与手写)                                      |
 
 ---

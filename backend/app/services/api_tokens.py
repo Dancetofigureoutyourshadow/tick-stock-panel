@@ -1,6 +1,6 @@
 """API Token 域模块 — 外部调用方的第二认证通道 (与访问密码并行)。
 
-设计 (docs/open-platform-plan.md §4.1):
+设计 (docs/design/open-platform-plan.md §4.1):
   - 存储: data/user_data/api_tokens.json (0600), 只存 SHA-256 哈希;
     明文 Token (tsp_ + 32B hex) 仅在创建响应中出现一次。
   - scope: 固定五档, 见 SCOPES; 管理接口无对应 scope, Token 永远进不去。

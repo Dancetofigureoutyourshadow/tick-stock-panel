@@ -1,6 +1,6 @@
 """tick-stock-panel MCP 服务器 — 开放接口的 AI 工具桥。
 
-架构 (docs/features.md → 开放接口):
+架构 (docs/guides/features.md → 开放接口):
   AI 客户端 (Claude/ZCode/Cursor…) ↔ MCP stdio (JSON-RPC) ↔ 本服务器
   ↔ HTTP + Bearer Token ↔ 面板开放网关 (scope 校验 + 限流)
 

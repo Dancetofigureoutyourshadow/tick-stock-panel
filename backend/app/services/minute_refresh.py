@@ -12,7 +12,7 @@
 - 生效源由偏好 full_minute_data_provider 决定 (设置 → 数据源 → 全量分钟):
   TickFlow (Expert 档, intraday.batch + intraday.universe) 或声明 full_minute
   数据集的插件/自定义源。
-- 自定义源契约 (docs/plugin-development.md): get_intraday_batch(symbols) 修复轮
+- 自定义源契约 (docs/development/plugin-development.md): get_intraday_batch(symbols) 修复轮
   (未实现自动回退 get_minute 当日窗口); get_intraday_latest(count) 稳态增量
   (可选, 未实现自动降级为仅修复轮并放慢节奏至 >=60s)。
 - 能力门控 Cap.INTRADAY_UNIVERSE: TickFlow 按档位探测, 自定义源声明数据集且

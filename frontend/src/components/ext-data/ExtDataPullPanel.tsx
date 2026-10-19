@@ -242,7 +242,7 @@ export function ExtDataPullPanel({ config, onSaved }: {
             接入自有源时，在「新建扩展数据 → URL」填写第一级地址，本配方存于表的
             <span className="mx-0.5 rounded bg-elevated/70 px-1 py-px font-mono text-[10px]">config.json</span>
             的 <span className="font-mono text-[10px]">pull.fanout</span> 字段；详见
-            <span className="mx-0.5 rounded bg-elevated/70 px-1 py-px font-mono text-[10px]">docs/custom-data-source.md</span>
+            <span className="mx-0.5 rounded bg-elevated/70 px-1 py-px font-mono text-[10px]">docs/development/custom-data-source.md</span>
           </p>
         </div>
       )}

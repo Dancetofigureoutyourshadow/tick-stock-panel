@@ -790,9 +790,9 @@ export function SettingsDataSourcesPanel({ highlight }: { highlight?: string } =
           <div className="text-[11px] leading-relaxed text-muted">
             <span className="text-secondary">数据源已插件化</span>
             ,接入自有行情?把文档发给 AI 即可自动接入:
-            <span className="mx-0.5 rounded bg-elevated/70 px-1 py-px font-mono text-[10px] text-secondary">docs/custom-data-source.md</span>
+            <span className="mx-0.5 rounded bg-elevated/70 px-1 py-px font-mono text-[10px] text-secondary">docs/development/custom-data-source.md</span>
             (自有 HTTP 接口) ·
-            <span className="mx-0.5 rounded bg-elevated/70 px-1 py-px font-mono text-[10px] text-secondary">docs/plugin-development.md</span>
+            <span className="mx-0.5 rounded bg-elevated/70 px-1 py-px font-mono text-[10px] text-secondary">docs/development/plugin-development.md</span>
             (插件开发)
           </div>
         </div>

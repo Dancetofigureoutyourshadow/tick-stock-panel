@@ -22,7 +22,7 @@ MAX_BEAM_WIDTH = 32
 MAX_FINALISTS = 8
 MAX_REAL_TRIALS = 256
 
-# Evidence-based promotion gate documented in docs/mining.md. A candidate must
+# Evidence-based promotion gate documented in docs/guides/mining.md. A candidate must
 # clear every threshold before it may be published as an independent strategy.
 GATE_MIN_VALID_FOLDS = 2
 GATE_MIN_POSITIVE_FOLD_RATIO = 2.0 / 3.0

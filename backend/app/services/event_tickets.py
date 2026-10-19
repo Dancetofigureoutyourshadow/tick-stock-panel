@@ -1,6 +1,6 @@
 """SSE 短期票据 — EventSource 无法携带 Authorization 头的替代通道。
 
-流程 (docs/open-platform-plan.md §6 V2):
+流程 (docs/design/open-platform-plan.md §6 V2):
   1. POST /api/events/ticket (Bearer Token, 任意 scope) → 一次性票据 (tse_ 前缀)
   2. GET /api/events?ticket=... (EventSource) → 校验+消费票据 → 按票据
      继承的 scope 过滤事件流

@@ -6,7 +6,7 @@
 通用拉取是单请求 + 字段名映射, 表达不了这种形态; 与其按 config_id 硬编码
 特例, 不如把「第二级怎么发、结果怎么拼」写进 PullConfig.fanout —— 配置本身
 即配方, 在「数据」页展开扩展表 → 拉取 就能看到全貌, 也便于照抄接入自有源
-(见 docs/custom-data-source.md)。
+(见 docs/development/custom-data-source.md)。
 
 fanout 配方字段:
   url                第二级请求地址 (与 pull.url 同走标识头 + auth 鉴权)

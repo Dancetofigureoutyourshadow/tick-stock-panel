@@ -1,6 +1,6 @@
 """二次开发升级保护 — 用户修改的程序文件常备备份与升级对比报告。
 
-机制 (docs/secondary-development.md §8):
+机制 (docs/development/secondary-development.md §8):
 
 - 构建时生成全量程序文件清单 (app/upgrade_manifest.json, sha256 基线);
 - 每次启动后台扫描程序目录, 与清单对比 → 用户「修改/新增」的程序文件

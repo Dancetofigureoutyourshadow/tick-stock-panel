@@ -4,7 +4,7 @@
 
 `CONTRIBUTING.md` 是项目贡献与审查规范，不替代 `README.md`、`docs/` 中的用户文档和领域文档。所有贡献者和 AI 编码代理在修改代码、提交或审查 PR 前都应阅读本文档。
 
-涉及代码二次开发时，同时遵循 [`docs/secondary-development.md`](docs/secondary-development.md)。前端优先使用真实存在的受控插槽或注册入口，后端优先使用小粒度策略接口和依赖注入；现有扩展点无法表达核心行为变化时允许直接修改源码，但必须保持改动聚焦并补足兼容性验证。
+涉及代码二次开发时，同时遵循 [`docs/development/secondary-development.md`](docs/development/secondary-development.md)。前端优先使用真实存在的受控插槽或注册入口，后端优先使用小粒度策略接口和依赖注入；现有扩展点无法表达核心行为变化时允许直接修改源码，但必须保持改动聚焦并补足兼容性验证。
 
 ## 1. 基本原则
 
@@ -132,7 +132,7 @@
 - 只有明确标注为 TickFlow 专属的功能才可以直接依赖 TickFlow，并且不得影响其他 provider。
 - provider 缺少某项能力时，应明确提示、跳过该功能或 fail-closed；禁止静默换用错误数据或错误口径。
 - 插件加载失败、字段缺失和空数据必须有隔离测试，不能导致应用启动失败或其他数据源不可用。
-- 新增数据源适配应同步更新 `docs/custom-data-source.md` 或 `docs/plugin-development.md` 中对应契约。
+- 新增数据源适配应同步更新 `docs/development/custom-data-source.md` 或 `docs/development/plugin-development.md` 中对应契约。
 
 ### 能力路由矩阵契约
 

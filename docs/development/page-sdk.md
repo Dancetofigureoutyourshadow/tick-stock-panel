@@ -68,5 +68,5 @@ export default extension
 | 方式 | 适用 | 见 |
 | --- | --- | --- |
 | 页面插件（运行时产物） | 免重建挂载、独立分发 | 本文档 |
-| 源码级扩展 `frontend/src/custom/<ns>/extension.tsx` | 随宿主一起构建维护、可用全部核心模块 | `docs/secondary-development.md` §3 |
+| 源码级扩展 `frontend/src/custom/<ns>/extension.tsx` | 随宿主一起构建维护、可用全部核心模块 | `docs/development/secondary-development.md` §3 |
 | 声明式分析页面（零代码） | 扩展数据 + 模板化列表/分组页 | 设置 → 扩展页面 |

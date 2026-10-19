@@ -1,7 +1,7 @@
 """AI 策略迭代器 — 生成 v1 → 跑回测 → 诊断 → 修改, 有界闭环。
 
 只自动化「生成—诊断—修改」, 回测只读、轮次有上限, 最终仍由人拍板
-(docs/strategy-iteration.md 第 0/1 节纪律)。产物落盘到 data/strategies/ai/,
+(docs/development/strategy-iteration.md 第 0/1 节纪律)。产物落盘到 data/strategies/ai/,
 不自动上线。复用 ai_generator.AIStrategyGenerator 做生成与校验, 复用
 services.tool_catalog 做工具目录 + 回测桥。
 """

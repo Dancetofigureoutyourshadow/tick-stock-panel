@@ -35,7 +35,7 @@ _REQUIRED = {
     # full_minute (全量分钟) 与 minute 同形: 当日窗口批量拉取, 字段映射一致
     "full_minute": {"symbol", "datetime", "open", "high", "low", "close", "volume"},
     "depth5": {"symbol", "asks", "bids"},
-    # minute/full_minute 的 amount(成交额)按契约可空 (docs/plugin-development.md:
+    # minute/full_minute 的 amount(成交额)按契约可空 (docs/development/plugin-development.md:
     # 无法提供可靠成交额时应返回 null 不得伪造, 均价线降级显示 —), 不列为必填 —
     # 否则缺成交额的源整个被 validate 拒绝, 保存后源从列表消失
     # financial 字段由数据源决定, 只要求能映射出 symbol

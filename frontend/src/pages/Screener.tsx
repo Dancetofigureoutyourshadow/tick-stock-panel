@@ -1019,11 +1019,11 @@ export function Screener() {
               {pool.length === 0 && (
                 <div className="mt-2 flex flex-wrap items-center justify-center gap-x-1.5 gap-y-1 text-[11px] leading-relaxed text-muted/80">
                   <span>自己写策略看</span>
-                  <code className="rounded bg-elevated/70 px-1 py-px font-mono text-[10px] text-secondary">docs/strategy.md</code>
+                  <code className="rounded bg-elevated/70 px-1 py-px font-mono text-[10px] text-secondary">docs/guides/strategy.md</code>
                   <span>（三种扩展方式：自定义信号 / AI 生成 / 手写代码）</span>
                   <span className="text-border" aria-hidden="true">·</span>
                   <span>用 AI 迭代已有策略看</span>
-                  <code className="rounded bg-elevated/70 px-1 py-px font-mono text-[10px] text-secondary">docs/strategy-iteration.md</code>
+                  <code className="rounded bg-elevated/70 px-1 py-px font-mono text-[10px] text-secondary">docs/development/strategy-iteration.md</code>
                 </div>
               )}
             </div>

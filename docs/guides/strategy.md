@@ -2,7 +2,7 @@
 
 策略是策略引擎、回测、监控的基础。本文介绍策略体系与三种扩展方式。
 
-完整策略开发规范(AI 生成与手写)见 [`backend/app/strategy/prompts/strategy-guide.md`](../backend/app/strategy/prompts/strategy-guide.md)。
+完整策略开发规范(AI 生成与手写)见 [`backend/app/strategy/prompts/strategy-guide.md`](../../backend/app/strategy/prompts/strategy-guide.md)。
 
 ---
 
@@ -57,13 +57,13 @@
 
 > 💡 **文件与范围铁律**:AI 生成的策略只生成一个 `.py` 文件,只 `import polars as pl`,绝不修改 `backend/`、`docs/`、`frontend/` 等现有文件。
 
-生成之后的持续改进(假设—验证—判定闭环),见 [AI 策略迭代指南](./strategy-iteration.md)。
+生成之后的持续改进(假设—验证—判定闭环),见 [AI 策略迭代指南](../development/strategy-iteration.md)。
 
 ### 📝 方式三:自定义编写 / 代码迁移
 
 可以在策略页「自定义编写」中直接编辑策略代码并保存,新建自定义策略会落入 `data/strategies/custom/`,文件名/ID 用 `custom_` 前缀。也可以手动把已有策略改写为 Polars 文件后放入该目录,引擎会自动发现;或用策略池对话框右上角的**「导入策略」**按钮直接上传 `.py` 文件(新装空库上手的最快路径)。
 
-手写策略需遵循 [`strategy-guide.md`](../backend/app/strategy/prompts/strategy-guide.md) 的文件结构(META / basic_filter / scoring / ENTRY_SIGNALS / filter 等),完整规范见该文档。
+手写策略需遵循 [`strategy-guide.md`](../../backend/app/strategy/prompts/strategy-guide.md) 的文件结构(META / basic_filter / scoring / ENTRY_SIGNALS / filter 等),完整规范见该文档。
 
 ---
 
@@ -79,7 +79,7 @@
 | `scoring` | 策略权重,总和 = 1.0 |
 | `ENTRY_SIGNALS` / `EXIT_SIGNALS` | 进出场信号列(回测用) |
 
-完整字段说明与示例见 [`strategy-guide.md`](../backend/app/strategy/prompts/strategy-guide.md)。
+完整字段说明与示例见 [`strategy-guide.md`](../../backend/app/strategy/prompts/strategy-guide.md)。
 
 ---
 

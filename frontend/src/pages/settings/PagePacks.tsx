@@ -5,7 +5,7 @@
  * (packToExtension) → 校验结果回填 manifest(成功即启用) → 刷新页面后在
  * 启动引导窗口正式挂载(main.tsx → loadRuntimePageExtensions)。
  * 启动期失败(路由冲突等)由注册表记入 loadErrors, 这里按 runtime: 前缀
- * 展示。打包方式见 frontend/page-pack-template 与 docs/page-sdk.md。
+ * 展示。打包方式见 frontend/page-pack-template 与 docs/development/page-sdk.md。
  */
 import { useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -82,7 +82,7 @@ export function SettingsPagePacksPanel() {
         <p className="mt-2 max-w-3xl text-sm leading-6 text-secondary">
           用 <span className="font-mono text-xs text-accent">frontend/page-pack-template</span> 打包页面
           (产物为单文件 ES 模块), 在此上传即成为完整页面 — 路由、侧栏入口、菜单管理自动注册,
-          刷新后生效。契约与安全边界见 <span className="font-mono text-xs text-accent">docs/page-sdk.md</span>。
+          刷新后生效。契约与安全边界见 <span className="font-mono text-xs text-accent">docs/development/page-sdk.md</span>。
         </p>
 
         <div className="mt-4 flex flex-wrap items-center gap-2">

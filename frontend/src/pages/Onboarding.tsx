@@ -596,9 +596,9 @@ function DataSourceStep({ onNext, onBack }: { onNext: () => void; onBack: () => 
           ,接入自有行情或切换数据源请前往
           <span className="mx-0.5 rounded bg-elevated/70 px-1 py-px font-mono text-[10px] text-secondary">设置 → 数据源</span>
           ,方法详见
-          <span className="mx-0.5 rounded bg-elevated/70 px-1 py-px font-mono text-[10px] text-secondary">docs/custom-data-source.md</span>
+          <span className="mx-0.5 rounded bg-elevated/70 px-1 py-px font-mono text-[10px] text-secondary">docs/development/custom-data-source.md</span>
           与
-          <span className="mx-0.5 rounded bg-elevated/70 px-1 py-px font-mono text-[10px] text-secondary">docs/plugin-development.md</span>
+          <span className="mx-0.5 rounded bg-elevated/70 px-1 py-px font-mono text-[10px] text-secondary">docs/development/plugin-development.md</span>
           。
         </div>
       </div>

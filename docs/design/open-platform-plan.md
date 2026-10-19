@@ -1,7 +1,7 @@
 # 核心能力开放与插件化改造设计方案
 
-> 状态: V1/V2 已实现（0.3.2）—— Token + scope 网关 + 限流、五个 scope 全量 Tier A、`/api/openapi.json?tier=a` 契约视图、设置页 Token 管理（「设置 → 开放接口」）。V3+（钩子契约、SSE 票据、模拟盘拆分）仍为设计。使用说明见 [features.md → 开放接口](./features.md#-开放接口open-api--tier-a)。
-> 遵循 [CONTRIBUTING.md](../CONTRIBUTING.md) 的数据口径、插件化与测试矩阵要求; 扩展机制现状见 [secondary-development.md](./secondary-development.md)。
+> 状态: V1/V2 已实现（0.3.2）—— Token + scope 网关 + 限流、五个 scope 全量 Tier A、`/api/openapi.json?tier=a` 契约视图、设置页 Token 管理（「设置 → 开放接口」）。V3+（钩子契约、SSE 票据、模拟盘拆分）仍为设计。使用说明见 [features.md → 开放接口](../guides/features.md#-开放接口open-api--tier-a)。
+> 遵循 [CONTRIBUTING.md](../../CONTRIBUTING.md) 的数据口径、插件化与测试矩阵要求; 扩展机制现状见 [secondary-development.md](../development/secondary-development.md)。
 
 ## 1. 目标与非目标
 

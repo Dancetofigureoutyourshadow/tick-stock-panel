@@ -72,7 +72,7 @@
 
 ## 🔬 因子平台(Factors)
 
-`/factors` 一级页,检验 / 因子库 / 编辑器 / 组合四个 tab,与策略线双向联动。设计与阶段规划见 [factor-platform-plan.md](./factor-platform-plan.md)。
+`/factors` 一级页,检验 / 因子库 / 编辑器 / 组合四个 tab,与策略线双向联动。设计与阶段规划见 [factor-platform-plan.md](../design/factor-platform-plan.md)。
 
 **因子编辑器**:写 DSL 公式(如 `rank(-ts_sum(change_pct, 5))`)→ 校验语法(错误点击定位到字符)→ 试算 40 日 IC → 保存草稿。辅助输入:全部 25 个算子按「时序/截面/工具」分组点击插入(悬停显示签名与参数约束)、79 个可用字段双语 chip 点击插入、「从模板开始」下拉含经典模板与**我的因子**(导入已保存公式作为起点,非初始公式替换前有确认)。保存为草稿态,完整检验通过后在因子库激活。
 
@@ -163,13 +163,13 @@
 
 ### 页面插件(运行时扩展页面)
 
-页面可以打包成**单文件 ES 模块产物**(`frontend/page-pack-template` 一键构建),在「设置 → 页面插件」上传即挂载为完整页面 — 路由、侧栏入口、菜单管理自动注册,**宿主无需重新构建**;本地 dev / 生产 / 桌面端一致生效。上传时即时试载校验契约(清单格式、路由冲突),坏包停用并显示原因;启停删除随时管理,刷新后生效。源码级扩展(`frontend/src/custom/`)与声明式分析页面仍是随构建的另外两条扩展路径。契约与安全边界见 [page-sdk.md](./page-sdk.md)。
+页面可以打包成**单文件 ES 模块产物**(`frontend/page-pack-template` 一键构建),在「设置 → 页面插件」上传即挂载为完整页面 — 路由、侧栏入口、菜单管理自动注册,**宿主无需重新构建**;本地 dev / 生产 / 桌面端一致生效。上传时即时试载校验契约(清单格式、路由冲突),坏包停用并显示原因;启停删除随时管理,刷新后生效。源码级扩展(`frontend/src/custom/`)与声明式分析页面仍是随构建的另外两条扩展路径。契约与安全边界见 [page-sdk.md](../development/page-sdk.md)。
 
 ### 数据源插件化
 
 内置 [TickFlow](https://tickflow.org) 官方 SDK(日 K / 分钟 K / 指数 / 财务 / 实时行情),同时支持接入第三方数据源:YAML 声明自有 HTTP 接口,或开发插件源。多个数据集(日K / 除权因子 / 实时行情 / 分钟K / 五档盘口 / 财务,注册表持续扩展)按源声明自由组合,在「设置 → 数据源」切换。
 
-详见 [custom-data-source.md](./custom-data-source.md) 与 [plugin-development.md](./plugin-development.md)。
+详见 [custom-data-source.md](../development/custom-data-source.md) 与 [plugin-development.md](../development/plugin-development.md)。
 
 ### 全量分钟(盘中增量落盘)
 
@@ -245,7 +245,7 @@ APScheduler 默认 15:35 CST 自动:拉日 K → 重算 enriched 表 → 跑监�
 
 ## 🌐 开放接口(Open API · Tier A)
 
-外部程序(自己的看板/脚本/量化服务)无需面板密码,凭 **API Token** 直接调用核心读取、写入与任务接口 —— 「核心能力开放」的出口层。总体设计与后续 Tier 见 [open-platform-plan.md](./open-platform-plan.md),可运行示例见 [examples/open-api](../examples/open-api/README.md)。
+外部程序(自己的看板/脚本/量化服务)无需面板密码,凭 **API Token** 直接调用核心读取、写入与任务接口 —— 「核心能力开放」的出口层。总体设计与后续 Tier 见 [open-platform-plan.md](../design/open-platform-plan.md),可运行示例见 [examples/open-api](../../examples/open-api/README.md)。
 
 ### Token 管理
 
@@ -311,7 +311,7 @@ AI 客户端 ⇄ MCP stdio (薄桥) ⇄ HTTP + Bearer Token ⇄ 开放网关
 
 - 工具按 Token 的 scope 暴露(12 个:搜索/日K/指数/总览/环境/策略/告警/扩展表读/写/回测),**权限裁决仍在网关** — 桥不持有业务逻辑,面板升级自动受益;
 - 模拟盘交易类端点刻意未包装(不建议把下单交给 AI);
-- 配置方法与工具清单见 [mcp-server/README](../mcp-server/README.md),可运行冒烟测试 `smoke_test.py` 验证连通。
+- 配置方法与工具清单见 [mcp-server/README](../../mcp-server/README.md),可运行冒烟测试 `smoke_test.py` 验证连通。
 
 ### 桌面客户端版本清单
 

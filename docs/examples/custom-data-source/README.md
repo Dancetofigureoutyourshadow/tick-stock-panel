@@ -40,4 +40,4 @@ cp docs/examples/custom-data-source/mock_source.yaml data/data_sources/mock_sour
 
 选择 `mock_source` 后,可用「试拉测试」验证 `daily`、`adj_factor` 和 `realtime`。
 
-完整说明见 [../../custom-data-source.md](../../custom-data-source.md)。
+完整说明见 [../../development/custom-data-source.md](../../development/custom-data-source.md)。

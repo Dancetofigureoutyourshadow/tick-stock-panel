@@ -6,7 +6,7 @@
  *   - id 带命名空间 (如 demo.hello), 全局唯一, 与核心/其他扩展冲突会被拒
  *   - routes[].path 非根绝对路径且静态 (不支持 :param / 通配)
  *   - mount(el, ctx): 把页面渲染进容器, 返回清理函数(可选)
- *   - navigation[].icon 用白名单图标名 (Sparkles/Zap/Star/... 见 docs/page-sdk.md)
+ *   - navigation[].icon 用白名单图标名 (Sparkles/Zap/Star/... 见 docs/development/page-sdk.md)
  *
  * 样式约束: 宿主 Tailwind 按需编译, 不保证任意类名存在 — 布局关键样式
  * 用内联样式; 主题色可用宿主 CSS 变量 (如 var(--accent))。

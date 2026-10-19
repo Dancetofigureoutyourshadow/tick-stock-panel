@@ -1565,7 +1565,7 @@ def fetch_intraday_custom_batch(
 ) -> tuple[pl.DataFrame, int]:
     """自定义源全量分钟修复轮: 当日窗口全市场批量拉取 (不落盘)。
 
-    provider 契约 (见 docs/plugin-development.md):
+    provider 契约 (见 docs/development/plugin-development.md):
     - get_intraday_batch(symbols, count, asset_type) 优先 — 源自管批量端点;
     - 未实现则回退 get_minute(symbols, 当日窗口) — 复用逐标的分钟K机制,
       请求数按 chunk 回调统计。

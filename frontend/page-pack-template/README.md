@@ -22,4 +22,4 @@ pnpm build        # → dist/extension.js
 - **禁止** import 宿主内部模块（`@/lib/...` 在产物构建中不可解析）；数据请求一律经 `ctx.api`。
 - 样式：宿主 Tailwind 按需编译，任意类名不保证存在——布局关键样式用内联样式，主题色用宿主 CSS 变量（如 `var(--accent)`）。
 
-完整契约（apiVersion、图标白名单、路由规则、安全边界）见 [`docs/page-sdk.md`](../../docs/page-sdk.md)。
+完整契约（apiVersion、图标白名单、路由规则、安全边界）见 [`docs/development/page-sdk.md`](../../docs/development/page-sdk.md)。

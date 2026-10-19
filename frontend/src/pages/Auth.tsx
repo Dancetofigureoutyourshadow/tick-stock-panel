@@ -173,7 +173,7 @@ export function Auth() {
               <p>
                 详细配置说明见{' '}
                 <a
-                  href="https://github.com/shy3130/tickflow-stock-panel/blob/main/docs/deploy-password.md"
+                  href="https://github.com/shy3130/tickflow-stock-panel/blob/main/docs/guides/deploy-password.md"
                   target="_blank"
                   rel="noreferrer"
                   className="text-accent underline-offset-2 hover:underline"

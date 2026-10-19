@@ -2,7 +2,7 @@
 
 本文面向需要在当前仓库中二次开发的维护者、团队和 AI 编码代理。目标不是禁止修改源码，而是让新增页面、业务规则和定制逻辑尽量通过稳定边界接入，使后续合并上游版本时冲突更少、风险可验证。
 
-修改任何代码前，仍须先完整阅读根目录的 [`CONTRIBUTING.md`](../CONTRIBUTING.md)。金融数据口径、缓存、并发、数据源和测试要求以该文档为准。
+修改任何代码前，仍须先完整阅读根目录的 [`CONTRIBUTING.md`](../../CONTRIBUTING.md)。金融数据口径、缓存、并发、数据源和测试要求以该文档为准。
 
 ## 1. 文档状态
 
@@ -153,7 +153,7 @@ const extension: FrontendExtension = {
 
 路由注册与菜单注册已经解耦：页面可以存在但不显示在菜单中；菜单只能引用同一扩展内的已注册路由。首版只支持静态绝对路径。扩展路由不得覆盖核心或其他扩展路径，冲突时只禁用该扩展并输出明确错误。
 
-完整前端模板位于 [`frontend/src/custom/_template/extension.tsx.example`](../frontend/src/custom/_template/extension.tsx.example)。
+完整前端模板位于 [`frontend/src/custom/_template/extension.tsx.example`](../../frontend/src/custom/_template/extension.tsx.example)。
 
 ### 3.4 前端禁止事项
 
@@ -227,7 +227,7 @@ def setup(registrar: BackendExtensionRegistrar) -> None:
 
 核心数据层初始化完成后，可选的 `startup(context: ExtensionContext)` 会收到数据目录和只读仓库协议。启动钩子失败只记录错误，不阻止主程序启动。
 
-完整后端模板位于 [`backend/app/custom/_template.py.example`](../backend/app/custom/_template.py.example)。
+完整后端模板位于 [`backend/app/custom/_template.py.example`](../../backend/app/custom/_template.py.example)。
 
 ### 4.3 后端契约要求
 
@@ -298,7 +298,7 @@ AI 必须按以下顺序工作：
 请在 Tick Stock Panel 当前仓库中实现：[具体需求]。
 
 开始前完整阅读 AGENTS.md、CONTRIBUTING.md 和
-docs/secondary-development.md，并先检查 git status、真实调用链和现有测试。
+docs/development/secondary-development.md，并先检查 git status、真实调用链和现有测试。
 
 约束：
 1. 先判断现有功能能否复用，并将方案归类为 L1/L2/L3。

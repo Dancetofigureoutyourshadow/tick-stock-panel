@@ -484,6 +484,19 @@ cp .env.example .env       # 按需填 TICKFLOW_API_KEY(留空 = None 模式)
 
 自动检查 / 下载依赖、释放端口、同时起前后端。后端 → <http://localhost:3018> · 前端 → <http://localhost:3011>。
 
+Windows 启动器的可用参数:
+
+```powershell
+.\dev.ps1                  # 开发模式, 后端文件变更自动重载
+.\dev.ps1 -NoReload        # 内测/长时间运行: 不启用 --reload, 不会反复全量预热
+.\dev.ps1 -Force           # 已有同端口实例时先结束它再启动
+.\dev.ps1 -BackendPort 8000 -FrontendPort 5173
+```
+
+- **停止请用 Ctrl-C**,不要点窗口右上角的 X —— 只有 Ctrl-C 会走到清理逻辑,结束整棵进程树。
+- 子进程输出重定向到 `data/logs/{backend,frontend}.{out,err}.log`,启动器本身只做有界 tail,内存占用恒定。排查问题优先看这几个文件,后端的 `data/backend.log` 仍会单独轮转。
+- 启动前会检测同端口是否已有本项目后端:有则直接拒绝启动并打印 PID,避免多开叠加内存(每个实例常驻 1GB 以上)。换端口调试的实例不会被误杀。
+
 ### 方式 E:桌面客户端(Windows / macOS)
 
 从 [Releases](https://github.com/shy3130/tick-stock-panel/releases/latest) 下载对应安装包:Windows 双击 `TSP-Setup-x64-*.exe` 按向导安装即可;macOS 下载 `TSP-macos-arm64-*.dmg`。
@@ -503,6 +516,41 @@ xattr -dr com.apple.quarantine /Applications/TSP.app
 ```
 
 </details>
+
+### 内存占用与低配机器
+
+后端启动后会在内存里保留一份完整的 enriched 历史宽表(指标 + 扩展数据列),供策略扫描、监控和回测直接复用,这是主要的内存来源。实测(243 个交易日、约 108 万行、105 列):
+
+| 场景 | 常驻内存 | 启动预热峰值 |
+| :-- | --: | --: |
+| 默认配置(按 CPU 核数并行) | ~1.3 GB | ~1.5–1.8 GB |
+| `POLARS_MAX_THREADS=2` | ~0.8 GB | ~1.2 GB |
+
+给出的是 macOS arm64 实测值。Windows 的内存工作集通常比 macOS 的 RSS 更"实",同一数据量下数值接近或略高;Polars 释放的页不会立即归还系统,所以监控里看到的是历史高水位而不是实时占用。
+
+**2 GB 内存的服务器/小主机建议:**
+
+```ini
+# .env
+POLARS_MAX_THREADS=2        # 主要收益项: 用约 40% 的构建耗时换 500MB 内存
+```
+
+```yaml
+# docker-compose.yml 的 app 服务
+    mem_limit: 1500m
+    memswap_limit: 3g         # 留 swap 缓冲, 避免偶发峰值直接触发 OOM kill
+```
+
+- **不要在 2 GB 机器上跑回测/参数优化/因子挖掘**:这类任务会另起独立 worker 进程并重新加载整套后端,单个约 800 MB,与主进程叠加必然超出。
+- **不要多开实例**:每个后端实例都会各自构建一份历史缓存。重复运行启动脚本会叠加占用,Windows 可用下面的命令确认是否只有一个:
+
+  ```powershell
+  Get-CimInstance Win32_Process |
+    Where-Object { $_.CommandLine -like '*uvicorn*app.main:app*' } |
+    Select-Object ProcessId, ParentProcessId, CommandLine
+  ```
+
+- **确认预热规模**:`data/backend.log` 中的 `enriched 历史缓存: N rows` 表示本次预热实际载入的行数,N 越大占用越高。历史数据较少时(例如首次只同步了几十天)内存会明显低于上表。
 
 ### 跑起来后的第一次使用
 

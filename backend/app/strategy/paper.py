@@ -16,7 +16,8 @@
 
 撮合规则:
   - 即时单: 盘中由行情轮询钩子按最新快照价成交 (evaluate_intraday);
-  - next_open / close 单: 盘后管道 settle_day 按当日 raw_open / raw_close 成交;
+  - next_open 单: 当日实时原始行情确认开盘后按 raw open 成交, 盘后兜底;
+  - close 单: 盘后管道 settle_day 按当日 raw_close 成交;
   - T+1: 当日买入次一交易日方可卖 (lots 按 buy_date 记账, available = date < today);
   - 涨跌停: 触及涨停的买单 / 跌停的卖单默认拒单 (expired 留痕); 账户开启
     queue_limit_orders 后转「排队次日重试」(转 next_open, 计顺延, 超限过期);
@@ -1131,24 +1132,63 @@ def _fill_event(fill: dict, account_id: str) -> dict:
     }
 
 
-def evaluate_intraday(data_dir: Path, snapshot: dict[str, float], account_id: str = DEFAULT_ACCOUNT_ID) -> list[dict]:
-    """盘中钩子: 用最新快照价撮合 pending 即时单。返回本次成交事件列表。
+def _realtime_open_price(order: dict, bar: dict, now: datetime) -> float | None:
+    """仅使用当日已开盘的原始行情; 不把竞价指示价或已知开盘价回填给晚单。"""
+    opening = datetime.combine(now.date(), _SESSION_OPEN, tzinfo=CN_TZ)
+    if now < opening or now.weekday() >= 5 or bar.get("date") != now.date():
+        return None
+    try:
+        stamp = datetime.fromisoformat(str(order.get("queued_at") or order.get("created_at")))
+        stamp = stamp.replace(tzinfo=CN_TZ) if stamp.tzinfo is None else stamp.astimezone(CN_TZ)
+        quote_time = datetime.fromtimestamp(float(bar["quote_ts"]) / 1000, CN_TZ)
+        raw_open, volume = float(bar["open"]), float(bar["volume"])
+        target = (order.get("confirmation") or {}).get("target_trade_date")
+        if target and _date.fromisoformat(target) > now.date():
+            return None
+    except (KeyError, TypeError, ValueError, OverflowError, OSError):
+        return None
+    if stamp >= opening or not opening <= quote_time <= now:
+        return None
+    if not math.isfinite(raw_open) or raw_open <= 0 or not math.isfinite(volume) or volume <= 0:
+        return None
+    return raw_open
 
-    snapshot: {symbol: raw 最新价} (来自 enriched raw_close)。仅处理 market 单;
-    调用方 (quote_service) 已保证交易时段。ETF 不在快照内自然顺延。
+
+def evaluate_intraday(
+    data_dir: Path, snapshot: dict[str, float], account_id: str = DEFAULT_ACCOUNT_ID,
+    *, opening_snapshot: pl.DataFrame | None = None,
+) -> list[dict]:
+    """盘中钩子: 最新价撮合即时单, 原始开盘价撮合已到期的 next_open 单。
+
+    snapshot: {symbol: raw 最新价} (来自 enriched raw_close)。opening_snapshot 来自
+    provider 标准化的原始 OHLCV, 不使用 enriched 的前复权 open。行情日期/时间/
+    开盘价/成交量缺失时保留 pending, 由盘后正式日 K 兜底。ETF 未喂入时自然顺延。
     事件由调用方广播 (SSE/语音/系统通知/留痕/Webhook), 域模块只产出不投递。
     """
     events: list[dict] = []
     with PAPER_LOCK:
+        now = cn_now().astimezone(CN_TZ)
         today = cn_today().isoformat()
         pending_orders = sorted(
-            (o for o in load_orders(data_dir, account_id) if o["status"] == "pending" and o["order_type"] == "market"),
+            (o for o in load_orders(data_dir, account_id) if o["status"] == "pending" and o["order_type"] in ("market", "next_open")),
             key=_order_sort_key,
         )
+        opening_bars = {}
+        opening_symbols = [o["symbol"] for o in pending_orders if o["order_type"] == "next_open"]
+        fields = ["symbol", "date", "open", "volume", "quote_ts"]
+        if opening_symbols and opening_snapshot is not None and set(fields).issubset(opening_snapshot.columns):
+            opening_bars = {
+                row["symbol"]: row for row in opening_snapshot.filter(
+                    pl.col("symbol").is_in(opening_symbols),
+                ).select(fields).to_dicts()
+            }
         for order in pending_orders:
             if order.get("daily_review_required"):
                 continue
-            price = snapshot.get(order["symbol"])
+            if order["order_type"] == "next_open":
+                price = _realtime_open_price(order, opening_bars.get(order["symbol"], {}), now)
+            else:
+                price = snapshot.get(order["symbol"])
             if price is None or price <= 0:
                 continue  # 无快照顺延
             fill = _fill_order(data_dir, order, float(price), today, account_id)

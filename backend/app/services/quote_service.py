@@ -959,6 +959,13 @@ class QuoteService:
         # ---- 策略监控 + 告警评估 ----
         # 由调用方 (_fetch_quotes) 持 _evaluate_lock 在取数锁外执行;
         # 返回本轮快照 (daily_df, quote_extra) 作为评估输入
+        # 图表落盘会用 close 填补缺失 OHLC, 撮合必须保留 provider 的真实 open;
+        # 仅还原返回给监控的开盘列, 不改变日K展示和指标计算的兼容行为。
+        if not daily_df.is_empty():
+            raw_opens = {row["symbol"]: row.get("open") for row in stock_records}
+            daily_df = daily_df.with_columns(
+                pl.col("symbol").replace_strict(raw_opens, default=None, return_dtype=pl.Float64).alias("open"),
+            )
         return daily_df, quote_extra
 
     # ================================================================
@@ -1368,7 +1375,7 @@ class QuoteService:
                     if not str(ev.get("rule_id") or "").startswith(paper_auto.FOLLOW_MONITOR_PREFIX)
                 ], engine)
 
-            # 模拟盘钩子: 与监控评估同频 —— ① 用同一份实时快照撮合 pending 即时单;
+            # 模拟盘钩子: 与监控评估同频 —— ① 最新价撮合即时单, 原始 open 撮合开盘单;
             # ② rule_events 喂给自动跟单规则触发自动下单。逐账户执行 (账户间规则与订单隔离)。
             # 即时撮合仅股票 (ETF 即时单在下单时已转次日开盘); 独立 try ——
             # 模拟盘任何异常只留痕, 不得影响监控告警链路。
@@ -1394,7 +1401,9 @@ class QuoteService:
                     trade_date = cn_today().isoformat()
                     for acc_id in paper_trading.list_account_ids(data_dir):
                         paper_events.extend(
-                            paper_trading.evaluate_intraday(data_dir, snapshot, account_id=acc_id))
+                            paper_trading.evaluate_intraday(
+                                data_dir, snapshot, account_id=acc_id, opening_snapshot=daily_df,
+                            ))
                         paper_events.extend(paper_exit.evaluate(
                             data_dir, exit_rows, account_id=acc_id, trade_date=trade_date,
                             daily_strategy_ids=daily_ids,

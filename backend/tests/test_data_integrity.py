@@ -603,7 +603,7 @@ def test_pipeline_self_heals_snapshot_day(tmp_path, monkeypatch):
     monkeypatch.setattr(instrument_sync, "sync_instruments", lambda data_dir: 0)
     batch_calls: list[dict] = []
 
-    def _fake_batch(universe, repo, capset, start_date=None, end_date=None, on_chunk_done=None):
+    def _fake_batch(universe, repo, capset, start_date=None, end_date=None, on_chunk_done=None, failed_out=None):
         batch_calls.append({
             "start": start_date.date() if hasattr(start_date, "date") else start_date,
             "end": end_date.date() if hasattr(end_date, "date") else end_date,

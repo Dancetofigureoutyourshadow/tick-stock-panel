@@ -53,7 +53,7 @@ const BATCH_STATUS_LABEL: Record<string, string> = {
 function DailyTimingNotice() {
   return <div className="text-[11px] leading-relaxed text-muted">
     日线策略：14:50 预扫，14:55 完整确认，14:57 提交，按最终收盘价模拟撮合；
-    次日开盘模式在盘后全量同步及指标更新成功后确认。盘中止损止盈仍实时评估。
+    次日开盘模式在盘后全量同步及指标更新成功后确认，次日实时行情确认开盘价后撮合，缺行情时盘后兜底。盘中止损止盈仍实时评估。
     14:55 信号可能与最终日 K 不同。
   </div>
 }
@@ -2645,7 +2645,8 @@ function AccountPanel({ acc, name, onDeleted }: { acc: string; name?: string; on
             <div className="rounded-card border border-border/60 bg-base/40 p-3 text-[11px] leading-relaxed text-muted">
               <div className="font-medium text-secondary">撮合口径</div>
               <div className="mt-1">· 即时单: 交易时段按最新快照价 + 滑点成交</div>
-              <div>· 次日开盘 / 当日收盘单: 盘后管道按真实开盘/收盘价成交</div>
+              <div>· 次日开盘单: 实时行情确认原始开盘价后成交；缺行情时盘后兜底</div>
+              <div>· 当日收盘单: 盘后管道按最终收盘价成交</div>
               <div>· T+1: 当日买入次一交易日可卖</div>
               <div>· 停牌顺延 3 日自动过期; 除权按因子调整数量与成本, 台账留痕</div>
               <div className="mt-2 flex items-center justify-between border-t border-border/40 pt-2">

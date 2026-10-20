@@ -3,10 +3,10 @@ revision = 3
 requires-python = ">=3.11"
 resolution-markers = [
     "python_full_version >= '3.15' and sys_platform == 'win32'",
-    "python_full_version >= '3.15' and sys_platform == 'emscripten'",
-    "python_full_version >= '3.15' and sys_platform != 'emscripten' and sys_platform != 'win32'",
     "python_full_version == '3.14.*' and sys_platform == 'win32'",
+    "python_full_version >= '3.15' and sys_platform == 'emscripten'",
     "python_full_version == '3.14.*' and sys_platform == 'emscripten'",
+    "python_full_version >= '3.15' and sys_platform != 'emscripten' and sys_platform != 'win32'",
     "python_full_version == '3.14.*' and sys_platform != 'emscripten' and sys_platform != 'win32'",
     "python_full_version < '3.14' and sys_platform == 'win32'",
     "python_full_version < '3.14' and sys_platform == 'emscripten'",
@@ -128,7 +128,7 @@ name = "cffi"
 version = "2.0.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pycparser", marker = "implementation_name != 'PyPy'" },
+    { name = "pycparser", marker = "implementation_name != 'PyPy' and sys_platform == 'win32'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/eb/56/b1ba7935a17738ae8453301356628e8147c79dbb825bcbc73dc7401f9846/cffi-2.0.0.tar.gz", hash = "sha256:44d1b5909021139fe36001ae048dbdde8214afa20200eda0f64c068cac5d5529", size = 523588, upload-time = "2025-09-08T23:24:04.541Z" }
 wheels = [
@@ -255,7 +255,7 @@ name = "clr-loader"
 version = "0.3.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "cffi" },
+    { name = "cffi", marker = "sys_platform == 'win32'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/e4/46/7eea92b6aa2d68af78e049cbecec5f757f1aad44ecdecdc16bbad7eead51/clr_loader-0.3.1.tar.gz", hash = "sha256:2e073e9aaf49d1ae2f56ecba27987ad5fb68be4bcd9dd34a5bed8f0e4e128366", size = 86805, upload-time = "2026-04-18T17:49:44.287Z" }
 wheels = [
@@ -278,18 +278,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/4c/13/7d740c5849255756bc17888787313b61fd38a0a8304fc4f073dfc46122aa/comm-0.2.3.tar.gz", hash = "sha256:2dc8048c10962d55d7ad693be1e7045d891b7ce8d999c97963a5e3e99c055971", size = 6319, upload-time = "2025-07-25T14:02:04.452Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/60/97/891a0971e1e4a8c5d2b20bbe0e524dc04548d2307fee33cdeba148fd4fc7/comm-0.2.3-py3-none-any.whl", hash = "sha256:c615d91d75f7f04f095b30d1c1711babd43bdc6419c1be9886a85f2f4e489417", size = 7294, upload-time = "2025-07-25T14:02:02.896Z" },
-]
-
-[[package]]
-name = "concurrent-log-handler"
-version = "0.9.29"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "portalocker" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/9c/2c/ba185acc438cff6b58cd8f8dec27e7f4fcabf6968a1facbb6d0cacbde7fe/concurrent_log_handler-0.9.29.tar.gz", hash = "sha256:bc37a76d3f384cbf4a98f693ebd770543edc0f4cd5c6ab6bc70e9e1d7d582265", size = 42114, upload-time = "2026-02-22T18:18:25.758Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/4a/f3/3e3188fdb3e53c6343fd1c7de41c55d4db626f07db3877eae77b28d58bd2/concurrent_log_handler-0.9.29-py3-none-any.whl", hash = "sha256:0d6c077fbaef2dae49a25975dcf72a602fe0a6a4ce80a3b7c37696d37e10459a", size = 32052, upload-time = "2026-02-22T18:18:24.558Z" },
 ]
 
 [[package]]
@@ -1407,7 +1395,7 @@ name = "pexpect"
 version = "4.9.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "ptyprocess" },
+    { name = "ptyprocess", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/42/92/cc564bf6381ff43ce1f4d06852fc19a2f11d180f23dc32d9588bee2f149d/pexpect-4.9.0.tar.gz", hash = "sha256:ee7d41123f3c9911050ea2c2dac107568dc43b2d3b0c7557a33212c398ead30f", size = 166450, upload-time = "2023-11-25T09:07:26.339Z" }
 wheels = [
@@ -1588,15 +1576,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/9b/d5/8586749338b86351f519d11e6eb2e4ab9cca4c0d9ad8fc14a3ecda579c81/polars_runtime_compat-1.44.1-cp310-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:4dfd82eb7093beec1534eebd83e7ee5964362042c8106f488189531930874173", size = 56054368, upload-time = "2026-08-26T07:09:03.161Z" },
     { url = "https://files.pythonhosted.org/packages/d2/3f/4d44a299df1fc52b09686f1143359e2719ae2ccbb8b2ef8c2c262fb7ae8b/polars_runtime_compat-1.44.1-cp310-abi3-win_amd64.whl", hash = "sha256:ff0c676297151f357f999f42942ea716de96230bf4191677aadf88bb56a274fb", size = 53482786, upload-time = "2026-08-26T07:09:06.351Z" },
     { url = "https://files.pythonhosted.org/packages/39/54/cb20b74fb0753d6429f4f01059fffc415bbadbc854ce61eb18c057bc3554/polars_runtime_compat-1.44.1-cp310-abi3-win_arm64.whl", hash = "sha256:b7ad6cbcd1738498218555ecced0b75e212d5af49e6a1fac51be58d1137999a8", size = 47152033, upload-time = "2026-08-26T07:09:09.916Z" },
-]
-
-[[package]]
-name = "portalocker"
-version = "4.3.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/0d/8e/27672cd2dde9d2345ead0352146a401be4ec0af132be86ca7a2db24afb09/portalocker-4.3.0.tar.gz", hash = "sha256:69bf8e46769d66eb0a23219b9550253d2c3b5f03400202a2333784c1e6395e32", size = 263582, upload-time = "2026-08-25T18:05:20.267Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/6a/76/57be9bb352b3f91c80671a7b7ce2cd51f99ad324c89df82a098df9b9e609/portalocker-4.3.0-py3-none-any.whl", hash = "sha256:aa91709ccfc322b8225171392d64a2f9fc833f15f5ab741cfba6d3fba285ce31", size = 129554, upload-time = "2026-08-25T18:05:18.64Z" },
 ]
 
 [[package]]
@@ -1883,7 +1862,7 @@ name = "pyobjc-framework-cocoa"
 version = "12.2.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pyobjc-core" },
+    { name = "pyobjc-core", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/51/34/fbe38a204643aa4e1b91391cdce07a34da565a69171ebcad08de7438a556/pyobjc_framework_cocoa-12.2.1.tar.gz", hash = "sha256:b94b37fe5730e5ae1fb0052912cd174e6ec329b0bfba4a012ae5db1014b5864b", size = 3125751, upload-time = "2026-06-19T16:20:05.159Z" }
 wheels = [
@@ -1902,8 +1881,8 @@ name = "pyobjc-framework-quartz"
 version = "12.2.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pyobjc-core" },
-    { name = "pyobjc-framework-cocoa" },
+    { name = "pyobjc-core", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
+    { name = "pyobjc-framework-cocoa", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/3b/f6/2a8b84dbf1fe7c04dd96ea73d991678d4e09a909f51971ecc51629bb2ab4/pyobjc_framework_quartz-12.2.1.tar.gz", hash = "sha256:b3b8b6f71e66147f8ff9e6213864cc8527e3a0b1ee90835b93ce221f4802d9b0", size = 3215521, upload-time = "2026-06-19T16:21:30.199Z" }
 wheels = [
@@ -1922,8 +1901,8 @@ name = "pyobjc-framework-security"
 version = "12.2.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pyobjc-core" },
-    { name = "pyobjc-framework-cocoa" },
+    { name = "pyobjc-core", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
+    { name = "pyobjc-framework-cocoa", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/44/b8/4267b802d8dba6de468e7d0765b05cc4e146fa376ed9f55e0b6461016bef/pyobjc_framework_security-12.2.1.tar.gz", hash = "sha256:d7831b1537f4346892e7f2f0e2b09d79bee98919b0767f4061278d0e03028f2d", size = 181065, upload-time = "2026-06-19T16:21:40.151Z" }
 wheels = [
@@ -1942,8 +1921,8 @@ name = "pyobjc-framework-uniformtypeidentifiers"
 version = "12.2.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pyobjc-core" },
-    { name = "pyobjc-framework-cocoa" },
+    { name = "pyobjc-core", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
+    { name = "pyobjc-framework-cocoa", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/74/a1/108fa1e5a3dd8aff626f98fb97de370323b290404b04ffa2ef9420665ed3/pyobjc_framework_uniformtypeidentifiers-12.2.1.tar.gz", hash = "sha256:1fb89d13aa3c2df8e6d6536f6df3493fe5a6caefd2a5adebf17c5af3b29ed4a2", size = 20679, upload-time = "2026-06-19T16:21:55.739Z" }
 wheels = [
@@ -1955,8 +1934,8 @@ name = "pyobjc-framework-webkit"
 version = "12.2.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pyobjc-core" },
-    { name = "pyobjc-framework-cocoa" },
+    { name = "pyobjc-core", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
+    { name = "pyobjc-framework-cocoa", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/11/d2/b230c594f70ecb970b4cef67bae2648d1bfa5b381e9b7e3710bf24ec8887/pyobjc_framework_webkit-12.2.1.tar.gz", hash = "sha256:a56acae55b50d549b20dff2921ad1099add8fbc377d0de09ddc2ba50957f7def", size = 332374, upload-time = "2026-06-19T16:22:01.988Z" }
 wheels = [
@@ -2065,7 +2044,7 @@ name = "pythonnet"
 version = "3.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "clr-loader" },
+    { name = "clr-loader", marker = "sys_platform == 'win32'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/05/57/da1992e44663b71365c6e842c8d7fa453d4ec45fb99a68cfee5b7e944d3c/pythonnet-3.1.0.tar.gz", hash = "sha256:7b34c382905d10a371509ffafd64cae0416305c28817738a9cd138336f4e9991", size = 250599, upload-time = "2026-05-23T20:30:21.578Z" }
 wheels = [
@@ -2164,7 +2143,7 @@ name = "qtpy"
 version = "2.4.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "packaging" },
+    { name = "packaging", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/70/01/392eba83c8e47b946b929d7c46e0f04b35e9671f8bb6fc36b6f7945b4de8/qtpy-2.4.3.tar.gz", hash = "sha256:db744f7832e6d3da90568ba6ccbca3ee2b3b4a890c3d6fbbc63142f6e4cdf5bb", size = 66982, upload-time = "2025-02-11T15:09:25.759Z" }
 wheels = [
@@ -2543,11 +2522,10 @@ all = [
 
 [[package]]
 name = "tickflow-stock-panel-backend"
-version = "0.3.8"
+version = "0.3.10"
 source = { editable = "." }
 dependencies = [
     { name = "apscheduler" },
-    { name = "concurrent-log-handler" },
     { name = "duckdb" },
     { name = "fastapi" },
     { name = "fastexcel" },
@@ -2595,14 +2573,13 @@ legacy-cpu = [
 [package.metadata]
 requires-dist = [
     { name = "apscheduler", specifier = ">=3.10" },
-    { name = "concurrent-log-handler", specifier = ">=0.9.29" },
     { name = "duckdb", specifier = ">=1.0" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "fastexcel", specifier = ">=0.10" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10" },
     { name = "numba", marker = "platform_machine != 'x86_64' or sys_platform != 'darwin'", specifier = ">=0.65.1" },
-    { name = "openai", specifier = ">=1.66" },
+    { name = "openai", specifier = ">=1.40" },
     { name = "pandas", specifier = ">=2.2" },
     { name = "pillow", specifier = ">=10.0" },
     { name = "platformdirs", specifier = ">=4.0" },

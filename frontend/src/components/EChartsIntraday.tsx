@@ -153,26 +153,6 @@ function buildOption(data: MinuteKlineRow[], prevClose: number | undefined, avgP
       symbol: 'none',
     })
   }
-  for (const line of priceLines) {
-    if (!Number.isFinite(line.value) || line.value <= 0) continue
-    markLineData.push({
-      yAxis: line.value,
-      lineStyle: { color: line.color ?? ct.text, type: 'dashed', width: 1, opacity: 0.92 },
-      label: {
-        show: !!line.label,
-        formatter: line.label ?? '',
-        position: 'insideEndTop',
-        color: line.color ?? ct.text,
-        backgroundColor: ct.tooltipBg,
-        borderRadius: 4,
-        padding: [2, 6],
-        fontSize: 10,
-        fontFamily: 'JetBrains Mono, monospace',
-      },
-      symbol: 'none',
-    })
-  }
-
   const markerData: any[] = markers
     .filter(marker => marker.date === date && Number.isFinite(marker.price) && marker.price > 0)
     .map(marker => ({
@@ -227,12 +207,6 @@ function buildOption(data: MinuteKlineRow[], prevClose: number | undefined, avgP
       }
     }
 
-    const monitoredDiff = priceLines.reduce((largest, line) => (
-      Number.isFinite(line.value) && line.value > 0
-        ? Math.max(largest, Math.abs(line.value - prevClose))
-        : largest
-    ), 0) * 1.05
-
     if (limitLinesActive && yMode === 'limit') {
       const { limitUp, limitDown } = getLimitPrices(prevClose, priceLimit)
       const limitDiffUp = limitUp - prevClose
@@ -240,7 +214,7 @@ function buildOption(data: MinuteKlineRow[], prevClose: number | undefined, avgP
       const limitDiff = Math.max(limitDiffUp, limitDiffDown)
       // 涨跌停模式: Y 轴按实际涨跌停价, 但不小于实际数据范围 (数据超带 =
       // 涨跌幅规则不适用或数据异常, 钳制会把曲线推出图外)
-      maxDiff = Math.max(limitDiff, maxDiff, monitoredDiff)
+      maxDiff = Math.max(limitDiff, maxDiff)
       yMin = prevClose - maxDiff
       yMax = prevClose + maxDiff
       // 加 markLine 标注涨停价和跌停价 (仅虚线, 不显示文字)
@@ -268,7 +242,6 @@ function buildOption(data: MinuteKlineRow[], prevClose: number | undefined, avgP
       // 至少保证一个可视范围 (防止数据平时 maxDiff=0)。指数不使用涨跌停范围，最小范围要更紧，否则低波动指数会被压成横线。
       const minDiff = limitLinesActive ? prevClose * 0.01 : prevClose * 0.001
       if (maxDiff < minDiff) maxDiff = minDiff
-      maxDiff = Math.max(maxDiff, monitoredDiff)
       yMin = prevClose - maxDiff
       yMax = prevClose + maxDiff
     }
@@ -276,9 +249,14 @@ function buildOption(data: MinuteKlineRow[], prevClose: number | undefined, avgP
 
   // 价格标线只作为叠加信息, 不参与扩大坐标范围。
   // 超出正常可视范围时不添加标线和标签, 避免成本价把走势压扁。
+  // 缺少昨收时由 ECharts 自动缩放, 用实际价格范围过滤叠加标线。
+  const plottedPrices = (showAvgLine ? [closes, highs, lows, avgData] : [closes, highs, lows])
+    .flat().filter(isValidPrice)
+  const visibleMin = yMin ?? (plottedPrices.length ? Math.min(...plottedPrices) : Infinity)
+  const visibleMax = yMax ?? (plottedPrices.length ? Math.max(...plottedPrices) : -Infinity)
   markLineData.push(
     ...priceMarkLineData.filter(line => (
-      yMin == null || yMax == null || (line.yAxis >= yMin && line.yAxis <= yMax)
+      line.yAxis >= visibleMin && line.yAxis <= visibleMax
     )),
   )
 

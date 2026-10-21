@@ -3,13 +3,13 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { X } from 'lucide-react'
 import { StockPanel } from '@/components/StockPanel'
 import { NavPager, NavWrapToast } from '@/components/NavPager'
-import type { ChartMarker } from '@/components/EChartsCandlestick'
 import type { StrategyBacktestResult, StrategyBacktestTrade } from '@/lib/api'
 import { navItemKey, type NavItem } from '@/lib/listNav'
 import { useListNav } from '@/lib/useListNav'
-import { fmtPct, fmtPrice, priceColorClass } from '@/lib/format'
+import { fmtPct, priceColorClass } from '@/lib/format'
 import { boardTag } from '@/lib/board'
 import { useDialogBackdrop } from '@/lib/useDialogBackdrop'
+import { buildTradeChartOverlays } from './tradeChartOverlays'
 
 interface Props {
   /** 选中的标的 (null = 关闭) */
@@ -62,37 +62,7 @@ export function PicksSymbolKlineModal({ symbol, result, periodStart, periodEnd, 
   }, [symbol, result])
   const { trades, stat, name } = view
 
-  const markers = useMemo<ChartMarker[]>(() => {
-    type Agg = { count: number; lo: number; hi: number }
-    // 同日同方向多笔合成单个箭头 (多箭头会重叠); 价格异则标签显示区间
-    const byDate = new Map<string, { buy?: Agg; sell?: Agg }>()
-    const add = (date: string, side: 'buy' | 'sell', price: number) => {
-      let g = byDate.get(date)
-      if (!g) { g = {}; byDate.set(date, g) }
-      const s = g[side]
-      if (s) {
-        s.count += 1
-        s.lo = Math.min(s.lo, price)
-        s.hi = Math.max(s.hi, price)
-      } else {
-        g[side] = { count: 1, lo: price, hi: price }
-      }
-    }
-    const label = (s: Agg) => {
-      const range = s.lo === s.hi ? fmtPrice(s.lo) : `${fmtPrice(s.lo)}~${fmtPrice(s.hi)}`
-      return s.count > 1 ? `${range} ×${s.count}` : range
-    }
-    for (const t of trades) {
-      add(String(t.entry_date).slice(0, 10), 'buy', Number(t.entry_price))
-      add(String(t.exit_date).slice(0, 10), 'sell', Number(t.exit_price))
-    }
-    const out: ChartMarker[] = []
-    for (const [date, g] of byDate) {
-      if (g.buy) out.push({ date, kind: 'buy', label: label(g.buy) })
-      if (g.sell) out.push({ date, kind: 'sell', label: label(g.sell) })
-    }
-    return out.sort((a, b) => a.date.localeCompare(b.date))
-  }, [trades])
+  const { ranges, priceLines } = useMemo(() => buildTradeChartOverlays(trades), [trades])
 
   const tag = symbol ? boardTag(symbol) : ''
   const dateRange = useMemo(() => ({ start: periodStart, end: periodEnd }), [periodStart, periodEnd])
@@ -114,10 +84,10 @@ export function PicksSymbolKlineModal({ symbol, result, periodStart, periodEnd, 
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.97, y: 8 }}
             transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
-            className="relative flex max-h-[94vh] w-[92vw] max-w-[1120px] flex-col overflow-hidden rounded-card border border-border bg-base shadow-2xl"
+            className="relative flex max-h-[95vh] w-[92vw] max-w-[1200px] flex-col overflow-hidden rounded-card border border-border bg-base shadow-2xl"
           >
-            <div className="border-b border-border px-5 py-3">
-              <div className="flex items-start justify-between gap-4">
+            <div className="shrink-0 border-b border-border px-5 py-3">
+              <div className="flex flex-wrap items-start justify-between gap-4">
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
                     <span className="font-mono text-sm font-semibold text-foreground">{symbol}</span>
@@ -136,7 +106,7 @@ export function PicksSymbolKlineModal({ symbol, result, periodStart, periodEnd, 
                     回测 {periodStart} ~ {periodEnd} · {trades.length} 笔交易
                   </div>
                   <div className="mt-1 text-[10px] text-muted/70">
-                    ▲ 买入(红) · ▼ 卖出(绿) · 箭头旁为成交价 · 同日多笔合并显示
+                    持仓区间底色 · 买入价(红) · 卖出价(绿)
                   </div>
                 </div>
 
@@ -172,17 +142,21 @@ export function PicksSymbolKlineModal({ symbol, result, periodStart, periodEnd, 
               </div>
             </div>
 
-            <div className="flex-1 overflow-auto p-4">
+            <div className="flex-1 overflow-auto p-3 sm:p-4">
+              <div className="rounded border border-border/50 bg-base/30 p-3">
               <StockPanel
                 symbol={symbol}
-                height={520}
+                height={420}
+                dailyKlineFlex="flex-[1.4]"
                 dateRange={dateRange}
-                markers={markers}
+                ranges={ranges}
+                priceLines={priceLines}
                 showLimitMarkers={false}
                 showMarkerToggle={false}
                 showIntraday={false}
                 visibleBars="all"
               />
+              </div>
             </div>
 
             {/* 首↔尾循环弱提示 */}

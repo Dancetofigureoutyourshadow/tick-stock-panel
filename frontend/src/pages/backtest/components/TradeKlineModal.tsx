@@ -3,12 +3,12 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { Clock, X } from 'lucide-react'
 import { StockPanel } from '@/components/StockPanel'
 import { NavPager, NavWrapToast } from '@/components/NavPager'
-import type { ChartPriceLine, ChartRange } from '@/components/EChartsCandlestick'
 import type { StrategyBacktestTrade } from '@/lib/api'
 import { useListNav } from '@/lib/useListNav'
 import { tradeNavKey, type TradeNavItem } from '../tradeNav'
 import { fmtPct, fmtPrice, priceColorClass } from '@/lib/format'
 import { useDialogBackdrop } from '@/lib/useDialogBackdrop'
+import { buildTradeChartOverlays } from './tradeChartOverlays'
 
 /** 单笔回放来自哪个入口: 决定切交易时同步翻哪张表的页 */
 export type TradeNavSource = 'daily' | 'trades'
@@ -87,37 +87,7 @@ export function TradeKlineModal({ trade, navItems, currentKey, onNavigate, onClo
     }
   }, [trade])
 
-  const ranges = useMemo<ChartRange[]>(() => {
-    if (!trade) return []
-    return [{
-      start: String(trade.entry_date).slice(0, 10),
-      end: String(trade.exit_date).slice(0, 10),
-      label: '持仓区间',
-      color: 'rgba(59,130,246,0.07)',
-    }]
-  }, [trade])
-
-  const priceLines = useMemo<ChartPriceLine[]>(() => {
-    if (!trade) return []
-    const start = String(trade.entry_date).slice(0, 10)
-    const end = String(trade.exit_date).slice(0, 10)
-    return [
-      {
-        value: Number(trade.entry_price),
-        label: `买入价 ${fmtPrice(trade.entry_price)}`,
-        color: '#C74040',
-        start,
-        end,
-      },
-      {
-        value: Number(trade.exit_price),
-        label: `卖出价 ${fmtPrice(trade.exit_price)}`,
-        color: '#2D9B65',
-        start,
-        end,
-      },
-    ]
-  }, [trade])
+  const { ranges, priceLines } = useMemo(() => buildTradeChartOverlays(trade ? [trade] : []), [trade])
 
   return (
     <AnimatePresence>
@@ -136,9 +106,9 @@ export function TradeKlineModal({ trade, navItems, currentKey, onNavigate, onClo
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.97, y: 8 }}
             transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
-            className="relative flex max-h-[94vh] w-[92vw] max-w-[1120px] flex-col overflow-hidden rounded-card border border-border bg-base shadow-2xl"
+            className="relative flex max-h-[95vh] w-[92vw] max-w-[1200px] flex-col overflow-hidden rounded-card border border-border bg-base shadow-2xl"
           >
-            <div className="flex items-center justify-between gap-4 border-b border-border px-5 py-3">
+            <div className="flex shrink-0 flex-wrap items-center justify-between gap-4 border-b border-border px-5 py-3">
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
                   <span className="font-mono text-sm font-semibold text-foreground">{trade.symbol}</span>
@@ -183,10 +153,12 @@ export function TradeKlineModal({ trade, navItems, currentKey, onNavigate, onClo
               </div>
             </div>
 
-            <div className="flex-1 overflow-auto p-4">
+            <div className="flex-1 overflow-auto p-3 sm:p-4">
+              <div className="rounded border border-border/50 bg-base/30 p-3">
               <StockPanel
                 symbol={trade.symbol}
-                height={520}
+                height={420}
+                dailyKlineFlex="flex-[1.4]"
                 dateRange={dateRange}
                 ranges={ranges}
                 priceLines={priceLines}
@@ -195,6 +167,7 @@ export function TradeKlineModal({ trade, navItems, currentKey, onNavigate, onClo
                 showIntraday={showIntraday}
                 onSelectDate={() => { if (!showIntraday) setShowIntraday(true) }}
               />
+              </div>
             </div>
 
             {/* 首↔尾循环弱提示 */}

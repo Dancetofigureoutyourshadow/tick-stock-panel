@@ -127,3 +127,50 @@ it('listing day without prevClose anchors y-axis with scale, not zero', async ()
   expect(axis.max).toBeUndefined()
   expect(axis.scale).toBe(true)
 })
+
+it.each(['adaptive', 'limit', 'no-prev-close'] as const)(
+  '%s: out-of-window trade prices do not expand the chart or leave labels behind',
+  async (mode) => {
+    Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
+    vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} })
+    const host = document.createElement('div')
+    const root = createRoot(host)
+    cleanup = async () => { await act(async () => root.unmount()) }
+    const render = async (priceLines: { value: number; label: string }[]) => {
+      await act(async () => root.render(
+        <EChartsIntraday data={rows} date={daily.date}
+          prevClose={mode === 'no-prev-close' ? undefined : 119.77} priceLines={priceLines} />,
+      ))
+    }
+    await render([])
+    if (mode === 'limit') {
+      const button = [...host.querySelectorAll('button')].find(b => b.textContent === '涨跌停')!
+      await act(async () => button.click())
+    }
+    const baseline = { min: lastYAxis().min, max: lastYAxis().max, interval: lastYAxis().interval }
+    await render([{ value: 68, label: '买入价 68.00' }, { value: 160, label: '卖出价 160.00' }])
+    expect(lastYAxis()).toMatchObject(baseline)
+    const lines = chart.setOption.mock.calls.at(-1)?.[0]?.series?.[0]?.markLine?.data ?? []
+    expect(lines.filter((line: any) => line.label?.show)).toEqual([])
+  },
+)
+
+it('draws each visible trade price once and refreshes its visibility with the chart window', async () => {
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
+  vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} })
+  const host = document.createElement('div')
+  const root = createRoot(host)
+  cleanup = async () => { await act(async () => root.unmount()) }
+  const priceLines = [{ value: 119.1, label: '买入价 119.10' }]
+  const render = async (date: string, data: typeof rows, prevClose: number) => {
+    await act(async () => root.render(<EChartsIntraday {...{ date, data, prevClose, priceLines }} />))
+  }
+  const labeledLines = () => (chart.setOption.mock.calls.at(-1)?.[0]?.series?.[0]?.markLine?.data ?? [])
+    .filter((line: any) => line.label?.show)
+  await render(daily.date, rows, 119.77)
+  expect(labeledLines()).toHaveLength(1)
+  expect(labeledLines()[0]).toMatchObject({ yAxis: 119.1, label: { formatter: '买入价 119.10' } })
+  await render('2026-09-10', rows.map(row => ({ ...row, datetime: row.datetime.replace(daily.date, '2026-09-10'),
+    open: 200, high: 201, low: 199, close: 200, amount: 200 * row.volume * 100 })), 200)
+  expect(labeledLines()).toEqual([])
+})

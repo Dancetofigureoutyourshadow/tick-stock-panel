@@ -397,7 +397,7 @@ def _get_daily_impl(
 ):
     """读取本地 enriched 表中某只股票的日 K。
 
-    - 若 QuoteService 有实时行情, 追加/覆盖今日实时蜡烛
+    - 查询窗口包含今天且 QuoteService 有实时行情时, 追加/覆盖今日实时蜡烛
     - Free 用户: 若 enriched 表里没有该股票, 实时拉取 + 本地算 enriched 返回
     - ext_columns: 可选，动态 LEFT JOIN 扩展数据表，结果平铺到 stock_info.ext 下
       (key 为 "{config_id}__{field_name}")，供日K信息条等场景展示自定义字段
@@ -441,9 +441,9 @@ def _get_daily_impl(
         except Exception as e:  # noqa: BLE001
             logger.debug("单股除权因子拉取失败 %s: %s", symbol, e)
         enriched = compute_enriched(raw, factors=factors)
-        rows = enriched.tail(days).to_dicts()
-        # 即使 live 模式也尝试追加实时蜡烛
-        rows = _maybe_inject_live_candle(request, symbol, rows, asset_type)
+        rows = enriched.filter((pl.col("date") >= start) & (pl.col("date") <= end)).tail(days).to_dicts()
+        if start <= cn_today() <= end:
+            rows = _maybe_inject_live_candle(request, symbol, rows, asset_type)
         resp = {"symbol": symbol, "name": stock_name, "stock_info": stock_info, "rows": rows, "source": "live"}
         return _gzip_payload(
             request,
@@ -453,8 +453,9 @@ def _get_daily_impl(
 
     rows = df.to_dicts()
 
-    # 追加/覆盖今日实时蜡烛
-    rows = _maybe_inject_live_candle(request, symbol, rows, asset_type)
+    # 历史交易回放不能在窗口末尾拼接今日K线, 否则均线会跨日期跳变。
+    if start <= cn_today() <= end:
+        rows = _maybe_inject_live_candle(request, symbol, rows, asset_type)
 
     resp = {"symbol": symbol, "name": stock_name, "stock_info": stock_info, "rows": rows, "source": "enriched"}
     return _gzip_payload(

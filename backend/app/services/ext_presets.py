@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 from pathlib import Path
 
 from app.services.ext_data import (
@@ -41,7 +42,8 @@ _FUYAO_BASE = "https://fuyao.aicubes.cn"
 _FUYAO_CATALOG_PATH = "/api/a-share-index/catalog/ths-index-list"
 _FUYAO_CONSTITUENTS_PATH = "/api/a-share-index/constituents/ths-stock-list"
 # 成分股逐板块拉取: 全量 710 次调用, 8 并发 + 单板块失败重试 1 次 (实测无 429)
-_FUYAO_CONCURRENCY = 8
+# 并发可用环境变量 FUYAO_CONCURRENCY 覆盖 (默认 8 不变); 小内存主机调低以控制启动峰值。
+_FUYAO_CONCURRENCY = int(os.environ.get("FUYAO_CONCURRENCY", "8"))
 _FUYAO_TIMEOUT_S = 20.0
 _FUYAO_BOARD_RETRIES = 1
 # 复用 fuyao 行情插件的凭据 (secrets.json: fuyao_api_key / 环境变量 FUYAO_API_KEY)

@@ -171,7 +171,7 @@ def test_poll_symbol_includes_transactions(monkeypatch):
     monkeypatch.setattr(
         FocusMarketStreamService,
         "_transactions_provider_name",
-        staticmethod(lambda: "mootdx"),
+        staticmethod(lambda: "fuyao"),
     )
 
     payload = FocusMarketStreamService(Repo(), Depth())._poll_symbol("600519.SH")

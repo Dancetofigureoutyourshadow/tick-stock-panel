@@ -24,11 +24,11 @@ def test_depth_service_routes_to_selected_custom_provider(monkeypatch):
             assert symbols == ["600519.SH"]
             return expected
 
-    monkeypatch.setattr(preferences, "get_depth5_data_provider", lambda: "mootdx")
+    monkeypatch.setattr(preferences, "get_depth5_data_provider", lambda: "fuyao")
     monkeypatch.setattr(
         custom_sources,
         "provider_has_dataset",
-        lambda name, dataset: name == "mootdx" and dataset == "depth5",
+        lambda name, dataset: name == "fuyao" and dataset == "depth5",
     )
     monkeypatch.setattr(custom_sources, "get_provider", lambda _name: FakeDepthProvider())
 

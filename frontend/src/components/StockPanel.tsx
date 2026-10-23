@@ -97,6 +97,8 @@ export function StockPanel({
 }: Props) {
   const [linkedPrice, setLinkedPrice] = useState<number | null>(null)
   const [selectedDate, setSelectedDate] = useState<string | null>(null)
+  // 用户点蜡烛选过日期后, 自动跟随让位给手动选择。
+  const datePinnedByUser = useRef(false)
   const [intradayDismissed, setIntradayDismissed] = useState(false)
   // 信息条指标配置提升到此层：同时供 StockInfoBar 渲染与 StockDailyKChart 请求 ext 数据
   const [fields, setFields] = useState<ColumnConfig[]>(loadInfoFields)
@@ -134,6 +136,7 @@ export function StockPanel({
   const name = kline.data?.name
 
   const handleDateClick = useCallback((date: string) => {
+    datePinnedByUser.current = true
     setSelectedDate(date)
     setIntradayDismissed(false)
     onSelectDate?.(date)
@@ -177,14 +180,18 @@ export function StockPanel({
     prevSymbol.current = symbol
     setSelectedDate(null)
     setLinkedPrice(null)
+    datePinnedByUser.current = false
   }, [symbol])
 
-  // 当分时开启、无选中日期时，自动选中最新日期
+  // 分时开启且未手动选日期时, 自动跟随最新日K日期。
+  // 旧实现只在 selectedDate 为空时赋值一次: 弹窗比实时快照早打开 (后端刚重启 / 轮询未热)
+  // 时锚在昨日, 当日蜡烛到货后分时不跟随; 且 minuteRefetchInterval 见响应日期 < 北京今天
+  // 直接停表, 这个弹窗本轮再也不会自己恢复。
+  const latestBarDate = rows.length > 0 ? String(rows[rows.length - 1].date).slice(0, 10) : null
   useEffect(() => {
-    if (showIntraday && !selectedDate && rows.length > 0) {
-      setSelectedDate(rows[rows.length - 1].date)
-    }
-  }, [showIntraday, selectedDate, rows])
+    if (!showIntraday || datePinnedByUser.current) return
+    if (latestBarDate && latestBarDate !== selectedDate) setSelectedDate(latestBarDate)
+  }, [showIntraday, latestBarDate, selectedDate])
 
   const selectedIdx = selectedDate ? rows.findIndex(r => r.date === selectedDate) : -1
   const prevClose = selectedIdx > 0

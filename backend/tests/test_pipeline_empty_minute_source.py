@@ -62,7 +62,7 @@ def test_empty_source_skips_pipeline_minute_without_fetching(pipeline, minute_en
     assert all(call.args[0] != "sync_minute" for call in progress.call_args_list)
 
 
-@pytest.mark.parametrize("provider", ["tickflow", "mootdx"])
+@pytest.mark.parametrize("provider", ["tickflow", "fuyao"])
 def test_enabled_source_still_reports_real_zero_row_failure(pipeline, provider):
     repo, capset, resolve, fetch = pipeline
     preferences.save({"full_minute_data_provider": provider})

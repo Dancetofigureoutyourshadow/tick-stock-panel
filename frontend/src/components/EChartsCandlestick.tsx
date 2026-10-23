@@ -555,6 +555,85 @@ function buildSubInfoGraphics(
   return graphics
 }
 
+interface AxisZoom {
+  start: number
+  end: number
+}
+
+function visibleIndexRange(total: number, zoom: AxisZoom): [number, number] {
+  const last = Math.max(total - 1, 0)
+  const start = Math.min(Math.max(zoom.start, 0), 100)
+  const end = Math.min(Math.max(zoom.end, start), 100)
+  return [Math.round(last * start / 100), Math.round(last * end / 100)]
+}
+
+/**
+ * 价格轴边界按当前可见窗口计算。
+ * 显式设置 yAxis.min/max 会冻结 ECharts 的 dataZoom 自适应, 因此窗口外的
+ * 成交价线不能参与取值, 否则缩放后 K 线会被压成一条窄带。
+ */
+function computePriceAxisBounds(
+  data: OHLC[],
+  dateIndexMap: Map<string, number>,
+  priceLines: ChartPriceLine[] | undefined,
+  showMA: boolean,
+  activeIndicators: string[],
+  zoom: AxisZoom,
+  paddingRatio: number,
+): { min: number; max: number } | null {
+  if (!priceLines?.length || data.length === 0) return null
+  const [startIdx, endIdx] = visibleIndexRange(data.length, zoom)
+  let min = Infinity
+  let max = -Infinity
+  const add = (value: number | null | undefined) => {
+    if (value == null) return
+    const numeric = Number(value)
+    if (!Number.isFinite(numeric)) return
+    if (numeric < min) min = numeric
+    if (numeric > max) max = numeric
+  }
+  const showBoll = activeIndicators.includes('boll')
+  for (let i = Math.max(0, startIdx); i <= Math.min(data.length - 1, endIdx); i += 1) {
+    const row = data[i]
+    add(row.low)
+    add(row.high)
+    if (showMA) {
+      add(row.ma5)
+      add(row.ma10)
+      add(row.ma20)
+      add(row.ma60)
+    }
+    if (showBoll) {
+      add(row.boll_upper)
+      add(row.boll_lower)
+    }
+  }
+  for (const line of priceLines) {
+    const value = Number(line.value)
+    if (!Number.isFinite(value) || value <= 0) continue
+    if (line.start && line.end) {
+      const lineStart = dateIndexMap.get(line.start)
+      const lineEnd = dateIndexMap.get(line.end)
+      // 与 markLine 的降级一致: 日期不在当前数据内时按全宽线处理
+      if (lineStart != null && lineEnd != null
+        && (Math.max(lineStart, lineEnd) < startIdx || Math.min(lineStart, lineEnd) > endIdx)) {
+        continue
+      }
+    }
+    add(value)
+  }
+  if (!Number.isFinite(min) || !Number.isFinite(max)) return null
+  const span = Math.max(max - min, Math.abs(max) * 0.01, 0.01)
+  const padding = span * Math.max(0.03, paddingRatio)
+  return { min: min - padding, max: max + padding }
+}
+
+interface BuiltChartOption {
+  option: EChartsOption
+  markerPaddingRatio: number
+  axisBounds: { min: number; max: number } | null
+}
+
 function buildOption(
   data: OHLC[],
   dates: string[],
@@ -573,7 +652,8 @@ function buildOption(
   showDateLabels: boolean,
   selectedDate: string | null | undefined,
   addedDate: string | null | undefined,
-): EChartsOption {
+  axisZoom: AxisZoom,
+): BuiltChartOption {
   const candleData = data.map(d => {
     const limitColor = getKlineLimitColor(d)
     return {
@@ -701,32 +781,15 @@ function buildOption(
   // compounds the ratio when markers are dense and leaves large empty bands
   // above and below the candles.
   const markerPaddingRatio = safeMarkerOffsetPx / Math.max(1, candleAvail)
+  const axisBounds = computePriceAxisBounds(
+    data, dateIndexMap, priceLines, showMA, activeIndicators, axisZoom, markerPaddingRatio,
+  )
 
   const grids: any[] = []
   const xAxes: any[] = []
   const yAxes: any[] = []
   const series: any[] = []
   const xAxisIndices: number[] = []
-
-  const priceLineValues = (priceLines ?? [])
-    .map(line => line.value)
-    .filter(value => Number.isFinite(value) && value > 0)
-  const axisMin = priceLineValues.length > 0
-    ? ({ min, max }: { min: number; max: number }) => {
-        const nextMin = Math.min(min, ...priceLineValues)
-        const nextMax = Math.max(max, ...priceLineValues)
-        const span = Math.max(nextMax - nextMin, Math.abs(nextMax) * 0.01, 0.01)
-        return nextMin - span * Math.max(0.03, markerPaddingRatio)
-      }
-    : undefined
-  const axisMax = priceLineValues.length > 0
-    ? ({ min, max }: { min: number; max: number }) => {
-        const nextMin = Math.min(min, ...priceLineValues)
-        const nextMax = Math.max(max, ...priceLineValues)
-        const span = Math.max(nextMax - nextMin, Math.abs(nextMax) * 0.01, 0.01)
-        return nextMax + span * Math.max(0.03, markerPaddingRatio)
-      }
-    : undefined
 
   // ===== grid 0: K线主图 =====
   grids.push({ left, right, top: topPad, height: candleAvail })
@@ -739,8 +802,8 @@ function buildOption(
   })
   yAxes.push({
     scale: true,
-    min: axisMin,
-    max: axisMax,
+    min: axisBounds?.min,
+    max: axisBounds?.max,
     // 价格边界按最外侧标记轨道留白, 缩放后标签不贴图表边缘。
     boundaryGap: [0, 0],
     splitArea: { show: false },
@@ -1033,40 +1096,44 @@ function buildOption(
   const infoGraphics = buildSubInfoGraphics(data, infoIdx, activeIndicators, subStartTop, volumeCompare)
 
   return {
-    animation: false,
-    backgroundColor: THEME.bg,
-    tooltip: {
-      trigger: 'axis',
-      axisPointer: { type: 'cross', crossStyle: { color: CT().crosshair } },
-      backgroundColor: 'transparent',
-      borderWidth: 0,
-      textStyle: { fontSize: 0 },
-      formatter: () => '',
-    },
-    axisPointer: {
-      link: [{ xAxisIndex: 'all' }],
-      label: {
-        show: showDateLabels,
-        backgroundColor: CT().crosshairLabelBg,
-        fontFamily: 'JetBrains Mono, monospace',
-        fontSize: 10,
+    option: {
+      animation: false,
+      backgroundColor: THEME.bg,
+      tooltip: {
+        trigger: 'axis',
+        axisPointer: { type: 'cross', crossStyle: { color: CT().crosshair } },
+        backgroundColor: 'transparent',
+        borderWidth: 0,
+        textStyle: { fontSize: 0 },
+        formatter: () => '',
       },
-    },
-    graphic: infoGraphics.length > 0 ? infoGraphics : undefined,
-    grid: grids,
-    xAxis: xAxes,
-    yAxis: yAxes,
-    dataZoom: [
-      {
-        type: 'inside',
-        xAxisIndex: xAxisIndices,
-        start: 0,
-        end: 100,
-        moveOnMouseMove: true,
-        zoomOnMouseWheel: true,
+      axisPointer: {
+        link: [{ xAxisIndex: 'all' }],
+        label: {
+          show: showDateLabels,
+          backgroundColor: CT().crosshairLabelBg,
+          fontFamily: 'JetBrains Mono, monospace',
+          fontSize: 10,
+        },
       },
-    ],
-    series,
+      graphic: infoGraphics.length > 0 ? infoGraphics : undefined,
+      grid: grids,
+      xAxis: xAxes,
+      yAxis: yAxes,
+      dataZoom: [
+        {
+          type: 'inside',
+          xAxisIndex: xAxisIndices,
+          start: 0,
+          end: 100,
+          moveOnMouseMove: true,
+          zoomOnMouseWheel: true,
+        },
+      ],
+      series,
+    },
+    markerPaddingRatio,
+    axisBounds,
   }
 }
 
@@ -1116,10 +1183,14 @@ export function EChartsCandlestick({
   const infoIdxRef = useRef<number>(data.length - 1)
   const compactRef = useRef(false)
   const userZoomRef = useRef<{ start: number; end: number } | null>(null)
+  const axisPaddingRatioRef = useRef(0)
+  const lastAxisBoundsRef = useRef<{ min: number; max: number } | null>(null)
   // dataZoom 监听只在图表创建时注册一次, 直接调用会一直执行「创建那次渲染」的 updateCompactPresentation:
   // 它的 data/dateIndexMap/markers 停在旧标的, 会把上一只的买卖标记 merge 回新标的图上。
   // 与 dataRef/getInfoBarHTMLRef 同法, 经 ref 取最新一次渲染的函数。
   const updateCompactPresentationRef = useRef<() => void>(() => {})
+  // dataZoom 后按可见窗口重算 y 轴; 经 ref 取最新渲染的数据与价格线配置
+  const refreshPriceAxisRef = useRef<(zoom: { start: number; end: number }) => void>(() => {})
   // 竖虚线(crosshair)是否可见: 控制信息栏「至今」字段的显隐。鼠标移出图表区即 false。
   const hoverActiveRef = useRef(false)
 
@@ -1367,7 +1438,11 @@ export function EChartsCandlestick({
       const opt = chart.getOption() as any
       const zoom = opt?.dataZoom?.[0]
       if (!zoom) return
-      userZoomRef.current = { start: zoom.start, end: zoom.end }
+      const start = Number(zoom.start)
+      const end = Number(zoom.end)
+      if (!Number.isFinite(start) || !Number.isFinite(end)) return
+      userZoomRef.current = { start, end }
+      refreshPriceAxisRef.current({ start, end })
 
       const d = dataRef.current
       const total = d.length
@@ -1473,12 +1548,33 @@ export function EChartsCandlestick({
   }
   updateCompactPresentationRef.current = updateCompactPresentation
 
+  const refreshPriceAxis = (zoom: { start: number; end: number }) => {
+    const chart = chartRef.current
+    if (!chart || !priceLines?.length) return
+    const bounds = computePriceAxisBounds(
+      data, dateIndexMap, priceLines, showMA, activeIndicators, zoom, axisPaddingRatioRef.current,
+    )
+    if (!bounds) return
+    // 相邻窗口的极值大多不变, 避免平移时每帧都重排 y 轴
+    const prev = lastAxisBoundsRef.current
+    if (prev) {
+      const span = Math.max(prev.max - prev.min, 0.01)
+      if (Math.abs(prev.min - bounds.min) <= span * 0.002
+        && Math.abs(prev.max - bounds.max) <= span * 0.002) return
+    }
+    lastAxisBoundsRef.current = bounds
+    chart.setOption({ yAxis: [{ min: bounds.min, max: bounds.max }] })
+  }
+  refreshPriceAxisRef.current = refreshPriceAxis
+
   // ===== 核心: 仅在数据/配置变更时全量 setOption =====
   useEffect(() => {
     const chart = chartRef.current
     if (!chart) return
 
-    const option = buildOption(
+    // 恢复用户缩放位置; 价格轴也要按同一窗口定界, 否则首帧会按全量历史铺满
+    const zoomForAxis = userZoomRef.current ?? initialZoom
+    const { option, markerPaddingRatio, axisBounds } = buildOption(
       data, dates, dateIndexMap,
       showMarkersProp ? markers : undefined,
       ranges,
@@ -1492,17 +1588,14 @@ export function EChartsCandlestick({
       showDateLabels,
       selectedDate,
       addedDate,
+      zoomForAxis,
     )
+    axisPaddingRatioRef.current = markerPaddingRatio
+    lastAxisBoundsRef.current = axisBounds
 
     chart.setOption(option, true)
 
-    // 恢复用户缩放位置
-    const zoom = userZoomRef.current
-    if (zoom) {
-      chart.dispatchAction({ type: 'dataZoom', start: zoom.start, end: zoom.end })
-    } else {
-      chart.dispatchAction({ type: 'dataZoom', start: initialZoom.start, end: initialZoom.end })
-    }
+    chart.dispatchAction({ type: 'dataZoom', start: zoomForAxis.start, end: zoomForAxis.end })
 
     // 初始信息栏
     const infoEl = infoBarRef.current

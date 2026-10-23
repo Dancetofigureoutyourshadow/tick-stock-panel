@@ -1,1 +1,0 @@
-"""MooTDX data provider plugin."""

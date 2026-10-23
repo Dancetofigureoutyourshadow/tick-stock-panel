@@ -8,6 +8,19 @@
 .github
 .gitignore
 
+# ===== 本地工具缓存(可能含无权限文件, 且镜像不需要) =====
+.uv
+.pnpm-store
+.pytest_cache
+.ruff_cache
+.claude
+.workbuddy
+.codegraph
+generated
+tickflow-data-*.tar
+.test-*.tar
+.pack-data*
+
 # ===== 用户运行时数据(绝不应进镜像) =====
 data
 backend/data

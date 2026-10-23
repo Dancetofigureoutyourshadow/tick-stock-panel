@@ -123,7 +123,7 @@ echo -e "  backend: ${YELLOW}http://$DISPLAY_HOST:$BACKEND_PORT${NC}"
 echo -e "  frontend: ${YELLOW}由 FastAPI 提供${NC}"
 echo
 
-# 首次运行才安装依赖；已有环境不做同步，避免移除独立安装的 MooTDX 等插件包。
+# 首次运行才安装依赖；已有环境不做同步，避免移除独立安装的数据源插件包。
 if [ ! -d "$BACKEND_DIR/.venv" ] || [ "${#BACKEND_EXTRA_ARGS[@]}" -gt 0 ]; then
   if [ "${#BACKEND_EXTRA_ARGS[@]}" -gt 0 ]; then
     info "同步后端 Python 依赖，extras: $BACKEND_EXTRAS"

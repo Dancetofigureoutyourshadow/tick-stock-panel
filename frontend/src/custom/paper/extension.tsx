@@ -2281,11 +2281,13 @@ function AccountPanel({ acc, name, onDeleted }: { acc: string; name?: string; on
   const roundsQ = useQuery({ queryKey: QK.paperRounds(acc), queryFn: () => api.paperRounds(acc) })
   const rounds: PaperRound[] = [...(roundsQ.data?.rounds ?? [])].reverse() // 最新回合在前
 
-  // 持仓+回合代码→名称 (#454): 就地显示名称, 不用切页查询。股票/ETF/指数都覆盖。
-  // 回合标的可能已清仓 (不在持仓), 合并去重一起查
+  // 持仓+回合+成交+订单代码→名称 (#454): 就地显示名称, 不用切页查询。股票/ETF/指数都覆盖。
+  // 回合/成交/订单标的可能已清仓 (不在持仓), 合并去重一起查
   const holdingSymbols = Array.from(new Set([
     ...(overviewQ.data?.holdings ?? []).map(h => h.symbol),
     ...rounds.map(r => r.symbol),
+    ...(tradesQ.data?.fills ?? []).map(f => f.symbol),
+    ...(ordersQ.data?.orders ?? []).map(o => o.symbol),
   ]))
   const namesQ = useQuery({
     queryKey: ['instrument-names', holdingSymbols.join(',')],
@@ -2531,7 +2533,21 @@ function AccountPanel({ acc, name, onDeleted }: { acc: string; name?: string; on
                       <span className={cn('w-8 shrink-0 font-medium', o.side === 'buy' ? 'text-bull' : 'text-bear')}>
                         {o.side === 'buy' ? '买入' : '卖出'}
                       </span>
-                      <span className="w-24 shrink-0 font-mono">{o.symbol}</span>
+                      <span className="flex w-44 shrink-0 min-w-0 items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => setPreviewSymbol(o.symbol)}
+                          className="shrink-0 rounded-sm font-mono text-accent hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+                          title="查看股票 K 线详情"
+                        >
+                          {o.symbol}
+                        </button>
+                        {symbolNames[o.symbol] && (
+                          <span className="min-w-0 truncate text-[10px] text-muted" title={symbolNames[o.symbol]}>
+                            {symbolNames[o.symbol]}
+                          </span>
+                        )}
+                      </span>
                       <span className="w-16 shrink-0 font-mono text-right">{o.qty}</span>
                       <span className="w-16 shrink-0 text-muted">{ORDER_TYPE_LABEL[o.order_type]}</span>
                       <span className={cn(
@@ -2574,7 +2590,21 @@ function AccountPanel({ acc, name, onDeleted }: { acc: string; name?: string; on
                           <span className={cn('w-8 shrink-0 font-sans font-medium', f.side === 'buy' ? 'text-bull' : 'text-bear')}>
                             {f.side === 'buy' ? '买入' : '卖出'}
                           </span>
-                          <span className="w-24 shrink-0">{f.symbol}</span>
+                          <span className="flex w-44 shrink-0 min-w-0 items-center gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => setPreviewSymbol(f.symbol)}
+                              className="shrink-0 rounded-sm text-accent hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+                              title="查看股票 K 线详情"
+                            >
+                              {f.symbol}
+                            </button>
+                            {symbolNames[f.symbol] && (
+                              <span className="min-w-0 truncate font-sans text-[10px] text-muted" title={symbolNames[f.symbol]}>
+                                {symbolNames[f.symbol]}
+                              </span>
+                            )}
+                          </span>
                           <span className="w-16 shrink-0 text-right">{f.qty}</span>
                           <span className="w-20 shrink-0 text-right">@ {fmtMoney(f.price, 3)}</span>
                           <span className="w-16 shrink-0 text-right text-muted">费 {fmtMoney(f.fee)}</span>
@@ -2605,8 +2635,15 @@ function AccountPanel({ acc, name, onDeleted }: { acc: string; name?: string; on
                         {rounds.map((rt, i) => (
                           <tr key={`${rt.symbol}-${rt.open_date}-${rt.close_date}-${i}`} className="border-t border-border/50 transition-colors hover:bg-elevated/40">
                             <td className="py-1.5 font-sans">
-                              {rt.symbol}
-                              {symbolNames[rt.symbol] && <span className="ml-1.5 text-[10px] text-muted">{symbolNames[rt.symbol]}</span>}
+                              <button
+                                type="button"
+                                onClick={() => setPreviewSymbol(rt.symbol)}
+                                className="rounded-sm text-accent hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+                                title="查看股票 K 线详情"
+                              >
+                                {rt.symbol}
+                                {symbolNames[rt.symbol] && <span className="ml-1.5 text-[10px] text-muted">{symbolNames[rt.symbol]}</span>}
+                              </button>
                             </td>
                             <td className="py-1.5 text-right">{rt.qty}</td>
                             <td className="py-1.5 text-right text-muted">{rt.open_date}</td>

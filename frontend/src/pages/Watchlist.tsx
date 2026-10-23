@@ -7,6 +7,8 @@ import { Trash2, RefreshCw, Star, X, Search, LayoutGrid, List, Rows3, BarChart3,
 import { api, ApiError, type KlineRow, type MinuteKlineRow, type PaperHolding, type PaperLot, type WatchlistGroup, type WatchlistGroupColor } from '@/lib/api'
 import { ExtSparkChart } from '@/components/screener/ExtSparkChart'
 import { fetchMinuteBatchIncremental } from '@/lib/minuteBatchIncremental'
+import { extendMinuteTail } from '@/lib/minuteTailExtend'
+import { reuseUnchangedSeries, EMPTY_ROWS } from '@/lib/series-identity'
 import { QK } from '@/lib/queryKeys'
 import { storage } from '@/lib/storage'
 import { fmtPrice, fmtPct, fmtBigNum, fmtSignedPrice, priceColorClass, formatExtNumber } from '@/lib/format'
@@ -44,7 +46,7 @@ import { MiniIntraday, type MiniIntradayYMode } from '@/components/stock-table/M
 import { boardLimitRate } from '@/lib/price-limit'
 import { boardTag, renderBuiltinDataCell } from '@/components/stock-table/primitives'
 import { getSignals, signalCls, getSortValue, getIntradaySortValue, UNSORTABLE_KEYS } from '@/lib/stock-table'
-import { resolveCandleConfig, resolveIntradayConfig } from '@/lib/list-columns'
+import { resolveCandleConfig, resolveIntradayConfig, resolveChartLink } from '@/lib/list-columns'
 import { useAuctionConfig, useAuctionSeries } from '@/lib/intraday-auction'
 import { useQuoteStatus, useCapabilities, usePreferences } from '@/lib/useSharedQueries'
 import {
@@ -54,6 +56,7 @@ import {
   loadColumnConfig,
   saveColumnConfig,
   buildExtColumnsParam,
+  refreshExtColumns,
 } from '@/lib/watchlist-columns'
 
 function localIsoDate(value = new Date()): string {
@@ -529,6 +532,9 @@ function moneyText(value: number): string {
 // 共享的空 K 线数组常量 — 避免每次渲染传入新的 [] 破坏 StockCard 的 memo
 const EMPTY_KLINE: KlineRow[] = []
 
+// 行合并时无分组的兜底 (共享引用, 见 rowsInSelectedGroup 的行引用缓存)
+const EMPTY_GROUP_IDS: string[] = []
+
 function cardColumnCount(viewportWidth: number): number {
   if (viewportWidth >= 1536) return 6
   if (viewportWidth >= 1280) return 5
@@ -805,17 +811,36 @@ export function Watchlist() {
     saveColumnConfig(next)
   }, [])
 
+  // 扩展表 schema: 用实时字段标签刷新 ext 列显示名 (快照是添加时刻的, 编辑
+  // 字段后不跟随)。与列定制弹窗同一 query key, 共享缓存; 无 ext 列时不请求。
+  // 引用相等收敛 — 无变化时 setColumns 传原引用, 不触发重渲染。
+  const hasExtColumns = columns.some(c => c.source.type === 'ext')
+  const extSchema = useQuery({
+    queryKey: QK.extDataSchemaAll,
+    queryFn: api.extDataSchemaAll,
+    enabled: hasExtColumns,
+    staleTime: 60_000,
+  })
+  useEffect(() => {
+    setColumns(prev => refreshExtColumns(prev, extSchema.data?.items))
+  }, [extSchema.data])
+
   const candleColumn = useMemo(() =>
     columns.find(c => c.source.type === 'builtin' && c.source.key === 'candle' && c.visible),
     [columns],
   )
   const candleColumnEnabled = !!candleColumn
-  // 日k列渲染配置（来自列定制，已钳制边界）
-  const candleResolved = useMemo(() => resolveCandleConfig(candleColumn?.candleConfig), [candleColumn])
+  // 日k / 分时联动配置（唯一副本存于分时列 intradayConfig.link, 隐藏列也可读）
+  const chartLink = useMemo(() => resolveChartLink(columns), [columns])
+  // 日k列渲染配置（来自列定制，已钳制边界；link 生效时展开高度/量带用联动值）
+  const candleResolved = useMemo(() => resolveCandleConfig(candleColumn?.candleConfig, chartLink), [candleColumn, chartLink])
   const candleDays = candleResolved.days
   const candleSize = dailyKChartVisible
     ? { width: candleResolved.enabledWidth, height: candleResolved.enabledHeight }
     : { width: candleResolved.disabledWidth, height: candleResolved.disabledHeight }
+  // 量带只在展开态传入: 收起态与分时收起占位一样保持现状 (逐像素一致),
+  // candleSize 仍只含 width/height
+  const candleVolume = dailyKChartVisible && candleResolved.volume
 
   const dailyKVisible = candleColumnEnabled && dailyKChartVisible
 
@@ -824,8 +849,8 @@ export function Watchlist() {
     columns.find(c => c.source.type === 'builtin' && c.source.key === 'intraday' && c.visible),
     [columns],
   )
-  // 分时列渲染配置（宽高, 来自列定制, 已钳制边界）
-  const intradayResolved = useMemo(() => resolveIntradayConfig(intradayColumn?.intradayConfig), [intradayColumn])
+  // 分时列渲染配置（宽高, 来自列定制, 已钳制边界; 量带/高度受联动 link 影响）
+  const intradayResolved = useMemo(() => resolveIntradayConfig(intradayColumn?.intradayConfig, chartLink), [intradayColumn, chartLink])
   // 分时图依赖分钟K批量数据 (kline.minute.batch), 无数据时开了列也不拉
   const caps = useCapabilities()
   const hasMinuteBatch = !!caps.data?.capabilities?.['kline.minute.batch']
@@ -966,11 +991,18 @@ export function Watchlist() {
 
   // 当日蜡烛实时修补: 历史 K 线按 staleTime 周期拉取 (见 queryKeys 注释), 最后一根
   // 蜡烛用每 tick 刷新的 enriched 当日 OHLC 前端覆盖/追加, 蜡烛随实时行情跳动, 零额外请求。
+  // 出口做引用收敛: 当日 OHLC 未变的 symbol 沿用旧数组, 蜡烛图 React.memo 免整图重渲染。
+  const prevKlineSeriesRef = useRef<Record<string, KlineRow[]>>({})
   const klineData = useMemo(() => {
     const base = dailyKVisible ? (klineBatch.data?.data ?? {}) : {}
     const liveRows = enriched.data?.rows
     const asOf = enriched.data?.as_of
-    if (!dailyKVisible || !liveRows?.length || !asOf) return base
+    // 无可修补数据时直接返回查询缓存对象 — 它是 react-query 持有的外来引用,
+    // 只能作为后续 tick 的比较参照 (prev), 不得进收敛 (next 会被原地改写)。
+    if (!dailyKVisible || !liveRows?.length || !asOf) {
+      prevKlineSeriesRef.current = base
+      return base
+    }
     const liveBySymbol = new Map<string, any>(liveRows.map((r: any) => [r.symbol, r]))
     const patched: Record<string, KlineRow[]> = {}
     for (const sym of Object.keys(base)) {
@@ -996,7 +1028,9 @@ export function Watchlist() {
         patched[sym] = arr
       }
     }
-    return patched
+    const merged = reuseUnchangedSeries(prevKlineSeriesRef.current, patched)
+    prevKlineSeriesRef.current = merged
+    return merged
   }, [dailyKVisible, klineBatch.data, enriched.data])
 
   // 批量分时数据 (有分钟K批量能力时, 列可见才拉)
@@ -1033,46 +1067,28 @@ export function Watchlist() {
   // 分时图 SSE 续画: enriched 行情列每 tick 刷新 (SSE 触发), 前端本地续写分钟序列
   // 的最后一根 / 分钟滚动追加新K — 轮询间隔内分时图也随实时价跳动, 零额外请求。
   // 纯视图叠加不写回缓存: 轮询拉回的服务端定版K始终是权威值, 覆盖续画值。
+  // 新鲜度守卫 (见 extendMinuteTail): 只对行情日期为当日的资产类型续画 — ETF
+  // 未开实时拉取时 enriched close 是旧日K回退值, 拼到当日分钟K尾部会画错价。
+  // 出口做引用收敛: 价格未动的 symbol 沿用旧数组, 分时图 React.memo 免整图重渲染。
+  const prevMinuteSeriesRef = useRef<Record<string, MinuteKlineRow[]>>({})
   const minuteData = useMemo(() => {
-    const base: Record<string, MinuteKlineRow[]> = intradayVisible ? (minuteBatch.data?.data ?? {}) : {}
-    const liveRows = enriched.data?.rows
-    if (!intradayVisible || !liveRows?.length) return base
-    const liveBySymbol = new Map<string, any>(liveRows.map((r: any) => [r.symbol, r]))
-    // 仅连续竞价时段续画 (9:31-11:30, 13:01-15:00); 收盘后 rt_price 即收盘价无需续写
-    const now = new Date()
-    const hh = now.getHours(), mm = now.getMinutes()
-    const inSession =
-      (hh === 9 && mm >= 31) || hh === 10 ||
-      (hh === 11 && mm <= 30) || (hh === 13 && mm >= 1) || hh === 14
-    if (!inSession) return base
-    // 与服务端同构的 naive 北京时间戳 (手工拼本地时间, 不能用 toISOString — 那是 UTC)
-    const pad = (n: number) => String(n).padStart(2, '0')
-    const barTs = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}T${pad(hh)}:${pad(mm)}:00`
-    const patched: Record<string, MinuteKlineRow[]> = {}
-    for (const sym of Object.keys(base)) {
-      const arr = base[sym]
-      if (!Array.isArray(arr) || arr.length === 0) { patched[sym] = arr; continue }
-      const live = liveBySymbol.get(sym)
-      const price = live?.rt_price ?? live?.close
-      if (typeof price !== 'number' || !Number.isFinite(price)) { patched[sym] = arr; continue }
-      const last = arr[arr.length - 1]
-      if (last.datetime === barTs) {
-        patched[sym] = [...arr.slice(0, -1), {
-          ...last,
-          close: price,
-          high: Math.max(last.high, price),
-          low: Math.min(last.low, price),
-        }]
-      } else if (barTs > last.datetime) {
-        patched[sym] = [...arr, {
-          datetime: barTs, open: price, high: price, low: price, close: price,
-          volume: 0, amount: 0,   // 量/额由下一轮轮询定版覆盖
-        }]
-      } else {
-        patched[sym] = arr   // 轮询数据已新于本地时钟 (钟差兜底), 不动
-      }
+    if (!intradayVisible) return {}
+    const base = minuteBatch.data?.data ?? {}
+    const extended = extendMinuteTail(
+      base,
+      enriched.data?.rows,
+      enriched.data?.dates,
+      new Date(),
+    )
+    // base 是 react-query 持有的外来引用 (extendMinuteTail 盘后/无行情时原样返回):
+    // 只作比较参照, 不得进收敛 (next 会被原地改写)。
+    if (extended === base) {
+      prevMinuteSeriesRef.current = extended
+      return extended
     }
-    return patched
+    const merged = reuseUnchangedSeries(prevMinuteSeriesRef.current, extended)
+    prevMinuteSeriesRef.current = merged
+    return merged
   }, [intradayVisible, minuteBatch.data, enriched.data])
 
   const [minuteSyncDialog, setMinuteSyncDialog] = useState<string | null>(null)
@@ -1422,8 +1438,25 @@ export function Watchlist() {
     }
     return counts
   }, [listEntries])
+  // 行引用稳定: enriched 行对象由 react-query 结构共享保引用 (内容未变 → 引用
+  // 不变, 行内无逐 tick 时间戳字段), 源行与分组都未变时沿用上次合并结果 —
+  // 行对象跨 tick 稳定, 已 memo 的分组卡片 (StockCard) 不再被每 tick 的新行对象击穿。
+  const mergedRowsCacheRef = useRef(new Map<string, { src: any; gids: readonly string[]; merged: any }>())
   const rowsInSelectedGroup = useMemo(() => {
-    const rowsWithGroup = rows.map(row => ({ ...row, group_ids: groupBySymbol.get(row.symbol) ?? [] }))
+    const prev = mergedRowsCacheRef.current
+    const next = new Map<string, { src: any; gids: readonly string[]; merged: any }>()
+    const rowsWithGroup = rows.map(row => {
+      const gids = groupBySymbol.get(row.symbol) ?? EMPTY_GROUP_IDS
+      const hit = prev.get(row.symbol)
+      if (hit && hit.src === row && hit.gids === gids) {
+        next.set(row.symbol, hit)
+        return hit.merged
+      }
+      const merged = { ...row, group_ids: gids }
+      next.set(row.symbol, { src: row, gids, merged })
+      return merged
+    })
+    mergedRowsCacheRef.current = next
     if (selectedGroup === 'all') return rowsWithGroup
     if (selectedGroup === 'ungrouped') return rowsWithGroup.filter(row => row.group_ids.length === 0)
     return rowsWithGroup.filter(row => row.group_ids.includes(selectedGroup))
@@ -2296,7 +2329,7 @@ export function Watchlist() {
                       className="pl-2 pr-3 py-1.5"
                       style={{ width: candleSize.width + 4, minWidth: candleSize.width + 4, maxWidth: candleSize.width + 4, height: candleSize.height }}
                     >
-                      <MiniCandlestick rows={klineData[r.symbol] ?? []} width={candleSize.width} height={candleSize.height} />
+                      <MiniCandlestick rows={klineData[r.symbol] ?? EMPTY_ROWS} width={candleSize.width} height={candleSize.height} volume={candleVolume} />
                     </td>
                   )
                 }
@@ -2314,7 +2347,7 @@ export function Watchlist() {
                       </td>
                     )
                   }
-                  const rows: MinuteKlineRow[] = minuteData[r.symbol] ?? []
+                  const rows: MinuteKlineRow[] = minuteData[r.symbol] ?? EMPTY_ROWS
                   // 眼睛关闭(收起)时用小尺寸 (和日k收起态一致 40x40); 开启时用配置值
                   const iw = intradayChartVisible ? intradayResolved.width : 40
                   const ih = intradayChartVisible ? intradayResolved.height : 40

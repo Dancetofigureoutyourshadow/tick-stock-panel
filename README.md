@@ -660,6 +660,8 @@ PORT=3018                      # 服务端口
 >
 > 协议全文与第三方组件许可清单亦可见应用内「设置 → 关于 → 开源许可」。
 
+**贡献**:提交 PR 前请阅读 [CONTRIBUTING.md](./CONTRIBUTING.md);所有提交须用 `git commit -s` 签署 DCO(贡献来源声明),并同意其中第 14 节的贡献再许可条款。
+
 本项目依赖 [TickFlow](https://tickflow.org/auth/register?ref=V3KDKGXPEA) 提供数据服务,使用前请遵守其服务条款
 
 内置数据源插件 [fuyao](https://fuyao.aicubes.cn/docs/api-reference/) 提供同花顺 REST 数据接口(行情 / 财务 / 龙虎榜 / 盘前风向标 / 交易日历等),需自备 API Key,使用前请遵守其服务条款

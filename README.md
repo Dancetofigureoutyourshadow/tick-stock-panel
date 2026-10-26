@@ -4,11 +4,11 @@
 
 <br/>
 
-[![个人开源](https://img.shields.io/badge/%E4%B8%AA%E4%BA%BA%E5%BC%80%E6%BA%90-green?style=for-the-badge&labelColor=red)](https://github.com/shy3130/tick-stock-panel)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow?style=for-the-badge)](./LICENSE)
 [![Engine: Polars](https://img.shields.io/badge/Engine-Polars-6f42c1?style=for-the-badge)](https://pola.rs/)
-[![Open API](https://img.shields.io/badge/Open_API-65_%E7%AB%AF%E7%82%B9-00b386?style=for-the-badge)](./docs/open-platform-plan.md)
-[![MCP](https://img.shields.io/badge/MCP-12_%E5%B7%A5%E5%85%B7-7c3aed?style=for-the-badge)](./mcp-server/README.md)
+[![Python 3.11+](https://img.shields.io/badge/Python-3.11+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
+[![Node 20+](https://img.shields.io/badge/Node.js-20+-339933?style=for-the-badge&logo=nodedotjs&logoColor=white)](https://nodejs.org/)
+[![React 18](https://img.shields.io/badge/React-18-61DAFB?style=for-the-badge&logo=react&logoColor=black)](https://react.dev/)
 
 [![Build: Docker CI](https://github.com/shy3130/tick-stock-panel/actions/workflows/docker.yml/badge.svg)](https://github.com/shy3130/tick-stock-panel/actions/workflows/docker.yml)
 [![Test: Backend + Frontend](https://github.com/shy3130/tick-stock-panel/actions/workflows/ci.yml/badge.svg)](https://github.com/shy3130/tick-stock-panel/actions/workflows/ci.yml)
@@ -18,15 +18,15 @@
 
 [![官网](https://img.shields.io/badge/%E5%AE%98%E7%BD%91-tsp.shy313.com-8B5CF6?style=for-the-badge&labelColor=181717&logo=googlechrome&logoColor=white)](https://tsp.shy313.com/)
 
-`策略` · `回测` · `监控` · `因子挖掘` · `AI 助手` · `Open API` · `MCP`
+`策略` · `回测` · `监控` · `因子挖掘` · `AI 助手` · `Polars` · `React`
 
 <a href="https://trendshift.io/repositories/64327?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-64327" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/repositories/64327" alt="shy3130%2Ftick-stock-panel | Trendshift" width="250" height="55"/></a>
 <a href="https://trendshift.io/repositories/64327?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-64327" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/64327/daily?language=TypeScript" alt="shy3130%2Ftick-stock-panel | Trendshift" width="250" height="55"/></a>
 
 <table>
-<tr><td align="center"><big><b>65</b></big><br/><sub>开放 API 端点</sub></td>
-<td align="center"><big><b>6</b></big><br/><sub>Token 权限档</sub></td>
-<td align="center"><big><b>12</b></big><br/><sub>MCP 工具</sub></td>
+<tr><td align="center"><big><b>3.11+</b></big><br/><sub>Python 后端</sub></td>
+<td align="center"><big><b>20+</b></big><br/><sub>Node 前端</sub></td>
+<td align="center"><big><b>18</b></big><br/><sub>React · TypeScript</sub></td>
 <td align="center"><big><b>3000+</b></big><br/><sub>测试全绿 · CI 守护</sub></td>
 <td align="center"><big><b>ms 级</b></big><br/><sub>全市场策略扫描</sub></td>
 <td align="center"><big><b>1 容器</b></big><br/><sub>零外部数据库</sub></td></tr>

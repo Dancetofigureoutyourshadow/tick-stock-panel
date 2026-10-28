@@ -114,3 +114,4 @@ reports/cursor_tickflow_pro_rate_limit_p0.bundle
 /generated/**
 /.codegraph/.gitignore
 /.workbuddy/
+/_tmp/

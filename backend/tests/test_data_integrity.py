@@ -313,6 +313,31 @@ def test_etf_family_independent(tmp_path):
     assert earliest_issue_day(issues, ("kline_etf_daily",)) is None
 
 
+def test_scan_table_scope_limits_families(tmp_path):
+    """tables 限定扫描范围: 未纳入的族即使有缺口也不上报。"""
+    _write_daily_partition(tmp_path, "kline_daily", FRIDAY, None)
+    _write_daily_partition(tmp_path, "kline_etf_daily", THURSDAY, None)
+    assert scan_recent_integrity(tmp_path, today=TODAY) == [
+        IntegrityIssue(day=FRIDAY, table="kline_etf_daily", kind="missing"),
+    ]
+    assert scan_recent_integrity(tmp_path, today=TODAY, tables={"kline_daily"}) == []
+
+
+def test_maintained_tables_follow_pull_switches(monkeypatch):
+    """A 股恒可修复; ETF/指数跟随盘后拉取开关。"""
+    from app.services import preferences
+
+    monkeypatch.setattr(preferences, "get_pipeline_pull_etf", lambda: False)
+    monkeypatch.setattr(preferences, "get_pipeline_pull_index", lambda: False)
+    assert di.maintained_tables() == {"kline_daily"}
+
+    monkeypatch.setattr(preferences, "get_pipeline_pull_etf", lambda: True)
+    monkeypatch.setattr(preferences, "get_pipeline_pull_index", lambda: True)
+    assert di.maintained_tables() == {
+        "kline_daily", "kline_etf_daily", "kline_index_daily",
+    }
+
+
 def test_auto_repair_window():
     assert within_auto_repair_window(TODAY - timedelta(days=AUTO_REPAIR_MAX_LAG_DAYS), today=TODAY) is True
     assert within_auto_repair_window(TODAY - timedelta(days=AUTO_REPAIR_MAX_LAG_DAYS + 1), today=TODAY) is False
@@ -424,6 +449,15 @@ class _QuoteServiceStub:
 
     def disable(self):
         self.enabled = False
+
+
+def _write_etf_tail_gap(root, today: date) -> date:
+    """股票族最新到当天、ETF 族停在上一交易日之前 → 仅 ETF 有尾部缺口。"""
+    gap_day = _recent_trading_day_before(today)
+    etf_latest = _recent_trading_day_before(gap_day)
+    _write_daily_partition(root, "kline_daily", today, _ts_ms(today, time(10, 0)))
+    _write_daily_partition(root, "kline_etf_daily", etf_latest, None)
+    return gap_day
 
 
 def test_realtime_gate_blocks_on_snapshot_and_launches_repair(tmp_path, monkeypatch):
@@ -542,6 +576,82 @@ def test_realtime_gate_ignores_old_issues_beyond_window(tmp_path, monkeypatch):
     assert result["realtime_quotes_enabled"] is True
 
 
+def test_realtime_gate_allows_unmaintained_etf_gap(tmp_path, monkeypatch):
+    """ETF 日K同步关闭时, 其尾部缺口是预期状态, 不能锁死实时行情。
+
+    复现 2026-10-26: 扫描仍会把 ETF 缺口当坏数据, 修复管道却跳过 ETF,
+    每次开实时都 409 并新建一个注定补不上的修复任务。
+    """
+    from app.api import settings as settings_api
+    from app.services import preferences
+
+    real_today = datetime.now(CN_TZ).date()
+    gap_day = _write_etf_tail_gap(tmp_path, real_today)
+    # 扫描全部表族时确实存在 ETF 缺口 (回归前提)
+    assert scan_recent_integrity(tmp_path, today=real_today) == [
+        IntegrityIssue(day=gap_day, table="kline_etf_daily", kind="missing"),
+    ]
+
+    monkeypatch.setattr(preferences, "get_pipeline_pull_etf", lambda: False)
+    monkeypatch.setattr(preferences, "get_pipeline_pull_index", lambda: True)
+    launched = []
+    monkeypatch.setattr(
+        di, "launch_integrity_repair",
+        lambda state, day, reason: (launched.append((day, reason)) or ("job-x", True)),
+    )
+    saved = {}
+    monkeypatch.setattr(
+        "app.services.preferences.save", lambda payload: saved.update(payload),
+    )
+
+    qs = _QuoteServiceStub()
+    request = _gate_state(tmp_path, qs, repo=None)
+    req = settings_api.RealtimeQuotesPrefs(realtime_quotes_enabled=True)
+
+    result = settings_api.update_realtime_quotes(req, request)
+    assert result["realtime_quotes_enabled"] is True
+    assert qs.enabled is True
+    assert saved == {"realtime_quotes_enabled": True}
+    assert launched == []
+
+
+def test_realtime_gate_blocks_etf_gap_when_sync_enabled(tmp_path, monkeypatch):
+    """ETF 同步开启时缺口仍须拦截并建修复任务 (不能一概放过)。"""
+    from fastapi import HTTPException
+
+    from app.api import settings as settings_api
+    from app.services import preferences
+
+    real_today = datetime.now(CN_TZ).date()
+    gap_day = _write_etf_tail_gap(tmp_path, real_today)
+
+    monkeypatch.setattr(preferences, "get_pipeline_pull_etf", lambda: True)
+    monkeypatch.setattr(preferences, "get_pipeline_pull_index", lambda: True)
+    launched = []
+    monkeypatch.setattr(
+        di, "launch_integrity_repair",
+        lambda state, day, reason: (launched.append((day, reason)) or ("job-x", True)),
+    )
+    saved = {}
+    monkeypatch.setattr(
+        "app.services.preferences.save", lambda payload: saved.update(payload),
+    )
+
+    qs = _QuoteServiceStub()
+    request = _gate_state(tmp_path, qs, repo=None)
+    req = settings_api.RealtimeQuotesPrefs(realtime_quotes_enabled=True)
+
+    with pytest.raises(HTTPException) as exc_info:
+        settings_api.update_realtime_quotes(req, request)
+
+    assert exc_info.value.status_code == 409
+    assert gap_day.isoformat() in exc_info.value.detail
+    assert "缺失" in exc_info.value.detail
+    assert launched == [(gap_day, "realtime_gate")]
+    assert saved == {}
+    assert qs.enabled is False
+
+
 def test_boot_check_launches_repair_within_window(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
@@ -565,6 +675,35 @@ def test_boot_check_launches_repair_within_window(tmp_path, monkeypatch):
     )
     data_integrity.boot_integrity_check(state)
     assert launched == [probe]
+
+
+def test_boot_check_ignores_unmaintained_index_gap(tmp_path, monkeypatch):
+    """指数日K同步关闭时, 启动自检不应为指数缺口反复建修复任务。"""
+    from app.services import preferences
+
+    real_today = datetime.now(CN_TZ).date()
+    gap_day = _recent_trading_day_before(real_today)
+    index_latest = _recent_trading_day_before(gap_day)
+    data_dir = tmp_path / "boot"
+    _write_daily_partition(data_dir, "kline_daily", real_today, _ts_ms(real_today, time(10, 0)))
+    _write_daily_partition(data_dir, "kline_index_daily", index_latest, None)
+    assert scan_recent_integrity(data_dir, today=real_today) == [
+        IntegrityIssue(day=gap_day, table="kline_index_daily", kind="missing"),
+    ]
+
+    monkeypatch.setattr(preferences, "get_pipeline_pull_etf", lambda: False)
+    monkeypatch.setattr(preferences, "get_pipeline_pull_index", lambda: False)
+    launched = []
+    monkeypatch.setattr(
+        di, "launch_integrity_repair",
+        lambda state, day, reason: (launched.append(day) or ("job-x", True)),
+    )
+
+    state = SimpleNamespace(
+        repo=SimpleNamespace(store=SimpleNamespace(data_dir=data_dir)),
+    )
+    di.boot_integrity_check(state)
+    assert launched == []
 
 
 # ── 管道自愈端到端 (钩子3, 离线集成) ────────────────────────────────

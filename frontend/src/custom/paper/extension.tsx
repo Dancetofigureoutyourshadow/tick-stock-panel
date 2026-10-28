@@ -52,9 +52,10 @@ const BATCH_STATUS_LABEL: Record<string, string> = {
 
 function DailyTimingNotice() {
   return <div className="text-[11px] leading-relaxed text-muted">
-    日线策略：14:50 预扫，14:55 完整确认，14:57 提交，按最终收盘价模拟撮合；
-    次日开盘模式在盘后全量同步及指标更新成功后确认，次日实时行情确认开盘价后撮合，缺行情时盘后兜底。盘中止损止盈仍实时评估。
-    14:55 信号可能与最终日 K 不同。
+    日线策略：14:50 预扫，14:55 完整确认，14:57 提交买入，按最终收盘价模拟撮合；
+    收盘卖出改在盘后全量同步及指标更新成功后按权威日 K 确认，仍按当日收盘价撮合；
+    次日开盘模式同样在盘后确认，次日实时行情确认开盘价后撮合，缺行情时盘后兜底。盘中止损止盈仍实时评估。
+    14:55 买入信号可能与最终日 K 不同。
   </div>
 }
 
@@ -1256,7 +1257,7 @@ function AutoRulesPanel({ acc }: { acc: string }) {
                 <span className={r.latest_batch.status === 'skipped' || r.latest_batch.status === 'partial' ? 'text-warning' : 'text-accent'}>
                   {BATCH_STATUS_LABEL[r.latest_batch.status]}
                 </span>
-                {' · '}{r.latest_batch.mode === 'close' ? '收盘撮合' : '次日开盘'} · 信号 {r.latest_batch.signal_date}
+                {' · '}{r.latest_batch.mode === 'close' ? '买入收盘撮合' : r.latest_batch.mode === 'close_post' ? '盘后卖出→收盘撮合' : '盘后确认→次日开盘'} · 信号 {r.latest_batch.signal_date}
                 {r.latest_batch.quote_time && <> · 行情 {r.latest_batch.quote_time.slice(11, 19)}</>}
                 {r.latest_batch.confirmed_at && <> · 确认 {r.latest_batch.confirmed_at.slice(11, 19)}</>}
                 {r.latest_batch.submitted_at && <> · 提交 {r.latest_batch.submitted_at.slice(11, 19)}</>}
@@ -1431,7 +1432,7 @@ function AutoRuleForm({ acc, onDone, onCancel }: { acc: string; onDone: () => vo
                 <button key={value} onClick={() => setExitFill(value)}
                   className={cn('flex-1 rounded-btn border py-1 text-[11px] transition-colors',
                     exitFill === value ? 'border-accent/40 bg-accent/10 text-accent' : 'border-border text-muted')}>
-                  {value === 'open_t+1' ? '盘后确认→次日开盘' : '14:57提交→收盘撮合'}
+                  {value === 'open_t+1' ? '盘后确认→次日开盘' : '盘后确认→收盘撮合'}
                 </button>
               ))}
             </div>
@@ -2191,7 +2192,7 @@ function BatchCreateModal({ onClose, onCreated }: { onClose: () => void; onCreat
               {(['close_t', 'open_t+1'] as const).map(value => (
                 <button key={value} onClick={() => setExitFill(value)}
                   className={cn('flex-1 rounded-btn border py-1 text-[10px]', exitFill === value ? 'border-accent/40 bg-accent/10 text-accent' : 'border-border text-muted')}>
-                  {value === 'open_t+1' ? '盘后确认→次日开盘' : '14:57提交→收盘撮合'}
+                  {value === 'open_t+1' ? '盘后确认→次日开盘' : '盘后确认→收盘撮合'}
                 </button>
               ))}
             </div>

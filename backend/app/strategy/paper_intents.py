@@ -181,6 +181,12 @@ def confirm(
             return intent, None, error
         intent.pop("last_validation_error", None)
         resolve(data_dir, intent, "confirmed", f"订单 {order['id']}", account_id)
+        confirmation = intent.get("confirmation") or {}
+        if confirmation.get("settle_basis") == "post_close" and confirmation.get("signal_date"):
+            # 人工确认通常晚于管道当日结算; 这里补做一次同日结算, 让这笔收盘卖出
+            # 仍按信号日权威收盘价成交, 而不是顺延到次日收盘。
+            paper.settle_day(data_dir, confirmation["signal_date"], account_id=account_id)
+            order = paper.get_order(data_dir, order["id"], account_id) or order
         return intent, order, None
 
 

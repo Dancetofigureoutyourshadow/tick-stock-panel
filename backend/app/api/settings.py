@@ -1161,7 +1161,11 @@ def update_realtime_quotes(req: RealtimeQuotesPrefs, request: Request) -> dict:
         repo = getattr(request.app.state, "repo", None)
         if repo is not None:
             try:
-                issues = data_integrity.scan_recent_integrity(repo.store.data_dir)
+                # 只检查自动修复实际会覆盖的表族: ETF/指数拉取关闭时其尾部缺口
+                # 是预期状态, 纳入门禁会形成"永远修不好→永远 409"的死锁。
+                issues = data_integrity.scan_recent_integrity(
+                    repo.store.data_dir, tables=data_integrity.maintained_tables(),
+                )
             except Exception:  # noqa: BLE001
                 issues = []
             earliest = data_integrity.earliest_issue_day(issues)

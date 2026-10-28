@@ -1306,7 +1306,12 @@ def _placed_after_price_time(order: dict, day: str) -> bool:
     排队发生在同一交易日该时刻之后, 说明这个价格在下单时已经打印过, 按它成交等于
     拿已知价格回填 (次日开盘单的口径是次一交易日 raw_open), 应留到下一交易日结算。
     更早日期的订单不受影响; 时间戳缺失或无法解析时不拦截 (沿用原行为)。
+
+    例外: 盘后全量同步完成后再确认的收盘卖出 (settle_basis=post_close) 的信号
+    本身来自当日权威日K, 按当日收盘价成交是它的既定口径, 不算已知价格回填。
     """
+    if (order.get("confirmation") or {}).get("settle_basis") == "post_close":
+        return False
     stamp = order.get("queued_at") or order.get("created_at")
     try:
         ts = datetime.fromisoformat(str(stamp))
@@ -1347,7 +1352,10 @@ def settle_day(data_dir: Path, day: str, account_id: str = DEFAULT_ACCOUNT_ID) -
                     continue  # 确认批次不得用实时残留价结算, 也不计停牌顺延。
                 bar = authoritative_bar
             if bar is None:
-                order["postponed"] = int(order.get("postponed", 0)) + 1
+                # 同日重复结算 (如人工确认后补结算) 只计一次顺延。
+                if order.get("postponed_on") != day:
+                    order["postponed"] = int(order.get("postponed", 0)) + 1
+                    order["postponed_on"] = day
                 if order["postponed"] > MAX_POSTPONE_DAYS:
                     order["status"] = "expired"
                     order["reason"] = f"连续 {MAX_POSTPONE_DAYS} 个交易日无行情, 自动过期"

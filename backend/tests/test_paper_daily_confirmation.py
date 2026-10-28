@@ -186,6 +186,24 @@ def test_failed_pipeline_does_not_confirm_next_open(env):
     assert coordinator.latest("default", rule["id"])["reason"] == "全量同步未完成"
 
 
+def test_failed_pipeline_does_not_confirm_post_close_sell(env):
+    path, clock, _rule, coordinator, monkeypatch = env
+    _seed_lot(path)
+    clock[0] = clock[0].replace(hour=15, minute=40)
+    monkeypatch.setattr(coordinator, "_snapshot", lambda *args: pytest.fail("must not read stale cache"))
+    coordinator.scan("post_close_sell", skip_reason="全量同步未完成")
+    coordinator.submit(mode="close_post")
+    assert paper.load_orders(path) == []
+    assert coordinator.latest("default", env[2]["id"])["reason"] == "全量同步未完成"
+
+
+def test_post_close_sell_submission_window_starts_after_close():
+    confirmation = {"signal_date": str(DAY), "settle_basis": "post_close"}
+    assert paper_daily.submission_error(confirmation, "close", datetime(2026, 10, 19, 14, 57, tzinfo=CN_TZ))
+    assert paper_daily.submission_error(confirmation, "close", datetime(2026, 10, 19, 15, 31, tzinfo=CN_TZ)) is None
+    assert paper_daily.submission_error(confirmation, "close", datetime(2026, 10, 20, 9, 0, tzinfo=CN_TZ))
+
+
 def _seed_lot(path, *, snapshot=None):
     paper._append_fill(path, {
         "seq": 1, "ts": "", "date": "2026-10-16", "order_id": "lot_buy",
@@ -215,17 +233,16 @@ def test_pending_risk_exit_prevents_duplicate_daily_sell(env):
 
     path, clock, _, coordinator, monkeypatch = env
     _seed_lot(path)
-    frame = pl.DataFrame({"symbol": ["600000.SH"], "date": [DAY], "raw_close": [10.0],
-                          "quote_ts": [int(clock[0].timestamp() * 1000)]})
+    clock[0] = clock[0].replace(hour=15, minute=40)
+    frame = pl.DataFrame({"symbol": ["600000.SH"], "date": [DAY], "raw_close": [10.0]})
     result = SimpleNamespace(as_of=DAY, rows=[], entry_signal_hits=[],
-                             exit_signal_hits=[{"symbol": "600000.SH"}])
+                             exit_signal_hits=[{"symbol": "600000.SH", "signals": []}])
     monkeypatch.setattr(coordinator, "_snapshot", lambda *args: frame)
     monkeypatch.setattr(coordinator, "_run_strategy", lambda *args: (result, {}))
-    coordinator.scan("confirm")
     paper_exit.evaluate(path, [{"symbol": "600000.SH", "raw_close": 8.9, "raw_low": 8.9}],
                         trade_date=str(DAY), daily_strategy_ids={"daily"})
-    clock[0] = clock[0].replace(minute=57)
-    coordinator.submit()
+    coordinator.scan("post_close_sell")
+    coordinator.submit(mode="close_post")
     assert len(paper.load_orders(path)) == 1
     assert paper.load_orders(path)[0]["exit_reason"] == "stop_loss"
 
@@ -290,20 +307,92 @@ def test_pending_intent_carries_confirmation_and_expires_after_window(env):
     assert order is None and "提交窗口" in error
 
 
-def test_max_hold_and_daily_sell_use_confirmed_batch(env):
+def test_intraday_confirm_never_plans_close_t_sell(env):
+    path, clock, rule, coordinator, monkeypatch = env
+    _seed_lot(path)
+    frame = pl.DataFrame({"symbol": ["600000.SH"], "date": [DAY], "raw_close": [10.0],
+                          "quote_ts": [int(clock[0].timestamp() * 1000)]})
+    result = SimpleNamespace(as_of=DAY, rows=[], entry_signal_hits=[],
+                             exit_signal_hits=[{"symbol": "600000.SH", "signals": ["sell_now"]}])
+    monkeypatch.setattr(coordinator, "_snapshot", lambda *args: frame)
+    monkeypatch.setattr(coordinator, "_run_strategy", lambda *args: (result, {}))
+    coordinator.scan("confirm")
+    assert coordinator.latest("default", rule["id"])["actions"] == []
+    clock[0] = clock[0].replace(minute=57)
+    coordinator.submit()
+    assert paper.load_orders(path) == []
+
+
+def test_max_hold_sell_uses_post_close_synced_data(env):
     path, clock, rule, coordinator, _monkeypatch = env
     _seed_lot(path, snapshot={"max_hold_days": 1})
     partition = path / "kline_daily" / f"date={DAY}"
     partition.mkdir(parents=True)
     confirm(env)
-    batch = coordinator.latest("default", rule["id"])
-    sells = [a for a in batch["actions"] if a["side"] == "sell"]
-    assert len(sells) == 1 and sells[0]["exit_reason"] == "max_hold"
+    # 14:55 的盘中快照不再确认收盘卖出。
+    assert not [a for a in coordinator.latest("default", rule["id"])["actions"] if a["side"] == "sell"]
     clock[0] = clock[0].replace(minute=57)
     coordinator.submit()
+    assert paper.load_orders(path) == []
+
+    # 盘后全量同步完成后用权威日 K 重新确认, 并仍按当日收盘价成交。
+    clock[0] = clock[0].replace(hour=15, minute=40)
+    coordinator.scan("post_close_sell")
+    batch = coordinator.latest("default", rule["id"])
+    assert batch["mode"] == "close_post"
+    assert all(action["side"] == "sell" for action in batch["actions"])
+    sells = [a for a in batch["actions"] if a["side"] == "sell"]
+    assert len(sells) == 1 and sells[0]["exit_reason"] == "max_hold"
+    coordinator.submit(mode="close_post")
     orders = paper.load_orders(path)
     assert len(orders) == 1 and orders[0]["target_lot_id"] == "lot_buy"
     assert orders[0]["order_type"] == "close"
+    assert orders[0]["confirmation"]["settle_basis"] == "post_close"
+
+    pl.DataFrame({"symbol": ["600000.SH"], "date": [DAY], "open": [10.0], "close": [11.0]}).write_parquet(
+        partition / "part.parquet"
+    )
+    assert paper.settle_day(path, str(DAY))["filled"] == 1
+    assert paper.load_positions(path)["600000.SH"]["qty"] == 0
+
+
+def test_manual_post_close_sell_confirmed_after_settlement_fills_same_day_close(env):
+    from app.strategy import paper_intents
+
+    path, clock, rule, coordinator, monkeypatch = env
+    paper_auto.update_auto_rule(path, rule["id"], {"auto_exit_enabled": False})
+    _seed_lot(path, snapshot={"max_hold_days": 1})
+    frame = pl.DataFrame({"symbol": ["600000.SH"], "date": [DAY], "raw_close": [11.0]})
+    result = SimpleNamespace(as_of=DAY, rows=[], entry_signal_hits=[],
+                             exit_signal_hits=[{"symbol": "600000.SH", "signals": []}])
+    monkeypatch.setattr(coordinator, "_snapshot", lambda *args: frame)
+    monkeypatch.setattr(coordinator, "_run_strategy", lambda *args: (result, {}))
+
+    clock[0] = clock[0].replace(hour=15, minute=40)
+    coordinator.scan("post_close_sell")
+    created = coordinator.submit(mode="close_post")
+    assert [order.get("kind") for _acc, order in created] == ["intent"]
+    intent = paper_intents.load(path)[0]
+    assert intent["confirmation"]["settle_basis"] == "post_close"
+
+    partition = path / "kline_daily" / f"date={DAY}"
+    partition.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame({"symbol": ["600000.SH"], "date": [DAY], "open": [10.0], "close": [11.0]}).write_parquet(
+        partition / "part.parquet"
+    )
+    # 管道结算时意图尚未确认, 不产生订单。
+    assert paper.settle_day(path, str(DAY))["filled"] == 0
+    assert paper.load_orders(path) == []
+
+    # 结算之后人工确认: 补做同日结算, 仍按信号日权威收盘价成交。
+    _, order, error = paper_intents.confirm(
+        path, intent["id"], "default", qty=intent["qty"],
+        order_type="close", ref_price=11.0, asset_type="stock",
+    )
+    assert error is None
+    assert order["status"] == "filled"
+    assert order["fill_price"] == pytest.approx(paper.apply_slippage(11.0, "sell", 5.0))
+    assert paper.load_positions(path)["600000.SH"]["qty"] == 0
 
 
 def test_changed_funds_skip_without_overspending(env):
@@ -412,7 +501,8 @@ def test_next_open_deadline_respects_actual_trade_date():
     assert "已错过" in paper_daily.submission_error(confirmation, "next_open", after)
 
 
-def test_post_close_invalidation_is_scoped_to_daily_matrix(env, monkeypatch):
+@pytest.mark.parametrize("phase", ["post_close_sell", "post_close"])
+def test_post_close_invalidation_is_scoped_to_daily_matrix(env, monkeypatch, phase):
     from unittest.mock import Mock
 
     from app.jobs import daily_pipeline
@@ -423,16 +513,17 @@ def test_post_close_invalidation_is_scoped_to_daily_matrix(env, monkeypatch):
     monkeypatch.setattr(daily_pipeline, "_get_app_state", lambda: SimpleNamespace(strategy_engine=engine))
     monkeypatch.setattr(paper_daily.DailyCoordinator, "scan", lambda *args, **kwargs: [])
     monkeypatch.setattr(paper_daily.DailyCoordinator, "submit", lambda *args, **kwargs: [])
-    daily_pipeline._run_paper_daily_phase("post_close", coordinator.repo)
+    daily_pipeline._run_paper_daily_phase(phase, coordinator.repo)
     engine.invalidate_realtime_matrix.assert_called_once_with("paper_daily:daily")
 
 
-def test_post_close_rejects_same_day_stale_cache_generation(env):
+@pytest.mark.parametrize("phase", ["post_close_sell", "post_close"])
+def test_post_close_rejects_same_day_stale_cache_generation(env, phase):
     _, _, _, coordinator, _ = env
     coordinator.repo.get_enriched_range = lambda *args: None
     coordinator.repo.get_enriched_latest = lambda: pytest.fail("must use versioned reader")
     with pytest.raises(ValueError, match="当前数据版本"):
-        coordinator._snapshot("post_close", DAY)
+        coordinator._snapshot(phase, DAY)
 
 
 @pytest.mark.parametrize("already_refreshed,expected", [(True, 0), (False, 1)])

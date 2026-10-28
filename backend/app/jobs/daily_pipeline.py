@@ -250,6 +250,7 @@ def run_now(
             from app.services import data_integrity
             integrity_issues = data_integrity.scan_recent_integrity(
                 repo.store.data_dir, today=today,
+                tables=data_integrity.maintained_tables(),
             )
             if integrity_issues:
                 stale_day = data_integrity.earliest_issue_day(integrity_issues, ("kline_daily",))
@@ -362,6 +363,7 @@ def run_now(
     if (pull_a_share or override_start_date is not None) and universe and written_daily == 0:
         reason = "sync_daily: no rows written（日K源本轮未返回任何数据，原有数据未更新）"
         if is_after_official_daily_cutoff():
+            _run_paper_daily_phase("post_close_sell", repo, skip_reason="全量同步未完成：" + reason)
             _run_paper_daily_phase("post_close", repo, skip_reason="全量同步未完成：" + reason)
         raise PipelineStageError([reason])
     _invalidate("daily")
@@ -795,6 +797,7 @@ def run_now(
     # 阶段软失败意味着数据可能陈旧，禁止进入盘后确认并如实上报 failed。
     if stage_errors:
         if is_after_official_daily_cutoff():
+            _run_paper_daily_phase("post_close_sell", repo, skip_reason="全量同步未完成：" + "；".join(stage_errors))
             _run_paper_daily_phase("post_close", repo, skip_reason="全量同步未完成：" + "；".join(stage_errors))
         raise PipelineStageError(stage_errors)
 
@@ -805,13 +808,14 @@ def run_now(
         result["cache_refreshed"] = True
         from app.services.screener import ScreenerService
         ScreenerService.clear_history_cache()
+        skip_reason = "未完成全量A股日K同步" if not pull_a_share else None
+        # 收盘卖出必须用同步后的权威日K确认; 先于结算提交, 才能在当日收盘价成交。
+        emit("paper_settle", 97, "确认日线策略收盘卖出…")
+        _run_paper_daily_phase("post_close_sell", repo, skip_reason=skip_reason)
         emit("paper_settle", 98, "模拟盘结算…")
         result["paper_settle"] = _settle_paper_day(repo, today)
         emit("paper_settle", 99, "确认日线跟单信号…")
-        _run_paper_daily_phase(
-            "post_close", repo,
-            skip_reason="未完成全量A股日K同步" if not pull_a_share else None,
-        )
+        _run_paper_daily_phase("post_close", repo, skip_reason=skip_reason)
     emit("done", 100, "完成")
     return result
 
@@ -1461,7 +1465,7 @@ def _run_paper_daily_phase(phase: str, repo, *, skip_reason: str | None = None) 
         return
     quotes = getattr(app_state, "quote_service", None)
     coordinator = paper_daily.DailyCoordinator(repo, engine, quotes)
-    if phase == "post_close" and not skip_reason:
+    if phase in {"post_close_sell", "post_close"} and not skip_reason:
         for sid in paper_daily.daily_strategy_ids(repo.store.data_dir, engine):
             engine.invalidate_realtime_matrix(f"paper_daily:{sid}")
     if phase == "submit":
@@ -1470,7 +1474,8 @@ def _run_paper_daily_phase(phase: str, repo, *, skip_reason: str | None = None) 
             return
     else:
         coordinator.scan(phase, skip_reason=skip_reason)
-        created = coordinator.submit(mode="open") if phase == "post_close" and not skip_reason else []
+        post_close_mode = {"post_close_sell": "close_post", "post_close": "open"}.get(phase)
+        created = coordinator.submit(mode=post_close_mode) if post_close_mode and not skip_reason else []
     # 通知失败不回滚已提交订单；订单与批次关联可恢复。
     try:
         paper_daily.publish_created(quotes, repo.store.data_dir, created)
@@ -1479,7 +1484,8 @@ def _run_paper_daily_phase(phase: str, repo, *, skip_reason: str | None = None) 
                 "source": "paper", "type": "daily_confirmation", "severity": "info",
                 "ts": int(cn_now().timestamp() * 1000),
                 "message": {"prescan": "日线跟单预扫描完成", "confirm": "日线跟单确认完成",
-                            "submit": "日线跟单提交检查完成", "post_close": "日线盘后确认完成"}[phase],
+                            "submit": "日线跟单提交检查完成", "post_close_sell": "日线盘后卖出确认完成",
+                            "post_close": "日线盘后确认完成"}[phase],
             }])
     except Exception as exc:  # noqa: BLE001
         logger.warning("日线跟单通知失败: %s", exc)

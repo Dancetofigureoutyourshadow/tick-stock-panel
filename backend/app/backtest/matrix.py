@@ -1228,13 +1228,10 @@ def _build_market_data_matrix_cache_from_dataset(
             encoding="utf-8",
         )
         _raise_if_matrix_cancelled(cancel_event)
-        try:
-            os.replace(temporary, cache_path)
-        except OSError:
-            if (cache_path / "manifest.json").exists():
-                shutil.rmtree(temporary, ignore_errors=True)
-            else:
-                raise
+        # 目标目录若已存在但缺 manifest.json（上一次构建被中断留下的半成品），
+        # os.replace 在 Windows 上会以 WinError 5 失败；改用带回滚重试的发布，
+        # 否则该缓存键会永久无法写入，回测始终报「回测矩阵准备失败」。
+        _publish_matrix_cache_directory(temporary, cache_path)
     except BaseException:
         _close_matrix_memmaps(mapped)
         shutil.rmtree(temporary, ignore_errors=True)

@@ -59,6 +59,26 @@ TABLE_FAMILY = {
 }
 
 
+def maintained_tables() -> set[str]:
+    """当前配置下自动修复能覆盖的表族 (完整性扫描范围)。
+
+    ETF/指数日K拉取可被用户关闭 (数据页 → 数据范围): 关闭后最新分区停在
+    关闭日, 之后每个交易日都会被判"缺失"; 该族的历史坏分区同样不会被修复
+    管道覆盖。纳入门禁只会形成"永远修不好 → 每次开实时都 409 并新建一个
+    注定无效的修复任务"的死锁 (2026-10-26 ETF 实证)。
+
+    A 股日K在数据修正 (override_start_date) 时强制拉取, 恒在范围内。
+    """
+    from app.services import preferences
+
+    tables = {"kline_daily"}
+    if preferences.get_pipeline_pull_etf():
+        tables.add("kline_etf_daily")
+    if preferences.get_pipeline_pull_index():
+        tables.add("kline_index_daily")
+    return tables
+
+
 @dataclass(frozen=True)
 class IntegrityIssue:
     day: date
@@ -235,18 +255,20 @@ def scan_recent_integrity(
     *,
     today: date | None = None,
     lookback_days: int = SCAN_WINDOW_DAYS,
+    tables: Iterable[str] | None = None,
 ) -> list[IntegrityIssue]:
     """扫描最近交易日的数据完整性, 返回坏分区列表 (按日期升序)。
 
     每族表独立判定; 族内"最近无任何活动"(最新分区早于窗口)时整族跳过 —
     覆盖首次启动(无数据)与长期停用(用户自主)两类不应自动修复的场景。
+    tables 限定参与扫描的表族 (None=全部); 自动修复钩子传 maintained_tables()。
     """
     data_dir = Path(data_dir)
     today = today or datetime.now(CN_TZ).date()
     window_start = today - timedelta(days=lookback_days)
     issues: list[IntegrityIssue] = []
 
-    for table in _DAILY_TABLES:
+    for table in (tables if tables is not None else _DAILY_TABLES):
         base = data_dir / table
         existing: set[date] = set()
         if base.exists():
@@ -438,7 +460,9 @@ def boot_integrity_check(app_state) -> None:
     if repo is None:
         return
     try:
-        issues = scan_recent_integrity(repo.store.data_dir)
+        issues = scan_recent_integrity(
+            repo.store.data_dir, tables=maintained_tables(),
+        )
     except Exception as e:  # noqa: BLE001
         logger.warning("boot integrity scan failed: %s", e)
         return

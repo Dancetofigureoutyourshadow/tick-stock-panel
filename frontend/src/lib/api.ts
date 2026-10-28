@@ -1426,7 +1426,7 @@ export interface PaperDailyBatch {
   submitted_at?: string | null
   status: 'prescanned' | 'confirmed' | 'submitted' | 'filled' | 'partial' | 'skipped' | 'awaiting_confirmation'
   reason?: string | null
-  mode: 'close' | 'open'
+  mode: 'close' | 'open' | 'close_post'
 }
 
 export interface PaperOrder {

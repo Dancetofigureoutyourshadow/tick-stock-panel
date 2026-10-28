@@ -21,6 +21,8 @@ from app.strategy import paper, paper_auto, paper_exit, paper_intents
 
 logger = logging.getLogger(__name__)
 RISK_REASONS = {"stop_loss", "trailing_stop", "trailing_take_profit", "take_profit"}
+# 盘后阶段只读全量同步后的权威日K/指标, 不再回退到盘中快照。
+POST_CLOSE_PHASES = {"post_close", "post_close_sell"}
 
 
 def _digest(value) -> str:
@@ -64,7 +66,11 @@ def submission_error(confirmation: dict, order_type: str, now=None, *, data_dir:
     now = (now or cn_now()).astimezone(CN_TZ)
     signal_day = date.fromisoformat(confirmation["signal_date"])
     if order_type == "close":
-        if now.date() != signal_day or not time(14, 57) <= now.time() < time(14, 58):
+        if confirmation.get("settle_basis") == "post_close":
+            # 收盘卖出改用盘后同步数据确认, 提交窗口顺延到收盘后同一天。
+            if now.date() != signal_day or now.time() < time(15, 0):
+                return "已错过盘后卖出提交窗口，当日不补单"
+        elif now.date() != signal_day or not time(14, 57) <= now.time() < time(14, 58):
             return "已错过14:57提交窗口，当日不补单"
     elif now.date() > signal_day:
         target = confirmation.get("target_trade_date")
@@ -115,6 +121,10 @@ class DailyCoordinator:
             )
         ):
             batch.update(status="skipped", reason="已错过14:57提交窗口，当日不补单")
+        if batch["mode"] == "close_post" and batch["status"] == "confirmed" and (
+            now.date().isoformat() > batch["signal_date"]
+        ):
+            batch.update(status="skipped", reason="已错过盘后卖出提交窗口，当日不补单")
         states = {a.get("status") for a in batch["actions"]}
         if states and states <= {"submitted", "filled"}:
             orders = {(o.get("confirmation") or {}).get("action_key"): o
@@ -197,7 +207,7 @@ class DailyCoordinator:
                 atomic_write_text(marker, cn_now().isoformat())
 
     def _snapshot(self, phase: str, day: date) -> pl.DataFrame:
-        if phase != "post_close":
+        if phase not in POST_CLOSE_PHASES:
             if self.quotes is None:
                 raise ValueError("实时行情服务不可用")
             self.quotes.refresh()
@@ -231,7 +241,7 @@ class DailyCoordinator:
             return "行情日期不是信号交易日"
         if frame["raw_close"].null_count() or not frame.select((pl.col("raw_close").is_finite() & (pl.col("raw_close") > 0)).all()).item():
             return "原始价格缺失或无效"
-        if phase != "post_close":
+        if phase not in POST_CLOSE_PHASES:
             if "quote_ts" not in frame.columns or frame["quote_ts"].null_count():
                 return "缺少行情时间，不能确认信号"
             ages = frame.select((pl.lit(now.timestamp() * 1000) - pl.col("quote_ts")) / 1000).to_series()
@@ -292,40 +302,43 @@ class DailyCoordinator:
         sid = rule["match_id"]
         day = result.as_of.isoformat()
         rows = {r["symbol"]: r for r in frame.to_dicts()}
-        entry_symbols = {h["symbol"] for h in result.entry_signal_hits}
         events = []
-        for rank, row in enumerate(result.rows):
-            symbol = row["symbol"]
-            if symbol in entry_symbols and symbol in rows:
-                events.append({"source": "strategy", "strategy_id": sid, "type": "buy_signal",
-                               "symbol": symbol, "price": rows[symbol]["raw_close"],
-                               "score": row.get("score", getattr(result, "scores", {}).get(symbol, 0)),
-                               "_rank": rank, "strategy_snapshot": snapshot})
-        exits = {h["symbol"] for h in result.exit_signal_hits}
-        exit_state = paper_exit._load_state(self.data_dir, account_id)
-        trading_dates = sorted(p.name[5:] for p in (self.data_dir / "kline_daily").glob("date=*")
-                               if p.is_dir() and p.name[5:] <= day)
-        for symbol, pos in paper.load_positions(self.data_dir, account_id).items():
-            if symbol not in rows:
-                continue
-            for lot in pos.get("lots", []):
-                if lot.get("strategy_id") != sid or not int(lot.get("qty", 0)) or str(lot.get("date", "")) >= day:
-                    continue
-                max_hold = (lot.get("strategy_snapshot") or {}).get("max_hold_days")
-                held_days = sum(str(lot.get("date", "")) < d <= day for d in trading_dates)
-                reason = "signal" if symbol in exits else "max_hold" if max_hold and held_days >= int(max_hold) else None
-                fingerprint = "max_hold:" if reason == "max_hold" else "signal:" + ",".join(sorted(
-                    signal for hit in result.exit_signal_hits if hit["symbol"] == symbol
-                    for signal in hit.get("signals", [])
-                ))
-                if exit_state.get(str(lot.get("lot_id")), {}).get("ignored_fingerprint") == fingerprint:
-                    continue
-                if reason:
-                    events.append({"source": "strategy", "strategy_id": sid, "type": "sell_signal",
+        if mode != "close_post":
+            entry_symbols = {h["symbol"] for h in result.entry_signal_hits}
+            for rank, row in enumerate(result.rows):
+                symbol = row["symbol"]
+                if symbol in entry_symbols and symbol in rows:
+                    events.append({"source": "strategy", "strategy_id": sid, "type": "buy_signal",
                                    "symbol": symbol, "price": rows[symbol]["raw_close"],
-                                   "_lot_id": str(lot.get("lot_id")), "exit_reason": reason,
-                                   "strategy_snapshot": lot.get("strategy_snapshot") or snapshot})
-        target_fill = "close_t" if mode == "close" else "open_t+1"
+                                   "score": row.get("score", getattr(result, "scores", {}).get(symbol, 0)),
+                                   "_rank": rank, "strategy_snapshot": snapshot})
+        if mode != "close":
+            exits = {h["symbol"] for h in result.exit_signal_hits}
+            exit_state = paper_exit._load_state(self.data_dir, account_id)
+            trading_dates = sorted(p.name[5:] for p in (self.data_dir / "kline_daily").glob("date=*")
+                                   if p.is_dir() and p.name[5:] <= day)
+            for symbol, pos in paper.load_positions(self.data_dir, account_id).items():
+                if symbol not in rows:
+                    continue
+                for lot in pos.get("lots", []):
+                    if lot.get("strategy_id") != sid or not int(lot.get("qty", 0)) or str(lot.get("date", "")) >= day:
+                        continue
+                    max_hold = (lot.get("strategy_snapshot") or {}).get("max_hold_days")
+                    held_days = sum(str(lot.get("date", "")) < d <= day for d in trading_dates)
+                    reason = "signal" if symbol in exits else "max_hold" if max_hold and held_days >= int(max_hold) else None
+                    fingerprint = "max_hold:" if reason == "max_hold" else "signal:" + ",".join(sorted(
+                        signal for hit in result.exit_signal_hits if hit["symbol"] == symbol
+                        for signal in hit.get("signals", [])
+                    ))
+                    if exit_state.get(str(lot.get("lot_id")), {}).get("ignored_fingerprint") == fingerprint:
+                        continue
+                    if reason:
+                        events.append({"source": "strategy", "strategy_id": sid, "type": "sell_signal",
+                                       "symbol": symbol, "price": rows[symbol]["raw_close"],
+                                       "_lot_id": str(lot.get("lot_id")), "exit_reason": reason,
+                                       "strategy_snapshot": lot.get("strategy_snapshot") or snapshot})
+        target_fill = "open_t+1" if mode == "open" else "close_t"
+        order_type = "next_open" if mode == "open" else "close"
         events = [e for e in events if self._fill(rule, paper_auto._strategy_event_side(e)) == target_fill]
         if not rule.get("_legacy_mode"):
             # 保留旧金额/权益比例规则的仓位契约，仅改变确认时点。
@@ -341,7 +354,7 @@ class DailyCoordinator:
                 if qty > 0:
                     actions.append({
                         "symbol": event["symbol"], "side": side, "qty": qty,
-                        "order_type": "close" if mode == "close" else "next_open",
+                        "order_type": order_type,
                         "ref_price": event["price"], "source": f"auto:{rule['id']}",
                         "auto_enabled": True, "strategy_id": sid, "strategy_scope_id": sid,
                         "strategy_snapshot": event["strategy_snapshot"], "buy_score": event.get("score"),
@@ -365,15 +378,18 @@ class DailyCoordinator:
             return []
         if phase == "prescan" and not time(14, 50) <= now.time() < time(14, 55):
             return []
-        if phase == "post_close" and now.time() < time(15, 30):
+        if phase in POST_CLOSE_PHASES and now.time() < time(15, 30):
             return []
         self.migrate()
         self.expire_intents()
-        mode = "open" if phase == "post_close" else "close"
-        rules = [(acc, r) for acc, r in self._rules() if any(
-            self._fill(r, side) == ("open_t+1" if mode == "open" else "close_t")
-            for side in ("buy", "sell")
-        )]
+        mode = {"post_close_sell": "close_post", "post_close": "open"}.get(phase, "close")
+        if mode == "close":
+            sides, fill = ("buy",), "close_t"
+        elif mode == "close_post":
+            sides, fill = ("sell",), "close_t"
+        else:
+            sides, fill = ("buy", "sell"), "open_t+1"
+        rules = [(acc, r) for acc, r in self._rules() if any(self._fill(r, side) == fill for side in sides)]
         if not rules:
             return []
         target_day = _next_trade_date(now.date(), self.data_dir) if mode == "open" else None
@@ -397,6 +413,7 @@ class DailyCoordinator:
                 "id": _digest([account_id, rule["id"], now.date().isoformat(), mode]),
                 "account_id": account_id, "rule_id": rule["id"], "strategy_id": rule["match_id"],
                 "signal_date": now.date().isoformat(), "mode": mode,
+                "settle_basis": "post_close" if mode == "close_post" else None,
                 "rule_snapshot": rule,
                 "target_trade_date": target_day.isoformat() if target_day else None,
                 "status": "skipped" if error else "prescanned" if phase == "prescan" else "confirmed",
@@ -449,16 +466,20 @@ class DailyCoordinator:
             return []
         if mode == "close" and now.time() < time(14, 57):
             return []
+        if mode == "close_post" and now.time() < time(15, 0):
+            return []
+        order_type = "next_open" if mode == "open" else "close"
         created = []
         with paper.PAPER_LOCK:
             for account_id in paper.list_account_ids(self.data_dir):
                 rules = {r["id"]: r for r in paper_auto.load_auto_rules(self.data_dir, account_id, enabled_only=True)}
-                for batch in self.batches(account_id, mode=mode, day=now.date().isoformat() if mode == "close" else "*"):
+                for batch in self.batches(account_id, mode=mode,
+                                          day=now.date().isoformat() if mode in {"close", "close_post"} else "*"):
                     if batch["mode"] != mode or batch["status"] not in {"confirmed", "partial"}:
                         continue
                     if batch["status"] == "partial" and not any(a["status"] == "planned" for a in batch["actions"]):
                         continue
-                    error = submission_error(batch, "close" if mode == "close" else "next_open", now, data_dir=self.data_dir)
+                    error = submission_error(batch, order_type, now, data_dir=self.data_dir)
                     rule = rules.get(batch["rule_id"])
                     if not rule:
                         error = "规则已停用或删除"
@@ -480,11 +501,13 @@ class DailyCoordinator:
                         if action["status"] != "planned":
                             continue
                         action_now = cn_now().astimezone(CN_TZ)
-                        timing_error = submission_error(batch, "close" if mode == "close" else "next_open", action_now, data_dir=self.data_dir)
+                        timing_error = submission_error(batch, order_type, action_now, data_dir=self.data_dir)
                         if timing_error:
                             action.update(status="skipped", reason=timing_error)
                             continue
                         confirmation = {k: batch.get(k) for k in ("signal_date", "quote_time", "confirmed_at", "target_trade_date")}
+                        if batch.get("settle_basis"):
+                            confirmation["settle_basis"] = batch["settle_basis"]
                         confirmation.update(batch_id=batch["id"], action_key=action["key"], submitted_at=action_now.isoformat())
                         existing = next((o for o in paper.load_orders(self.data_dir, account_id) + paper_intents.load(self.data_dir, account_id)
                                          if (o.get("confirmation") or {}).get("action_key") == action["key"]), None)

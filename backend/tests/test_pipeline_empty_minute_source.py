@@ -118,12 +118,18 @@ def test_paper_confirmation_waits_for_successful_full_sync(pipeline, monkeypatch
     calls = []
     repo.refresh_cache = lambda: calls.append("refresh")
     monkeypatch.setattr(daily_pipeline, "_settle_paper_day", lambda *args: calls.append("settle") or {})
-    monkeypatch.setattr(daily_pipeline, "_run_paper_daily_phase", lambda *args, **kwargs: calls.append(kwargs))
+    monkeypatch.setattr(daily_pipeline, "_run_paper_daily_phase",
+                        lambda phase, *args, **kwargs: calls.append((phase, kwargs)))
 
     daily_pipeline.run_now(repo, capset)
 
-    assert calls[:2] == ["refresh", "settle"]
-    assert calls[2] == {"skip_reason": "未完成全量A股日K同步"}
+    # 收盘卖出先用同步后的权威数据确认并提交, 再结算; 次日开盘模式在结算后确认。
+    assert calls == [
+        "refresh",
+        ("post_close_sell", {"skip_reason": "未完成全量A股日K同步"}),
+        "settle",
+        ("post_close", {"skip_reason": "未完成全量A股日K同步"}),
+    ]
 
 
 def test_paper_confirmation_skips_failed_pipeline_before_settlement(pipeline, monkeypatch):
@@ -137,6 +143,7 @@ def test_paper_confirmation_skips_failed_pipeline_before_settlement(pipeline, mo
     with pytest.raises(daily_pipeline.PipelineStageError):
         daily_pipeline.run_now(repo, capset)
 
+    assert [call.args[0] for call in skip.call_args_list] == ["post_close_sell", "post_close"]
     assert "全量同步未完成" in skip.call_args.kwargs["skip_reason"]
 
 

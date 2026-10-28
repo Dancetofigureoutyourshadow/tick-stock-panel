@@ -195,6 +195,7 @@ def run_now(
     capset: CapabilitySet,
     on_progress: ProgressCb | None = None,
     override_start_date: _date | None = None,
+    override_symbols: list[str] | None = None,
 ) -> dict:
     """立即执行一次盘后管道,支持进度回调。
 
@@ -203,6 +204,9 @@ def run_now(
 
     override_start_date: 传入时强制走 batch 拉取分支,用该日期作为日K/除权/指数的
         拉取起点(到今天),用于「数据修正/补数据」场景。None 时走原有自动判定逻辑。
+    override_symbols: 数据修正时只重拉这些股票的日K (issue #514: 修复只补坏标的,
+        不再全市场重拉)。None = 全标的池。仅作用于日K (kline_daily) 阶段;
+        ETF/指数族沿用各自的全量口径。
     """
     emit = on_progress or _noop
     skipped: list[str] = []
@@ -284,17 +288,34 @@ def run_now(
         def _daily_chunk_progress(cur: int, tot: int) -> None:
             emit("sync_daily", 12 + int(33 * cur / tot),
                  f"日K 批次 {cur}/{tot}", stage_pct=int(100 * cur / tot), skip_log=True)
+        # 完整性修复带了坏 symbol 清单时只拉这些标的 (issue #514);
+        # 单票失败也要上浮 (failed_out), 不能只留 WARNING。
+        symbols_for_repair = list(override_symbols) if override_symbols else universe
+        repair_failed_symbols: list[str] = []
         written_daily = kline_sync.sync_and_persist_daily_batch(
-            universe, repo, capset,
+            symbols_for_repair, repo, capset,
             start_date=_dt.combine(start_date, _dt.min.time()),
             end_date=_dt.combine(today, _dt.min.time()),
             on_chunk_done=_daily_chunk_progress,
-            failed_out=daily_failed,
+            failed_out=repair_failed_symbols,
         )
-        gap_days = (today - start_date).days
-        new_daily_days = gap_days
-        emit("sync_daily", 45, f"日K 完成,覆盖 {gap_days} 天")
-        logger.info("sync_daily: [%s ~ %s] done, %d days", start_date, today, gap_days)
+        if override_symbols:
+            emit("sync_daily", 45,
+                 f"日K 完成(定向修复 {len(symbols_for_repair)} 只, 失败 {len(repair_failed_symbols)} 只)")
+        else:
+            gap_days = (today - start_date).days
+            new_daily_days = gap_days
+            emit("sync_daily", 45, f"日K 完成,覆盖 {gap_days} 天")
+        logger.info(
+            "sync_daily: [%s ~ %s] done, symbols=%d(%s) failed=%d",
+            start_date, today, len(symbols_for_repair),
+            "targeted" if override_symbols else "universe",
+            len(repair_failed_symbols),
+        )
+        if repair_failed_symbols:
+            preview = ", ".join(repair_failed_symbols[:10])
+            more = "" if len(repair_failed_symbols) <= 10 else f" 等 {len(repair_failed_symbols)} 只"
+            stage_errors.append(f"日K修复有 {len(repair_failed_symbols)} 只标的拉取失败: {preview}{more}")
     elif (
         today_exists
         and stale_day is None
@@ -360,12 +381,13 @@ def run_now(
         logger.info("sync_daily: [%s ~ %s] done", start_date, today)
     # 上游 200 空结果不属于请求异常。全市场零行时旧快照仍在盘上，
     # 不得继续重算/结算并把同步记为成功；单只停牌造成的空结果不受影响。
-    if (pull_a_share or override_start_date is not None) and universe and written_daily == 0:
+    requested_daily = override_symbols if override_start_date is not None and override_symbols else universe
+    if (pull_a_share or override_start_date is not None) and requested_daily and written_daily == 0:
         reason = "sync_daily: no rows written（日K源本轮未返回任何数据，原有数据未更新）"
         if is_after_official_daily_cutoff():
             _run_paper_daily_phase("post_close_sell", repo, skip_reason="全量同步未完成：" + reason)
             _run_paper_daily_phase("post_close", repo, skip_reason="全量同步未完成：" + reason)
-        raise PipelineStageError([reason])
+        raise PipelineStageError([*stage_errors, reason])
     _invalidate("daily")
     if daily_failed:
         stage_errors.append(f"sync_daily: {len(set(daily_failed))} 只标的请求失败，数据未全部更新")
@@ -794,6 +816,27 @@ def run_now(
         "stage_errors": stage_errors,
     }
 
+    # 修复后按实际维护的资产族复核，禁用资产的旧数据不应阻塞有效修复。
+    if override_start_date is not None:
+        try:
+            from app.services import data_integrity as _di
+
+            remaining_issues = _di.scan_recent_integrity(
+                repo.store.data_dir, today=today, tables=_di.maintained_tables(),
+            )
+            if remaining_issues:
+                stage_errors.append(
+                    f"数据修复后完整性仍不通过: {_di.describe_issues(remaining_issues)}"
+                    f" (剩余 {len(remaining_issues)} 个坏分区, 多为数据源拉取失败;"
+                    " 可稍后重试或到 数据→修正数据 手动执行)"
+                )
+                logger.warning(
+                    "integrity: post-repair scan found %d remaining issues", len(remaining_issues),
+                )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("integrity: post-repair scan failed (soft): %s", e)
+            stage_errors.append(f"数据修复后完整性校验失败: {e}")
+
     # 阶段软失败意味着数据可能陈旧，禁止进入盘后确认并如实上报 failed。
     if stage_errors:
         if is_after_official_daily_cutoff():
@@ -808,7 +851,9 @@ def run_now(
         result["cache_refreshed"] = True
         from app.services.screener import ScreenerService
         ScreenerService.clear_history_cache()
-        skip_reason = "未完成全量A股日K同步" if not pull_a_share else None
+        skip_reason = "未完成全量A股日K同步" if (
+            not pull_a_share or (override_start_date is not None and override_symbols)
+        ) else None
         # 收盘卖出必须用同步后的权威日K确认; 先于结算提交, 才能在当日收盘价成交。
         emit("paper_settle", 97, "确认日线策略收盘卖出…")
         _run_paper_daily_phase("post_close_sell", repo, skip_reason=skip_reason)
@@ -954,13 +999,7 @@ def _refresh_single_view(repo: KlineRepository, name: str) -> None:
     path = paths.get(name)
     if not path:
         return
-    try:
-        repo.db.execute(
-            f"CREATE OR REPLACE VIEW {name} AS "
-            f"SELECT * FROM read_parquet('{path}', union_by_name=true)"
-        )
-    except Exception as e:  # noqa: BLE001
-        logger.warning("refresh view %s failed: %s", name, e)
+    repo.refresh_view(name, path)
 
 
 def _resolve_minute_symbols(capset: CapabilitySet, repo=None) -> list[str]:
@@ -971,13 +1010,7 @@ def _resolve_minute_symbols(capset: CapabilitySet, repo=None) -> list[str]:
 def _refresh_instruments_view(repo: KlineRepository) -> None:
     """单独刷新 instruments 视图。"""
     d = repo.store.data_dir.as_posix()
-    try:
-        repo.db.execute(
-            f"CREATE OR REPLACE VIEW instruments AS "
-            f"SELECT * FROM read_parquet('{d}/instruments/**/*.parquet', union_by_name=true)"
-        )
-    except Exception as e:  # noqa: BLE001
-        logger.warning("refresh instruments view failed: %s", e)
+    repo.refresh_view("instruments", f"{d}/instruments/**/*.parquet")
 
 
 def _push_phase_change_alert(data_dir) -> None:
@@ -1053,16 +1086,18 @@ def _run_tracked(fn, job_label: str) -> bool:
 
 
 def _scheduled_pipeline_task(pipeline_fn) -> None:
-    """Run weekly mining only after the tracked daily pipeline has fully succeeded."""
+    """Run the scheduled lab cycle (weekly mining + daily guardian) after pipeline success."""
     if not _run_tracked(pipeline_fn, "daily_pipeline"):
         return
     try:
-        from app.services.mining_schedule import run_weekly_mining
+        from app.services.lab_schedule import run_scheduled_lab
 
-        result = run_weekly_mining(_get_app_state())
-        logger.info("scheduled mining result: %s", result)
+        result = run_scheduled_lab(_get_app_state())
+        logger.info("scheduled lab result: %s", result)
     except Exception:
-        logger.exception("scheduled mining enqueue failed; daily pipeline remains succeeded")
+        logger.exception(
+            "scheduled lab enqueue failed; daily pipeline remains succeeded"
+        )
 
 
 # ================================================================

@@ -113,6 +113,8 @@ def test_cancel_does_not_release_running_worker_capacity(capacity):
 def test_cache_refresh_queues_and_can_nest_in_pipeline(capacity, monkeypatch):
     store, limiter = capacity
     repo = object.__new__(KlineRepository)
+    repo._warmup_lock = threading.RLock()
+    repo._enriched_warming = False
     calls = []
     monkeypatch.setattr(repo, "_refresh_enriched_impl", lambda: calls.append(limiter.in_use))
     assert limiter.acquire("normal", timeout=0)
@@ -204,6 +206,8 @@ def test_api_jobs_wait_before_computing(
         db=SimpleNamespace(execute=lambda *args: None),
         refresh_cache=lambda: None,
         get_index_symbol_set=lambda: set(),
+        # rebuild_enriched 收尾经 repo.refresh_view 重建视图 (不再直连 db.execute)
+        refresh_view=lambda *args, **kwargs: True,
     )
     app.state.capabilities = SimpleNamespace(has=lambda _: True)
     assert limiter.acquire("normal", timeout=0)

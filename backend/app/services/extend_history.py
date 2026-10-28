@@ -67,7 +67,7 @@ def _refresh_single_view(repo: KlineRepository, name: str) -> None:
     """刷新单个 DuckDB 视图。"""
     try:
         repo.rebuild_view(name)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — 刷新失败保留日志, 不阻断历史扩展
         logger.warning("refresh view %s failed: %s", name, e)
 
 

@@ -14,6 +14,7 @@ from fastapi import APIRouter, Request
 from app.enriched_generation import EnrichedPublication
 from app.indicators.pipeline import ENRICHED_COLUMNS
 from app.services.data_statistics import parquet_kline_stats
+from app.services.pipeline_jobs import job_store
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +33,8 @@ _LARGE_TABLES = {"minute", "index_daily", "index_enriched", "etf_daily", "etf_en
 
 _storage_cache: dict[str, Any] | None = None
 _storage_cache_ts: float = 0.0
+_storage_cache_stale: dict[str, Any] | None = None
+_storage_generation = 0
 _storage_lock = threading.Lock()
 
 _table_cache: dict[str, dict | None] = {
@@ -49,6 +52,9 @@ _table_cache: dict[str, dict | None] = {
     "financials": None,
 }
 _table_cache_ts: dict[str, float] = {k: 0.0 for k in _table_cache}
+# 最后一次非空统计 (失效事件不清空): 同步任务期间 /status 的兜底展示 —
+# 宁可数字旧一点, 也不能让重聚合在 DuckDB 锁上排队到前端超时
+_table_cache_stale: dict[str, dict | None] = {}
 _table_cache_lock = threading.Lock()
 _table_refresh_locks = {name: threading.Lock() for name in _table_cache}
 _table_generations = {name: 0 for name in _table_cache}
@@ -63,18 +69,12 @@ _status_generation = 0
 _status_refreshing = False
 
 
-def invalidate_data_cache(table: str | None = None) -> None:
-    """数据写入/清除后调用。
-
-    table=None 时清所有表 cache + storage(粗粒度,用于 pipeline 完成/clear);
-    指定 table 时只清那张表,不影响 storage(细粒度,用于单 stage 写完)。
-    """
+def invalidate_data_cache(table: str | None = None, *, discard_stale: bool = False) -> None:
+    """同步保留最后统计供忙时展示；清库必须同时丢弃旧值。"""
+    global _storage_cache, _storage_cache_ts, _storage_cache_stale, _storage_generation
+    global _last_finished_cache, _status_snapshot, _status_snapshot_ts, _status_generation
     with _table_cache_lock:
         if table is None:
-            global _storage_cache, _storage_cache_ts, _last_finished_cache
-            _storage_cache = None
-            _storage_cache_ts = 0.0
-            _last_finished_cache = None
             for k in _table_cache:
                 _table_cache[k] = None
                 _table_cache_ts[k] = 0.0
@@ -83,10 +83,22 @@ def invalidate_data_cache(table: str | None = None) -> None:
             _table_cache[table] = None
             _table_cache_ts[table] = 0.0
             _table_generations[table] += 1
-    global _status_snapshot_ts, _status_generation
+        if discard_stale:
+            _table_cache_stale.clear()
+    if table is None:
+        with _storage_lock:
+            _storage_cache = None
+            _storage_cache_ts = 0.0
+            _storage_generation += 1
+            if discard_stale:
+                _storage_cache_stale = None
+        with _last_finished_lock:
+            _last_finished_cache = None
     with _status_lock:
         _status_snapshot_ts = 0.0
         _status_generation += 1
+        if discard_stale:
+            _status_snapshot = None
 
 
 def invalidate_storage_cache() -> None:
@@ -94,8 +106,13 @@ def invalidate_storage_cache() -> None:
     invalidate_data_cache(None)
 
 
-def _get_table_stats(name: str, fetch: Callable[[], dict | None]) -> dict | None:
-    """同表只刷新一次；不同表可独立刷新，空结果也遵循 TTL。"""
+def _get_table_stats(
+    name: str, fetch: Callable[[], dict | None], *, busy: bool = False
+) -> dict | None:
+    """忙时立即返回旧值；空闲时同表单次刷新，空结果也遵循 TTL。"""
+    if busy:
+        with _table_cache_lock:
+            return _table_cache_stale.get(name)
     ttl = _TABLE_TTL_LARGE if name in _LARGE_TABLES else _TABLE_TTL
     with _table_refresh_locks[name]:
         with _table_cache_lock:
@@ -108,6 +125,8 @@ def _get_table_stats(name: str, fetch: Callable[[], dict | None]) -> dict | None
             if _table_generations[name] == generation:
                 _table_cache[name] = fresh
                 _table_cache_ts[name] = time.time()
+                if fresh is not None:
+                    _table_cache_stale[name] = fresh
         return fresh
 
 
@@ -554,17 +573,22 @@ def _next_cron_run(scheduler, job_id: str) -> str | None:
     return None
 
 
-def _get_storage(data_dir: Path) -> dict:
-    """返回缓存的 storage 统计；走独立 TTL，stage 写完不触发重算。"""
-    global _storage_cache, _storage_cache_ts
+def _get_storage(data_dir: Path, *, busy: bool = False) -> dict | None:
+    """忙时只读旧统计；清库期间开始的扫描不得重新填充缓存。"""
+    global _storage_cache, _storage_cache_ts, _storage_cache_stale
     now = time.time()
     with _storage_lock:
+        if busy:
+            return _storage_cache_stale
         if _storage_cache is not None and (now - _storage_cache_ts) < _STORAGE_TTL:
             return _storage_cache
+        generation = _storage_generation
     fresh = _compute_storage(data_dir)
     with _storage_lock:
-        _storage_cache = fresh
-        _storage_cache_ts = now
+        if generation == _storage_generation:
+            _storage_cache = fresh
+            _storage_cache_ts = time.time()
+            _storage_cache_stale = fresh
     return fresh
 
 
@@ -590,6 +614,19 @@ def _last_finished(job_label: str) -> str | None:
     return cache.get(job_label)
 
 
+def _data_pipeline_busy(request: Request) -> bool:
+    """同步任务运行中或指标预热未完成 — /status 的重聚合应退化为纯缓存读。"""
+    ready = getattr(request.app.state, "indicators_ready", True)
+    repo = getattr(request.app.state, "repo", None)
+    if getattr(repo, "_enriched_warming", not ready):
+        return True
+    active_id = job_store.active_id()
+    if not active_id:
+        return False
+    active = job_store.get(active_id) or {}
+    return active.get("status") in ("pending", "running")
+
+
 @router.get("/status")
 def status(request: Request) -> dict:
     """页面只读最近完成的统计；首次计算和刷新均不占用 HTTP 请求。"""
@@ -598,7 +635,7 @@ def status(request: Request) -> dict:
     global _status_snapshot, _status_snapshot_dir, _status_snapshot_ts, _status_refreshing
     data_dir = request.app.state.repo.store.data_dir
     ready = getattr(request.app.state, "indicators_ready", True)
-    warming = bool(getattr(request.app.state.repo, "_enriched_warming", not ready))
+    busy = _data_pipeline_busy(request)
     path = data_dir / ".data_statistics" / "status.json"
     with _status_lock:
         if _status_snapshot_dir != data_dir:
@@ -607,7 +644,7 @@ def status(request: Request) -> dict:
             _status_snapshot = value if cached.get("version") == 1 and isinstance(value, dict) else None
             _status_snapshot_dir = data_dir
             _status_snapshot_ts = 0.0
-        if not warming and not _status_refreshing and (_status_snapshot_ts == 0 or time.monotonic() - _status_snapshot_ts >= _TABLE_TTL):
+        if not busy and not _status_refreshing and (_status_snapshot_ts == 0 or time.monotonic() - _status_snapshot_ts >= _TABLE_TTL):
             _status_refreshing = True
             generation = _status_generation
 
@@ -616,16 +653,15 @@ def status(request: Request) -> dict:
                 try:
                     fresh = _compute_status(request)
                     with _status_lock:
-                        publish = _status_generation == generation and _status_snapshot_dir == data_dir
-                        if publish:
+                        if (_status_generation == generation and _status_snapshot_dir == data_dir
+                                and not _data_pipeline_busy(request)):
+                            _write_cache(path, {"version": 1, "data": fresh})
                             _status_snapshot = fresh
-                    if publish:
-                        _write_cache(path, {"version": 1, "data": fresh})
+                            _status_snapshot_ts = time.monotonic()
                 except Exception:
                     logger.exception("data status background refresh failed")
                 finally:
                     with _status_lock:
-                        _status_snapshot_ts = time.monotonic() if _status_generation == generation else 0.0
                         _status_refreshing = False
 
             threading.Thread(target=refresh, name="data-status-refresh", daemon=True).start()
@@ -637,30 +673,31 @@ def status(request: Request) -> dict:
             "next_instruments_run": None, "next_pipeline_run": None,
             "last_instruments_run": None, "last_pipeline_run": None,
         }
-        return {**snapshot, "indicators_ready": ready, "statistics_loading": warming or _status_refreshing or _status_snapshot is None}
+        return {**snapshot, "indicators_ready": ready, "statistics_loading": busy or _status_refreshing or _status_snapshot is None}
 
 
 def _compute_status(request: Request) -> dict:
     repo = request.app.state.repo
     scheduler = getattr(request.app.state, "scheduler", None)
     data_dir = repo.store.data_dir
+    busy = _data_pipeline_busy(request)
 
     return {
-        "daily":       _get_table_stats("daily",       lambda: _safe_aggregate_daily(repo)),
-        "enriched":    _get_table_stats("enriched",    lambda: _safe_aggregate_enriched(repo)),
-    "index_daily":       _get_table_stats("index_daily",       lambda: _safe_aggregate_index_daily(repo)),
-    "index_enriched":    _get_table_stats("index_enriched",    lambda: _safe_aggregate_index_enriched(repo)),
-    "index_instruments": _get_table_stats("index_instruments", lambda: _safe_aggregate_index_instruments(repo)),
-    "etf_daily":         _get_table_stats("etf_daily",         lambda: _safe_aggregate_etf_daily(repo)),
-    "etf_enriched":      _get_table_stats("etf_enriched",      lambda: _safe_aggregate_etf_enriched(repo)),
-    "etf_instruments":   _get_table_stats("etf_instruments",   lambda: _safe_aggregate_etf_instruments(repo)),
-    "minute":      _get_table_stats("minute",      lambda: _safe_aggregate_minute(repo)),
-        "adj_factor":  _get_table_stats("adj_factor",  lambda: _safe_aggregate_adj_factor(repo)),
-        "instruments": _get_table_stats("instruments", lambda: _safe_aggregate_instruments(repo)),
-        "financials":  _get_table_stats("financials",  lambda: _safe_aggregate_financials(repo)),
+        "daily":       _get_table_stats("daily",       lambda: _safe_aggregate_daily(repo), busy=busy),
+        "enriched":    _get_table_stats("enriched",    lambda: _safe_aggregate_enriched(repo), busy=busy),
+    "index_daily":       _get_table_stats("index_daily",       lambda: _safe_aggregate_index_daily(repo), busy=busy),
+    "index_enriched":    _get_table_stats("index_enriched",    lambda: _safe_aggregate_index_enriched(repo), busy=busy),
+    "index_instruments": _get_table_stats("index_instruments", lambda: _safe_aggregate_index_instruments(repo), busy=busy),
+    "etf_daily":         _get_table_stats("etf_daily",         lambda: _safe_aggregate_etf_daily(repo), busy=busy),
+    "etf_enriched":      _get_table_stats("etf_enriched",      lambda: _safe_aggregate_etf_enriched(repo), busy=busy),
+    "etf_instruments":   _get_table_stats("etf_instruments",   lambda: _safe_aggregate_etf_instruments(repo), busy=busy),
+    "minute":      _get_table_stats("minute",      lambda: _safe_aggregate_minute(repo), busy=busy),
+        "adj_factor":  _get_table_stats("adj_factor",  lambda: _safe_aggregate_adj_factor(repo), busy=busy),
+        "instruments": _get_table_stats("instruments", lambda: _safe_aggregate_instruments(repo), busy=busy),
+        "financials":  _get_table_stats("financials",  lambda: _safe_aggregate_financials(repo), busy=busy),
 
         # 文件层面信息(缓存)
-        "storage": _get_storage(data_dir),
+        "storage": _get_storage(data_dir, busy=busy),
 
         # 调度
         "next_instruments_run": _next_cron_run(scheduler, "pre_market_instruments"),
@@ -759,7 +796,9 @@ def clear_data(request: Request):
     repo.rebuild_views()
 
     logger.info("数据已清除: 删除 %d 个 parquet 文件", deleted)
-    invalidate_data_cache(None)
+    invalidate_data_cache(None, discard_stale=True)
+    with _status_lock:
+        (data_dir / ".data_statistics" / "status.json").unlink(missing_ok=True)
     return {"deleted_files": deleted}
 
 

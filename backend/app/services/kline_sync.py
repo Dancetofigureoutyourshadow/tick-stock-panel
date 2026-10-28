@@ -96,7 +96,9 @@ def _atomic_write_parquet(df: pl.DataFrame, out) -> None:
     *.parquet glob, 不会被扫描误读。Windows 下目标正被并发读取时由
     replace_with_retry 短退避穿过。
     """
-    tmp = out.with_name(out.name + ".tmp")
+    # 唯一后缀: 两个写入者共用固定名 tmp 并发写同一文件会交错损坏 (被 rename
+    # 定版后分区报废)。崩溃残留的孤儿 tmp 不匹配 *.parquet glob, 读侧无影响。
+    tmp = out.with_name(f"{out.name}.{uuid.uuid4().hex[:8]}.tmp")
     df.write_parquet(tmp)
     replace_with_retry(tmp, out)
 
@@ -377,14 +379,8 @@ def sync_and_persist_daily_batch(
             if "symbol" in df.columns:
                 seen.update(df["symbol"].cast(pl.Utf8).unique().to_list())
             repo.append_daily(df)
-            try:
-                d = repo.store.data_dir.as_posix()
-                repo.db.execute(
-                    f"""CREATE OR REPLACE VIEW kline_daily AS
-                        SELECT * FROM read_parquet('{d}/kline_daily/**/*.parquet', union_by_name=true)"""
-                )
-            except Exception as e:  # noqa: BLE001
-                logger.warning("refresh view failed: %s", e)
+            d = repo.store.data_dir.as_posix()
+            repo.refresh_view("kline_daily", f"{d}/kline_daily/**/*.parquet")
             return _finalize(df.height)
         # 自定义源未配置 daily → 回退 TickFlow
 
@@ -412,14 +408,8 @@ def sync_and_persist_daily_batch(
 
     repo.append_daily(df)
 
-    try:
-        d = repo.store.data_dir.as_posix()
-        repo.db.execute(
-            f"""CREATE OR REPLACE VIEW kline_daily AS
-                SELECT * FROM read_parquet('{d}/kline_daily/**/*.parquet', union_by_name=true)"""
-        )
-    except Exception as e:  # noqa: BLE001
-        logger.warning("refresh view failed: %s", e)
+    d = repo.store.data_dir.as_posix()
+    repo.refresh_view("kline_daily", f"{d}/kline_daily/**/*.parquet")
 
     return _finalize(df.height)
 
@@ -1977,14 +1967,8 @@ def sync_and_persist_minute(
     written = written_box[0]
 
     # 刷新视图
-    try:
-        d = repo.store.data_dir.as_posix()
-        repo.db.execute(
-            f"""CREATE OR REPLACE VIEW kline_minute AS
-                SELECT * FROM read_parquet('{d}/kline_minute/**/*.parquet', union_by_name=true)"""
-        )
-    except Exception as e:  # noqa: BLE001
-        logger.warning("refresh kline_minute view failed: %s", e)
+    d = repo.store.data_dir.as_posix()
+    repo.refresh_view("kline_minute", f"{d}/kline_minute/**/*.parquet")
 
     logger.info("minute K synced: %d rows (%d symbols)", written, len(symbols))
     return written

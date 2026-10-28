@@ -25,6 +25,7 @@ from pathlib import Path
 from app.market_time import cn_now
 from app.services.fs_utils import atomic_write_text
 from app.strategy import paper, paper_intents
+from app.strategy.paper_watch import PAPER_WATCH_RULE_PREFIX
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +38,7 @@ def strategy_monitor_rules(data_dir: Path) -> list[dict]:
         str(rule["match_id"])
         for account_id in paper.list_account_ids(data_dir)
         for rule in load_auto_rules(data_dir, account_id, enabled_only=True)
-        if rule.get("match_kind") == "strategy"
+        if rule.get("match_kind") == "strategy" and rule.get("_legacy_mode")
     }
     return [{
         "id": FOLLOW_MONITOR_PREFIX + hashlib.sha1(sid.encode("utf-8")).hexdigest()[:16],
@@ -286,6 +287,36 @@ def _sizing_qty(data_dir: Path, rule: dict, ref_price: float, account_id: str) -
     return paper.qty_from_amount(amount, ref_price)
 
 
+def _feed_events(
+    events: list[dict], *, own_prefix: str, other_prefix: str, own_sids: set[str],
+) -> list[dict]:
+    """按规则代际取事件流: legacy 只吃 follow, 现代只吃 watch。
+
+    合成流存在时不再消费同策略的真实监控事件, 避免同一信号双重下单;
+    没有对应合成流时 (如盘后批量回放) 仍回退到真实监控事件。
+    """
+    out: list[dict] = []
+    for ev in events:
+        rule_id = str(ev.get("rule_id") or "")
+        if rule_id.startswith(own_prefix):
+            out.append(ev)
+            continue
+        if rule_id.startswith(other_prefix):
+            continue
+        if ev.get("source") == "strategy" and str(ev.get("strategy_id") or "") in own_sids:
+            continue
+        out.append(ev)
+    return out
+
+
+def _synthetic_sids(events: list[dict], prefix: str) -> set[str]:
+    return {
+        str(ev["strategy_id"])
+        for ev in events
+        if str(ev.get("rule_id") or "").startswith(prefix) and ev.get("strategy_id")
+    }
+
+
 def _legacy_events(data_dir: Path, events: list[dict], rules: list[dict], account_id: str, *, dry_run: bool = False) -> list[dict]:
     created: list[dict] = []
     today = cn_now().date().isoformat()
@@ -492,13 +523,30 @@ def on_rule_events(
         return created
     legacy_rules = [rule for rule in rules if rule.get("_legacy_mode")]
     if legacy_rules:
-        created.extend(_legacy_events(data_dir, events, legacy_rules, account_id))
+        follow_sids = _synthetic_sids(events, FOLLOW_MONITOR_PREFIX)
+        created.extend(_legacy_events(
+            data_dir,
+            _feed_events(
+                events,
+                own_prefix=FOLLOW_MONITOR_PREFIX,
+                other_prefix=PAPER_WATCH_RULE_PREFIX,
+                own_sids=follow_sids,
+            ),
+            legacy_rules, account_id,
+        ))
     rules = [rule for rule in rules if not rule.get("_legacy_mode")]
     if not rules:
         return created
+    modern_events = _feed_events(
+        events,
+        own_prefix=PAPER_WATCH_RULE_PREFIX,
+        other_prefix=FOLLOW_MONITOR_PREFIX,
+        own_sids=_synthetic_sids(events, PAPER_WATCH_RULE_PREFIX),
+    )
     with paper.PAPER_LOCK:
         # 同一批事件内复用快照, 由 create_order 后的持仓变化反映 (循环内重取)
-        for ev in events:
+        placed: set[tuple[str, str, str]] = set()
+        for ev in modern_events:
             symbol = (ev.get("symbol") or "").strip()
             price = ev.get("price")
             if not symbol or price is None or price <= 0:
@@ -508,6 +556,10 @@ def on_rule_events(
                     continue
                 side = _resolve_side(rule, ev)
                 if side is None:
+                    continue
+                # buy_signal 与 pool_entry 同轮命中同一标的时只下一单
+                order_key = (str(rule["id"]), symbol, side)
+                if order_key in placed:
                     continue
                 if _in_cooldown(data_dir, rule, symbol, int(rule.get("cooldown_days", 0)), account_id):
                     continue
@@ -551,6 +603,7 @@ def on_rule_events(
                     logger.info("paper auto %s: %s 下单被拒: %s", rule["name"], symbol, err)
                     continue
                 created.append(order)
+                placed.add(order_key)
                 logger.info("paper auto %s: %s 触发 %s %d 股 (%s)", rule["name"], symbol, side, qty, order["id"])
     return created
 

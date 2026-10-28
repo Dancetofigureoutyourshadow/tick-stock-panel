@@ -48,7 +48,9 @@ def test_delete_account_removes_its_internal_strategy_monitor(client: TestClient
 
     _mk_account(client)
     snapshots = []
-    client.app.state.monitor_engine = SimpleNamespace(set_rules=lambda rules: snapshots.append(rules))
+    client.app.state.monitor_engine = SimpleNamespace(
+        rules={}, set_rules=lambda rules: snapshots.append(rules),
+    )
     response = client.post("/api/paper/auto_rules?account=del_me", json={
         "name": "策略跟单", "match_kind": "strategy", "match_id": "s1",
         "side": "auto", "position_sizing": "equal", "auto_follow_enabled": True,

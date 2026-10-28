@@ -20,7 +20,10 @@ def test_persist_daily_reports_failed_symbols_and_keeps_successful_rows(monkeypa
     monkeypatch.setattr(kline_sync.preferences, "get_daily_data_provider", lambda: "tickflow")
     monkeypatch.setattr(kline_sync, "sync_daily_batch", fetch)
     monkeypatch.setattr(kline_sync, "resolve_limit", lambda *args, **kwargs: SimpleNamespace(batch=100, rpm=None))
-    repo = SimpleNamespace(store=SimpleNamespace(data_dir=tmp_path), append_daily=Mock(), db=Mock())
+    repo = SimpleNamespace(
+        store=SimpleNamespace(data_dir=tmp_path), append_daily=Mock(),
+        refresh_view=Mock(), db=Mock(),
+    )
     failed = []
 
     written = kline_sync.sync_and_persist_daily_batch(

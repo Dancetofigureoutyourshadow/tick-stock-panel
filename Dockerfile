@@ -115,6 +115,9 @@ COPY backend/app ./app
 # COPY --from 不受 .dockerignore 的 **/node_modules 规则影响。
 COPY --from=stocksdk-builder /build/node_modules ./app/plugins/stocksdk/node_modules
 COPY tiers.yaml /app/tiers.yaml
+# 版本号运行时兜底 (issue #513): 非冻结路径 _load_version() 读
+# /app/frontend/package.json, 缺文件会静默回退 _FALLBACK_VERSION 显示旧版本。
+COPY frontend/package.json /app/frontend/package.json
 ENV STATIC_DIR=/app/static \
     TIERS_YAML=/app/tiers.yaml \
     DATA_DIR=/app/data \

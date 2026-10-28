@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from app.market_time import CN_TZ
-from app.strategy import paper, paper_auto
+from app.strategy import paper, paper_auto, paper_watch
 
 SYM = "600519.SH"
 SYM2 = "000001.SZ"
@@ -190,8 +190,11 @@ def test_amount_rule_configuration_survives_reload_update_and_toggle(data_dir, s
     paper_auto.update_auto_rule(data_dir, rule["id"], {"size_value": 20000})
     paper_auto.set_enabled(data_dir, rule["id"], False)
     assert paper_auto.strategy_monitor_rules(data_dir) == []
+    assert paper_watch.watched_strategy_ids(data_dir) == set()
     paper_auto.set_enabled(data_dir, rule["id"], True)
     saved = paper_auto.load_auto_rules(data_dir)[0]
     assert saved["side"] == side and saved["max_positions"] == limit
     assert saved["size_value"] == 20000
-    assert [monitor["strategy_id"] for monitor in paper_auto.strategy_monitor_rules(data_dir)] == ["strat_1"]
+    # 金额型绑定属现代跟单: 由 paper_watch 合成规则驱动, 不再生成 legacy follow 监控
+    assert paper_auto.strategy_monitor_rules(data_dir) == []
+    assert paper_watch.watched_strategy_ids(data_dir) == {"strat_1"}

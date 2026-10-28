@@ -28,13 +28,13 @@ def filter(df, params):
 class _MonitorEngine:
     def __init__(self) -> None:
         self.invalidations = 0
-        self.rules: list[dict] = []
+        self.rules: dict[str, dict] = {}
 
     def invalidate_strategy_state(self) -> None:
         self.invalidations += 1
 
     def set_rules(self, rules: list[dict]) -> None:
-        self.rules = rules
+        self.rules = {rule["id"]: rule for rule in rules}
 
 
 def _request(data_dir: Path, engine: StrategyEngine, monitor: _MonitorEngine | None = None):
@@ -94,7 +94,7 @@ def test_delete_strategy_is_not_blocked_by_another_broken_file(monkeypatch, tmp_
     saved_rule = monitor_rules.load_one(tmp_path, "mr_target")
     assert saved_rule is not None and saved_rule["enabled"] is False
     assert monitor.invalidations == 1
-    assert monitor.rules and monitor.rules[0]["enabled"] is False
+    assert monitor.rules["mr_target"]["enabled"] is False
 
 
 def test_delete_strategy_reports_read_only_volume_without_unregistering(monkeypatch, tmp_path):

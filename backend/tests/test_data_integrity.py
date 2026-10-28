@@ -480,7 +480,7 @@ def test_realtime_gate_blocks_on_snapshot_and_launches_repair(tmp_path, monkeypa
     launched = []
     monkeypatch.setattr(
         data_integrity, "launch_integrity_repair",
-        lambda state, day, reason: (launched.append((day, reason)) or ("job-x", True)),
+        lambda state, day, reason, symbols=None: (launched.append((day, reason)) or ("job-x", True)),
     )
     saved = {}
     monkeypatch.setattr(
@@ -597,7 +597,7 @@ def test_realtime_gate_allows_unmaintained_etf_gap(tmp_path, monkeypatch):
     launched = []
     monkeypatch.setattr(
         di, "launch_integrity_repair",
-        lambda state, day, reason: (launched.append((day, reason)) or ("job-x", True)),
+        lambda state, day, reason, symbols=None: (launched.append((day, reason)) or ("job-x", True)),
     )
     saved = {}
     monkeypatch.setattr(
@@ -630,7 +630,7 @@ def test_realtime_gate_blocks_etf_gap_when_sync_enabled(tmp_path, monkeypatch):
     launched = []
     monkeypatch.setattr(
         di, "launch_integrity_repair",
-        lambda state, day, reason: (launched.append((day, reason)) or ("job-x", True)),
+        lambda state, day, reason, symbols=None: (launched.append((day, reason)) or ("job-x", True)),
     )
     saved = {}
     monkeypatch.setattr(
@@ -661,7 +661,7 @@ def test_boot_check_launches_repair_within_window(tmp_path, monkeypatch):
     launched = []
     monkeypatch.setattr(
         data_integrity, "launch_integrity_repair",
-        lambda state, day, reason: (launched.append(day) or ("job-x", True)),
+        lambda state, day, reason, symbols=None: (launched.append(day) or ("job-x", True)),
     )
 
     real_today = datetime.now(CN_TZ).date()
@@ -696,7 +696,7 @@ def test_boot_check_ignores_unmaintained_index_gap(tmp_path, monkeypatch):
     launched = []
     monkeypatch.setattr(
         di, "launch_integrity_repair",
-        lambda state, day, reason: (launched.append(day) or ("job-x", True)),
+        lambda state, day, reason, symbols=None: (launched.append(day) or ("job-x", True)),
     )
 
     state = SimpleNamespace(

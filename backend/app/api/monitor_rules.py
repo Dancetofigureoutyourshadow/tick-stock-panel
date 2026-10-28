@@ -55,8 +55,15 @@ def _sync_engine(request: Request) -> None:
             _reconcile_index_asset_type(r, repo)
             for r in monitor_rules.load_all(_data_dir(request))
         ]
-        from app.strategy import paper_auto
-        engine.set_rules(rules + paper_auto.strategy_monitor_rules(_data_dir(request)))
+        from app.strategy import paper_watch
+
+        paper_watch.sync(
+            _data_dir(request), engine,
+            getattr(request.app.state, "strategy_engine", None), real_rules=rules,
+        )
+        quote_service = getattr(request.app.state, "quote_service", None)
+        if quote_service is not None and engine.consume_strategy_result_updates():
+            quote_service.notify_strategy_results_updated()
 
 
 # ── Pydantic 模型 ───────────────────────────────────────

@@ -50,7 +50,7 @@ def _stub_clear_side_effects(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(alert_store, "clear", lambda _data_dir: None)
     monkeypatch.setattr(ScreenerService, "clear_history_cache", lambda: None)
     monkeypatch.setattr(overview, "invalidate_overview_cache", lambda: None)
-    monkeypatch.setattr(data_api, "invalidate_data_cache", lambda _table=None: None)
+    monkeypatch.setattr(data_api, "invalidate_data_cache", lambda _table=None, **_kwargs: None)
 
 
 def test_clear_data_bumps_enriched_generations_and_invalidates_panel_cache(

@@ -147,7 +147,7 @@ def test_paper_confirmation_skips_failed_pipeline_before_settlement(pipeline, mo
     assert "全量同步未完成" in skip.call_args.kwargs["skip_reason"]
 
 
-@pytest.mark.parametrize("mode", ["initial", "today", "repair"])
+@pytest.mark.parametrize("mode", ["initial", "today", "repair", "targeted_empty_universe"])
 def test_zero_row_daily_sync_fails_before_paper_settlement(pipeline, monkeypatch, mode):
     """上游返回成功但全市场零行时，不能拿旧快照结算并宣告管道成功。"""
     repo, _, _, _ = pipeline
@@ -158,6 +158,8 @@ def test_zero_row_daily_sync_fails_before_paper_settlement(pipeline, monkeypatch
     repo.refresh_cache = Mock()
     if mode != "initial":
         repo.latest_daily_date = daily_pipeline.cn_today
+    if mode == "targeted_empty_universe":
+        monkeypatch.setattr(daily_pipeline, "_resolve_universe", lambda *args: [])
     settle = Mock(return_value={})
     confirm = Mock()
     monkeypatch.setattr(daily_pipeline, "_settle_paper_day", settle)
@@ -166,8 +168,74 @@ def test_zero_row_daily_sync_fails_before_paper_settlement(pipeline, monkeypatch
     with pytest.raises(daily_pipeline.PipelineStageError, match="sync_daily: no rows written"):
         daily_pipeline.run_now(
             repo, caps,
-            override_start_date=daily_pipeline.cn_today() if mode == "repair" else None,
+            override_start_date=daily_pipeline.cn_today() if mode in ("repair", "targeted_empty_universe") else None,
+            override_symbols=["600000.SH"] if mode == "targeted_empty_universe" else None,
         )
 
     settle.assert_not_called()
     assert "全量同步未完成" in confirm.call_args.kwargs["skip_reason"]
+
+
+def test_repair_validation_ignores_disabled_asset_families(pipeline, monkeypatch):
+    repo, capset, _, _ = pipeline
+    preferences.save({"full_minute_data_provider": "none"})
+    monkeypatch.setattr(daily_pipeline.kline_sync, "sync_and_persist_daily_batch", lambda *a, **kw: 1)
+    scan = Mock(return_value=[])
+    monkeypatch.setattr(data_integrity, "scan_recent_integrity", scan)
+
+    daily_pipeline.run_now(repo, capset, override_start_date=daily_pipeline.cn_today(),
+                           override_symbols=["600000.SH"])
+
+    scan.assert_called_once_with(repo.store.data_dir, today=daily_pipeline.cn_today(),
+                                 tables={"kline_daily"})
+
+
+def test_targeted_repair_is_not_full_market_confirmation(pipeline, monkeypatch):
+    repo, capset, _, _ = pipeline
+    preferences.save({"pipeline_pull_a_share": True, "full_minute_data_provider": "none"})
+    monkeypatch.setattr(daily_pipeline, "is_after_official_daily_cutoff", lambda: True)
+    monkeypatch.setattr(daily_pipeline.kline_sync, "sync_and_persist_daily_batch", lambda *a, **kw: 1)
+    repo.refresh_cache = Mock()
+    monkeypatch.setattr(daily_pipeline, "_settle_paper_day", Mock(return_value={}))
+    confirm = Mock()
+    monkeypatch.setattr(daily_pipeline, "_run_paper_daily_phase", confirm)
+
+    daily_pipeline.run_now(repo, capset, override_start_date=daily_pipeline.cn_today(),
+                           override_symbols=["600000.SH"])
+
+    assert [call.args[0] for call in confirm.call_args_list] == ["post_close_sell", "post_close"]
+    assert all("未完成全量" in call.kwargs["skip_reason"] for call in confirm.call_args_list)
+
+
+@pytest.mark.parametrize("failure", ["fetch", "integrity", "scan"])
+def test_targeted_repair_failure_blocks_paper_settlement(pipeline, monkeypatch, failure):
+    repo, capset, _, _ = pipeline
+    preferences.save({"pipeline_pull_a_share": True, "full_minute_data_provider": "none"})
+    monkeypatch.setattr(daily_pipeline, "is_after_official_daily_cutoff", lambda: True)
+    today = daily_pipeline.cn_today()
+
+    def fetch(symbols, *args, **kwargs):
+        assert symbols == ["600000.SH"]
+        if failure == "fetch":
+            kwargs["failed_out"].append("600000.SH")
+        return 1
+
+    monkeypatch.setattr(daily_pipeline.kline_sync, "sync_and_persist_daily_batch", fetch)
+    if failure == "integrity":
+        monkeypatch.setattr(data_integrity, "scan_recent_integrity", lambda *a, **kw: [
+            data_integrity.IntegrityIssue(today, "kline_daily", "snapshot", symbols=("600000.SH",)),
+        ])
+    elif failure == "scan":
+        monkeypatch.setattr(data_integrity, "scan_recent_integrity", Mock(side_effect=OSError("unreadable")))
+    settle = Mock()
+    confirm = Mock()
+    monkeypatch.setattr(daily_pipeline, "_settle_paper_day", settle)
+    monkeypatch.setattr(daily_pipeline, "_run_paper_daily_phase", confirm)
+
+    with pytest.raises(daily_pipeline.PipelineStageError):
+        daily_pipeline.run_now(repo, capset, override_start_date=today,
+                               override_symbols=["600000.SH"])
+
+    settle.assert_not_called()
+    assert [call.args[0] for call in confirm.call_args_list] == ["post_close_sell", "post_close"]
+    assert all(call.kwargs["skip_reason"] for call in confirm.call_args_list)

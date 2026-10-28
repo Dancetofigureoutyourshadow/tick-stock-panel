@@ -1229,6 +1229,7 @@ class QuoteService:
 
             all_alerts: list[dict] = []
             rule_events: list[dict] = []
+            paper_watch_events: list[dict] = []  # 模拟盘合成规则的沙盒信号 (只喂模拟盘)
             engine = None
 
             # 通用监控规则评估 (统一引擎: signal/price/market/strategy)
@@ -1312,17 +1313,24 @@ class QuoteService:
                                 )
                         except Exception as e:  # noqa: BLE001
                             logger.warning("指数监控评估失败 (不影响股票/ETF 告警): %s", e)
+                    # 模拟盘「绑定即评估」的合成规则事件是沙盒信号: 只喂下面的
+                    # 模拟盘钩子, 不进告警流 (留痕/SSE/系统通知/webhook/扩展格式化)。
+                    from app.strategy.paper_watch import is_paper_sandbox_event
+
+                    paper_watch_events = [ev for ev in rule_events if is_paper_sandbox_event(ev)]
+                    rule_events = [ev for ev in rule_events if not is_paper_sandbox_event(ev)]
                     if rule_events:
                         rule_events = self._format_extension_notifications(rule_events)
                         # 落盘到 alerts.jsonl
                         try:
-                            rule_events = rule_events + engine.evaluate_date_rules()
+                            from app.services import alert_store
+                            alert_store.append_many(
+                                self._app_state.repo.store.data_dir, rule_events,
+                            )
                         except Exception as e:  # noqa: BLE001
                             logger.warning("告警落盘失败: %s", e)
                         # 转为 SSE 推送格式 (兼容旧 alert schema)
                         for ev in rule_events:
-                            if str(ev.get("rule_id") or "").startswith("paper_follow_"):
-                                continue
                             alert = {
                                 "source": ev["source"],
                                 "type": ev["type"],
@@ -1408,9 +1416,10 @@ class QuoteService:
                             data_dir, exit_rows, account_id=acc_id, trade_date=trade_date,
                             daily_strategy_ids=daily_ids,
                         ))
-                        if rule_events:
+                        feed = rule_events + paper_watch_events
+                        if feed:
                             created = paper_auto.on_rule_events(
-                                data_dir, rule_events, account_id=acc_id,
+                                data_dir, feed, account_id=acc_id,
                                 excluded_strategy_ids=daily_ids,
                             )
                             paper_events.extend(paper_auto.auto_order_events(created, account_id=acc_id))

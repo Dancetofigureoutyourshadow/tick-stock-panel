@@ -6,7 +6,8 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { Trash2, RefreshCw, Star, X, Search, LayoutGrid, List, Rows3, BarChart3, Settings2, Plus, Check, Filter, Eye, EyeOff, Minus, ChevronsUp, Clock, RotateCcw, FileUp, FolderOpen, FolderMinus, FolderPlus } from 'lucide-react'
 import { api, ApiError, type KlineRow, type MinuteKlineRow, type PaperHolding, type PaperLot, type WatchlistGroup, type WatchlistGroupColor } from '@/lib/api'
 import { ExtSparkChart } from '@/components/screener/ExtSparkChart'
-import { fetchMinuteBatchIncremental } from '@/lib/minuteBatchIncremental'
+import { fetchMinuteBatchIncremental, MINUTE_SEED_MAX } from '@/lib/minuteBatchIncremental'
+import { fetchDailyBatchChunked } from '@/lib/klineBatchChunked'
 import { extendMinuteTail } from '@/lib/minuteTailExtend'
 import { reuseUnchangedSeries, EMPTY_ROWS } from '@/lib/series-identity'
 import { QK } from '@/lib/queryKeys'
@@ -967,26 +968,32 @@ export function Watchlist() {
     queryFn: () => api.paperOverview('default'),
   })
 
-  const symbols = enriched.data?.rows?.map((r: any) => r.symbol) ?? []
-  const symbolsKey = symbols.join(',')
-
   // 指数无本地分钟K数据, 分时批量请求剔除指数 symbol (省请求, 避免逐只 404)
-  const minuteSymbols = useMemo(
-    () => symbols.filter((s: string) => (enriched.data?.rows ?? []).find((r: any) => r.symbol === s)?.asset_type !== 'index'),
-    [symbols, enriched.data],
-  )
-  const minuteSymbolsKey = minuteSymbols.join(',')
+  const enrichedRows = enriched.data?.rows
+  const { symbols, minuteSymbols, minuteSymbolsKey } = useMemo(() => {
+    const rows = enrichedRows ?? []
+    const syms = rows.map((r: any) => r.symbol)
+    const nonIndex = rows.filter((r: any) => r.asset_type !== 'index').map((r: any) => r.symbol)
+    return {
+      symbols: syms,
+      minuteSymbols: nonIndex,
+      minuteSymbolsKey: nonIndex.join(','),
+    }
+  }, [enrichedRows])
 
   // 实时行情状态 (提前到此处: 分时轮询判断需要 realtimeRunning)
   const quoteStatus = useQuoteStatus()
   const realtimeRunning = quoteStatus.data?.running ?? false
 
-  // 批量日k数据 (天数由列配置决定; 分组卡片视图不展示蜡烛, 挂起请求)
+  // 批量日k数据 (天数由列配置决定; 分组卡片视图不展示蜡烛, 挂起请求)。
+  // symbols 不进 key, 按 300/块分块拉取 (后端单次上限 400): 增删自选不再整批
+  // 重拉, 缓存单份常驻; 天数变化才换 key (placeholderData 防蜡烛闪空)。
   const klineBatch = useQuery({
-    queryKey: QK.watchlistKlineBatch(`${symbolsKey}|${candleDays}`),
-    queryFn: () => api.klineDailyBatch(symbols, candleDays),
+    queryKey: QK.watchlistKlineBatch(candleDays),
+    queryFn: () => fetchDailyBatchChunked(symbols, candleDays),
     enabled: dailyKVisible && symbols.length > 0 && !groupCardsOpen,
     staleTime: 5 * 60_000,  // 5 分钟内不重请求
+    placeholderData: (prev: any) => prev,
   })
 
   // 当日蜡烛实时修补: 历史 K 线按 staleTime 周期拉取 (见 queryKeys 注释), 最后一根
@@ -1041,17 +1048,22 @@ export function Watchlist() {
   const intradayRefreshEnabled = prefsData?.minute_intraday_refresh ?? realtimeRunning
   const intradayRefreshInterval = prefsData?.minute_intraday_refresh_interval ?? 6
   // 视口感知: 虚拟器渲染中的 symbol 集合 (可见 + overscan 缓冲), 由下方虚拟器
-  // 区域的 effect 写入; null = 未就绪/非虚拟化视图, 沿用全列表。首轮全量播种
-  // 缓存 (queryFn 在挂载时先于 ref 填充执行), 之后各轮只拉视口集合。
+  // 区域的 effect 写入; null = 未就绪/非虚拟化视图。大列表 (千只自选) 全量播种
+  // 会造成 40 万级分钟对象常驻 — 视口集合就绪后各轮只拉视口, 缓存按 LRU 淘汰
+  // 视口外序列 (见 lib/minuteBatchIncremental.ts)。
   const minuteRequestSymbolsRef = useRef<string[] | null>(null)
   const minuteBatch = useQuery({
-    queryKey: QK.minuteBatch(minuteSymbolsKey),
+    queryKey: QK.minuteBatch(),
     // 增量轮询 (prefer_local): 读缓存以最后一根为 since 只拉新增, 本地合并为
     // 完整序列; 全量分钟健康时服务端零补拉, 不健康时也只增量。
-    // 请求集合 = 视口内 symbol (缓存按 symbol upsert, 视口外保留旧序列)
+    // 请求集合 = 视口内 symbol (缓存按 symbol upsert, 视口外保留旧序列);
+    // 视口未就绪时: 小列表全量, 大列表先拉头部播种 (effect 填充视口后防抖补拉)
     queryFn: () => {
-      const reqSymbols = minuteRequestSymbolsRef.current ?? minuteSymbols
-      return fetchMinuteBatchIncremental(qc, QK.minuteBatch(minuteSymbolsKey), reqSymbols, true)
+      let reqSymbols = minuteRequestSymbolsRef.current ?? minuteSymbols
+      if (minuteRequestSymbolsRef.current == null && reqSymbols.length > MINUTE_SEED_MAX) {
+        reqSymbols = reqSymbols.slice(0, MINUTE_SEED_MAX)
+      }
+      return fetchMinuteBatchIncremental(qc, reqSymbols, true)
     },
     enabled: intradayVisible && minuteSymbols.length > 0 && !groupCardsOpen,
     staleTime: 10_000,
@@ -1176,8 +1188,17 @@ export function Watchlist() {
       setMinuteSyncRequest(null)
       setMinuteSyncProgress(null)
       setMinuteSyncDialog(null)
+      // 历史补齐后若保留旧序列, 增量 since 会把新补的早期K裁掉 → 先摘除该 symbol
+      // 的分钟缓存, 让下一轮全量重取
+      qc.setQueryData(QK.minuteBatch(), (old: any) => {
+        if (!old?.data || !(symbol in old.data)) return old
+        const next = { ...old.data }
+        delete next[symbol]
+        return { ...old, data: next }
+      })
       void Promise.all([
-        qc.invalidateQueries({ queryKey: ['minute-batch'] }),
+        qc.invalidateQueries({ queryKey: QK.minuteBatch() }),
+        qc.invalidateQueries({ queryKey: QK.watchlistPerformance }),
         qc.invalidateQueries({ queryKey: ['kline-minute', symbol] }),
         qc.invalidateQueries({ queryKey: ['kline-minute-range', symbol] }),
       ]).then(() => {
@@ -1230,6 +1251,7 @@ export function Watchlist() {
       qc.invalidateQueries({ queryKey: ['watchlist-enriched'] })
       qc.invalidateQueries({ queryKey: QK.watchlistPerformance })
       qc.invalidateQueries({ queryKey: ['kline-batch'] })
+      qc.invalidateQueries({ queryKey: ['minute-batch'] })
     },
   })
 
@@ -1249,6 +1271,13 @@ export function Watchlist() {
       qc.setQueryData(['watchlist-enriched', extColumnsParam], (old: any) => {
         if (!old?.rows) return old
         return { ...old, rows: old.rows.filter((r: any) => r.symbol !== sym) }
+      })
+      // 分钟缓存单 key 按 symbol 合并 — 同步摘除, 不等 LRU 自然淘汰
+      qc.setQueryData(QK.minuteBatch(), (old: any) => {
+        if (!old?.data || !(sym in old.data)) return old
+        const next = { ...old.data }
+        delete next[sym]
+        return { ...old, data: next }
       })
       // 2. 清除 list 缓存，触发后台 refetch
       qc.invalidateQueries({ queryKey: QK.watchlist })
@@ -1616,7 +1645,7 @@ export function Watchlist() {
     [columns],
   )
   const extChartColsKey = extChartColumns
-    .map(c => `${(c.source as { configId: string }).configId}.${(c.source as { fieldName: string }).fieldName}`)
+    .map(c => `${(c.source as { configId: string }).configId}.${(c.source as { fieldName: string }).fieldName}:${c.extDisplay?.chartDays ?? 10}`)
     .join(',')
   const extChartSymbolsKey = useMemo(
     () => sortedRows.map(r => r.symbol as string).sort().join(','),
@@ -1628,7 +1657,7 @@ export function Watchlist() {
       const symbols = extChartSymbolsKey ? extChartSymbolsKey.split(',') : []
       const entries = await Promise.all(extChartColumns.map(async c => {
         const src = c.source as { type: 'ext'; configId: string; fieldName: string }
-        const r = await api.extDataSeries(src.configId, src.fieldName, undefined, symbols)
+        const r = await api.extDataSeries(src.configId, src.fieldName, undefined, symbols, c.extDisplay?.chartDays || 10)
         return [`${src.configId}.${src.fieldName}`, r.items ?? {}] as const
       }))
       return Object.fromEntries(entries) as Record<string, Record<string, [string, number][]>>
@@ -1670,8 +1699,9 @@ export function Watchlist() {
   })
 
   // 视口感知 (数据层): 从虚拟器派生"正在渲染的 symbol" (可见 + overscan 缓冲,
-  // 滚动前已就绪)。非虚拟化视图 (小列表/表格/分组) 为 null → 沿用全列表。
-  // 每次渲染直读 getVirtualItems (滚动不换 deps, 不能 useMemo), 副作用集中在 effect。
+  // 滚动前已就绪)。卡片视图直读 getVirtualItems (滚动不换 deps, 不能 useMemo);
+  // 表格视图由 StockDataTable 的 onVisibleRowsChange 回调上报。两个视图都
+  // 非虚拟化 (小列表/分组) 时为 null → 沿用全列表。
   const visibleCardSymbols = (() => {
     if (!virtualizeCards) return null
     // 与 minuteSymbols 同口径: 剔除指数 (minute-batch 契约只收股票/ETF)
@@ -1686,18 +1716,35 @@ export function Watchlist() {
     }
     return out.length ? out : null
   })()
-  const minuteVisibleKey = visibleCardSymbols?.join(',') ?? ''
+  // 表格是分时列所在视图 — 没有它上报视口, 大列表表格视图会恒按全量请求
+  const minuteScopeSet = useMemo(() => new Set(minuteSymbols), [minuteSymbols])
+  const tableVisibleSymbolsRef = useRef<string[] | null>(null)
+  const [tableVisibleKey, setTableVisibleKey] = useState('')
+  const handleTableVisibleRows = useCallback((rows: any[] | null) => {
+    if (!rows) {
+      tableVisibleSymbolsRef.current = null
+      setTableVisibleKey('')
+      return
+    }
+    const scope = minuteScopeSet
+    const syms = rows.map((r: any) => r?.symbol).filter((s: unknown) => typeof s === 'string' && scope.has(s as string))
+    tableVisibleSymbolsRef.current = syms
+    setTableVisibleKey(syms.join(','))   // 相同 key 的 setState 不触发重渲染
+  }, [minuteScopeSet])
+  const minuteVisibleKey = visibleCardSymbols?.join(',') ?? tableVisibleKey
   const lastVisibleKeyRef = useRef<string | null>(null)
   useEffect(() => {
-    minuteRequestSymbolsRef.current = visibleCardSymbols
+    minuteRequestSymbolsRef.current = visibleCardSymbols ?? tableVisibleSymbolsRef.current
     if (!minuteVisibleKey) return
     if (lastVisibleKeyRef.current === minuteVisibleKey) return
     const prevKey = lastVisibleKeyRef.current
     lastVisibleKeyRef.current = minuteVisibleKey
-    if (prevKey === null) return   // 首次: 挂载播种轮已按全列表发出, 不额外触发
+    // 首次: 小列表播种轮已按全量发出, 不额外触发; 大列表首轮只有头部兜底播种,
+    // 视口可能落在别处 → 也补拉一次
+    if (prevKey === null && minuteSymbols.length <= MINUTE_SEED_MAX) return
     // 视口集合变化 (滚动到新区段) → 防抖 300ms 补拉一次, 新滚入的 symbol 即时就绪
     const t = setTimeout(() => {
-      qc.invalidateQueries({ queryKey: QK.minuteBatch(minuteSymbolsKey) })
+      qc.invalidateQueries({ queryKey: QK.minuteBatch() })
     }, 300)
     return () => clearTimeout(t)
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2057,6 +2104,7 @@ export function Watchlist() {
               sort={sort}
               onSortToggle={handleSortToggle}
               extraSortableKeys={INTRADAY_SORTABLE_KEYS}
+              onVisibleRowsChange={handleTableVisibleRows}
               rowKey={(r: any) => r.symbol}
               rowClassName={(r: any) => cn('border-t border-border transition-colors duration-150 ease-smooth hover:bg-elevated/50', r.symbol === previewSymbol && 'bg-accent/10 hover:bg-accent/15')}
               // 日k列表头：标签 + 显示/隐藏眼睛按钮

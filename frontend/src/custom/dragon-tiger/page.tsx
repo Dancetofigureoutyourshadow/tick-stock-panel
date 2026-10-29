@@ -97,8 +97,16 @@ function SortHeader({ label, sortKey, sort, onSort, align = 'right' }: {
   )
 }
 
+/** 榜单标的代码: 退市整理期/B股可能 thscode=null, 退 ticker (与复盘页 _dtCode 同一兜底)。 */
+function dtCode(item: DragonTigerStockItem): string {
+  const code = item.thscode
+  if (typeof code === 'string' && code.trim()) return code
+  return item.ticker ?? ''
+}
+
 function StockIdentity({ item }: { item: DragonTigerStockItem }) {
-  const tag = boardTag(item.thscode)
+  const code = dtCode(item)
+  const tag = boardTag(code)
   const concepts = (Array.isArray(item.concept_list) ? item.concept_list : [])
     .map(concept => concept.name)
     .filter((name): name is string => Boolean(name))
@@ -107,7 +115,7 @@ function StockIdentity({ item }: { item: DragonTigerStockItem }) {
   return (
     <div className="min-w-[11rem] text-left">
       <div className="flex items-center gap-1.5">
-        <span className="font-medium text-foreground">{item.name ?? item.thscode}</span>
+        <span className="font-medium text-foreground">{item.name ?? code}</span>
         {tag && (
           <span className="rounded border border-accent/25 bg-accent/10 px-1 text-[9px] font-semibold text-accent">
             {tag}
@@ -115,7 +123,7 @@ function StockIdentity({ item }: { item: DragonTigerStockItem }) {
         )}
       </div>
       <div className="mt-0.5 flex items-center gap-2 text-[10px] text-muted">
-        <span className="font-mono">{item.ticker ?? item.thscode}</span>
+        <span className="font-mono">{item.ticker ?? code}</span>
         {concepts.length > 0 && <span className="max-w-48 truncate">{concepts.join(' · ')}</span>}
       </div>
     </div>
@@ -183,7 +191,7 @@ function StockTable({ items, kind, onOpenStock }: {
         <tbody>
           {sorted.map((item, index) => (
             <tr
-              key={`${item.thscode}-${item.range_days ?? 'unknown'}-${index}`}
+              key={`${dtCode(item)}-${item.range_days ?? 'unknown'}-${index}`}
               className="border-t border-border/40 transition-colors hover:bg-accent/[0.04]"
             >
               <td className="px-3 py-2 text-center font-mono text-[10px] text-muted">{index + 1}</td>
@@ -263,7 +271,7 @@ function HotMoneyList({ seats, onOpenStock }: {
                   const amount = row.hot_money_item_net_value ?? row.net_value
                   return (
                     <button
-                      key={`${row.thscode}-${rowIndex}`}
+                      key={`${dtCode(row)}-${rowIndex}`}
                       type="button"
                       onClick={() => onOpenStock(row)}
                       className="flex w-full items-center gap-3 py-2 text-left transition-colors hover:text-accent"
@@ -315,7 +323,9 @@ export function DragonTigerPage() {
   const message = data?.message || (query.error instanceof Error ? query.error.message : '龙虎榜暂不可用')
 
   const openStock = (item: DragonTigerStockItem) => {
-    setPreview({ symbol: item.thscode, name: item.name ?? undefined })
+    const symbol = dtCode(item)
+    if (!symbol) return
+    setPreview({ symbol, name: item.name ?? undefined })
   }
 
   return (

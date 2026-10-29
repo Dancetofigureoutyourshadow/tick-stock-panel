@@ -673,7 +673,11 @@ def status(request: Request) -> dict:
             "next_instruments_run": None, "next_pipeline_run": None,
             "last_instruments_run": None, "last_pipeline_run": None,
         }
-        return {**snapshot, "indicators_ready": ready, "statistics_loading": busy or _status_refreshing or _status_snapshot is None}
+        degraded = busy or _status_refreshing or _status_snapshot is None
+        snapshot.setdefault("stats_pending", degraded)
+        snapshot["indicators_ready"] = ready
+        snapshot["statistics_loading"] = degraded
+        return snapshot
 
 
 def _compute_status(request: Request) -> dict:
@@ -705,6 +709,8 @@ def _compute_status(request: Request) -> dict:
         "last_instruments_run": _last_finished("instruments"),
         "last_pipeline_run":    _last_finished("pipeline"),
         "checked_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+        # 同步/修复期间同样可能返回 null 统计, 不可把它当成无本地数据。
+        "stats_pending": busy,
         # 指标缓存就绪标志 (启动时 enriched 异步预热, 完成前为 false)
         "indicators_ready": getattr(request.app.state, "indicators_ready", True),
     }

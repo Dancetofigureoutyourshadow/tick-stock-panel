@@ -893,7 +893,8 @@ export interface AiReviewReport {
 
 // ===== 龙虎榜 (fuyao 专有, 复盘页) =====
 export interface DragonTigerStockItem {
-  thscode: string
+  /** 后端已归一 (缺失时由 ticker 推导); 旧缓存/异常数据源可能为 null, 消费方需兜底 */
+  thscode: string | null
   ticker?: string | null
   name?: string | null
   change?: number | null      // 当日涨跌幅 (小数制)
@@ -1090,7 +1091,7 @@ export interface AiIterateResult {
 export interface CustomSignalCondition {
   left: string     // 字段名
   op: string       // > >= < <= == !=
-  right: string    // "field:xxx" 或数字字符串
+  right: string | number  // "field:xxx" 或数字常量 (迁移的历史信号常量为 number, 后端两者均合法)
   leftDays?: number   // 左字段取几日前 (0=当日, 默认)
   rightDays?: number  // 右字段取几日前 (仅 right 为字段时有意义)
 }
@@ -1839,6 +1840,8 @@ export interface MiningLockStatus {
     host?: string
     schema_version?: number
   } | null
+  /** 持有者线索来源: 锁文件内容 / 旧格式锁经操作系统扫描反查 */
+  holder_source?: 'file' | 'os-scan' | null
   holder_alive: boolean
   pid_consistent: boolean
   active_runs: number
@@ -2876,10 +2879,14 @@ export const api = {
     request<{ ok: boolean }>('/api/settings/ai', { method: 'DELETE' }),
 
   /** 草稿连通性测试 — 只验证当前表单值, 不保存任何配置 */
-  testAiSettings: (ai: { provider?: string; base_url?: string; api_key?: string; model?: string; protocol?: string }) =>
+  testAiSettings: (
+    ai: { provider?: string; base_url?: string; api_key?: string; model?: string; protocol?: string },
+    opts?: { timeoutMs?: number },
+  ) =>
     request<{ ok: boolean; model?: string; response?: string; error?: string; error_type?: string }>('/api/settings/ai/test', {
       method: 'POST',
       body: JSON.stringify(ai),
+      ...(opts?.timeoutMs != null ? { timeoutMs: opts.timeoutMs } : {}),
     }),
 
   upgradeGuardStatus: () => request<UpgradeGuardStatus>('/api/upgrade-guard/status'),
@@ -5241,12 +5248,14 @@ export interface DataStatus {
     ext_data_files?: number
     ext_data_size_mb?: number
     total_size_mb: number
-  }
+  } | null  // busy 降级 (预热/同步/修复期间) 且冷启动缓存未热时为 null, 不代表无数据
   next_pipeline_run: string | null
   next_instruments_run: string | null
   last_pipeline_run: string | null
   last_instruments_run: string | null
-  checked_at: string | null
+  checked_at: string | null  // 冷启动快照未热时为 null (statistics_loading)
+  /** 预热/同步/修复期间统计暂不可用或仅为旧缓存, 空值不代表无数据。 */
+  stats_pending?: boolean
   indicators_ready?: boolean
 }
 

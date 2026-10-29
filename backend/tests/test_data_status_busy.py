@@ -177,6 +177,16 @@ def test_invalidation_during_storage_scan_does_not_refill_current_or_stale(
     assert data_api._get_storage(tmp_path, busy=True) == {"total_size_mb": 2}
 
 
+def test_get_storage_busy_cold_start_returns_none(clean_caches, tmp_path):
+    """服务刚启动、storage 缓存从未热过时, busy 期间返回 None (契约)。
+
+    /api/data/status 的消费方 (如数据页存储卡片) 必须按 null 降级 —
+    直接 s.storage.total_size_mb 会在预热/同步期间抛 TypeError
+    (v0.3.22 修复 "Cannot read properties of null (reading 'total_size_mb')" 的依据)。
+    """
+    assert data_api._get_storage(tmp_path, busy=True) is None
+
+
 # ---------- busy 判定 ----------
 
 def _req(indicators_ready=True):
@@ -219,6 +229,51 @@ def test_status_endpoint_busy_skips_aggregates(monkeypatch, clean_caches, tmp_pa
     assert res["indicators_ready"] is False
     assert res["checked_at"] is None
     assert res["statistics_loading"] is True
+    # 上游契约 (v0.3.22): null 统计是「待定」而非「本地无数据」, 降级返回同样要带标记
+    assert res["stats_pending"] is True
     assert all(res[name] is None for name in data_api._table_cache)
     assert not data_api._status_refreshing
     assert not (tmp_path / ".data_statistics" / "status.json").exists()
+
+
+@pytest.mark.parametrize("job_status", ["pending", "running"])
+def test_stats_pending_tracks_active_job(monkeypatch, clean_caches, tmp_path, job_status):
+    """同步/修复仍在运行时, null 统计不代表无数据; 任务终态后统计照常补齐。
+
+    dev 口径下 status() 只回「最近一次完成」的快照, 聚合在后台刷新线程里算,
+    因此这里直接验证计算层 _compute_status 的 stats_pending 契约。
+    """
+    req = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(
+        repo=SimpleNamespace(store=SimpleNamespace(data_dir=Path(tmp_path))),
+        scheduler=None, indicators_ready=True,
+    )))
+    monkeypatch.setattr(job_store, "active_id", lambda: "repair-job")
+    monkeypatch.setattr(job_store, "get", lambda jid: {"status": job_status})
+    monkeypatch.setattr(data_api, "_last_finished", lambda label: None)
+    monkeypatch.setattr(
+        data_api, "_get_storage",
+        lambda root, busy=False: None if busy else {"total_size_mb": 1},
+    )
+    calls: list[str] = []
+
+    def aggregate(table: str):
+        def _fn(_repo):
+            calls.append(table)
+            return {"trading_days": 240}
+        return _fn
+
+    for table in data_api._table_cache:
+        monkeypatch.setattr(data_api, f"_safe_aggregate_{table}", aggregate(table))
+
+    busy = data_api._compute_status(req)
+    assert busy["indicators_ready"] is True
+    assert busy["stats_pending"] is True
+    assert busy["daily"] is None and busy["enriched"] is None
+    assert calls == []  # busy 下不重算 → 不进 DuckDB 锁
+
+    monkeypatch.setattr(job_store, "get", lambda jid: {"status": "succeeded"})
+    ready = data_api._compute_status(req)
+    assert ready["stats_pending"] is False
+    assert ready["daily"]["trading_days"] == 240
+    assert ready["enriched"]["trading_days"] == 240
+    assert sorted(calls) == sorted(data_api._table_cache)

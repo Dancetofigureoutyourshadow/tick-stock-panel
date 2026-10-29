@@ -2282,18 +2282,18 @@ function AccountPanel({ acc, name, onDeleted }: { acc: string; name?: string; on
   const roundsQ = useQuery({ queryKey: QK.paperRounds(acc), queryFn: () => api.paperRounds(acc) })
   const rounds: PaperRound[] = [...(roundsQ.data?.rounds ?? [])].reverse() // 最新回合在前
 
-  // 持仓+回合+成交+订单代码→名称 (#454): 就地显示名称, 不用切页查询。股票/ETF/指数都覆盖。
-  // 回合/成交/订单标的可能已清仓 (不在持仓), 合并去重一起查
-  const holdingSymbols = Array.from(new Set([
+  // 持仓+回合+订单+成交 代码→名称 (#454): 就地显示名称, 不用切页查询。股票/ETF/指数都覆盖。
+  // 回合/台账标的可能已清仓 (不在持仓), 合并去重一起查
+  const nameSymbols = Array.from(new Set([
     ...(overviewQ.data?.holdings ?? []).map(h => h.symbol),
     ...rounds.map(r => r.symbol),
-    ...(tradesQ.data?.fills ?? []).map(f => f.symbol),
     ...(ordersQ.data?.orders ?? []).map(o => o.symbol),
+    ...(tradesQ.data?.fills ?? []).map(f => f.symbol),
   ]))
   const namesQ = useQuery({
-    queryKey: ['instrument-names', holdingSymbols.join(',')],
-    queryFn: () => api.instrumentNames(holdingSymbols),
-    enabled: holdingSymbols.length > 0,
+    queryKey: ['instrument-names', nameSymbols.join(',')],
+    queryFn: () => api.instrumentNames(nameSymbols),
+    enabled: nameSymbols.length > 0,
     staleTime: 300000,
   })
   const symbolNames = namesQ.data?.names ?? {}

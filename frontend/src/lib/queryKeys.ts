@@ -152,6 +152,7 @@ export const QK = {
 
   // 市场环境(Regime) — 日级离线计算, 不进 SSE 刷新
   regimeHistory:        (limit?: number) => ['regime-history', limit ?? 0] as const,
+  regimeHistoryPrefix:  ['regime-history'] as const,
   regimeLatest:         ['regime-latest'] as const,
   regimeStates:         (days: number) => ['regime-states', days] as const,
   regimeCoverage:       ['regime-coverage'] as const,

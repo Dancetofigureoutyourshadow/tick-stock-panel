@@ -307,3 +307,20 @@ def test_background_pipeline_entries_share_capacity(capacity, monkeypatch, entry
             assert future.result(timeout=1)
     assert called.is_set()
     assert limiter.in_use == 0
+
+
+def test_queued_job_shows_memory_admission_reason(capacity, monkeypatch):
+    """排队提示反映真实阻塞原因: 内存准入未过时不能说「等其他计算任务完成」。"""
+    store, _ = capacity
+    monkeypatch.setattr(heavy_job_limiter, "_memory_admission", lambda: (False, 300 * 2**20))
+    jid, _ = store.create(timeout_s=3600)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(run_with_capacity, jid, lambda: None)
+        try:
+            wait_for(lambda: waiting(store, jid))
+            msg = store.get(jid)["log"][-1]["msg"]
+            assert "内存不足" in msg and "300MiB" in msg
+        finally:
+            store.terminate(jid, "test cleanup")
+        with pytest.raises(JobCancelledError):
+            future.result(timeout=2)

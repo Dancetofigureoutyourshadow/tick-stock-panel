@@ -30,12 +30,18 @@ _HEAVY_MIN_AVAILABLE_BYTES = _env_int("TICK_HEAVY_MIN_AVAILABLE_BYTES", 1024**3)
 _MEMORY_POLL_S = 5.0
 
 
-def _memory_admission_ok() -> bool:
+def _memory_admission() -> tuple[bool, int]:
+    """重任务内存准入: 返回 (是否放行, 当前可用内存字节)。阈值 0 = 不限制。"""
     if _HEAVY_MIN_AVAILABLE_BYTES <= 0:
-        return True
+        return True, 0
     import psutil
 
-    return psutil.virtual_memory().available >= _HEAVY_MIN_AVAILABLE_BYTES
+    available = psutil.virtual_memory().available
+    return available >= _HEAVY_MIN_AVAILABLE_BYTES, available
+
+
+def _memory_admission_ok() -> bool:
+    return _memory_admission()[0]
 
 
 class HeavyJobLimitTimeoutError(TimeoutError):
@@ -73,6 +79,20 @@ class HeavyJobLimiter:
     def available(self) -> int:
         with self._condition:
             return self.capacity - self._used
+
+    def wait_reason(self, kind: HeavyJobKind = "normal") -> str:
+        """排队中的真实阻塞原因, 供 UI 进度文案使用。
+
+        内存准入没过时说「等其他计算任务完成」会把人引偏: 槽位明明空着,
+        挡门的是可用内存低于 TICK_HEAVY_MIN_AVAILABLE_BYTES。
+        """
+        admitted, available = _memory_admission()
+        if not admitted:
+            return (
+                f"内存不足，等待可用内存 ≥{_HEAVY_MIN_AVAILABLE_BYTES // 2**20}MiB"
+                f"（当前 {available // 2**20}MiB）…"
+            )
+        return "等待其他计算任务完成…"
 
     def acquire(
         self,

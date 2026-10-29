@@ -5,6 +5,7 @@ import time
 
 import pytest
 
+from app.services import heavy_job_limiter as limiter_module
 from app.services.heavy_job_limiter import (
     HeavyJobCancelledError,
     HeavyJobLimiter,
@@ -158,3 +159,19 @@ def test_waiting_exclusive_job_cannot_be_overtaken() -> None:
         waiter.join(2)
     assert not waiter.is_alive()
     assert limiter.in_use == 0
+
+
+def test_wait_reason_names_memory_admission(monkeypatch) -> None:
+    """内存准入挡门时提示「内存不足」, 不能一律推给「其他计算任务」。
+
+    线上小内存机器可用内存长期低于门槛, 槽位空着却进不去; 旧文案把排查
+    方向带偏到「谁占了槽位」。
+    """
+    limiter = HeavyJobLimiter(capacity=2)
+    monkeypatch.setattr(limiter_module, "_HEAVY_MIN_AVAILABLE_BYTES", 1024 * 2**20)
+    monkeypatch.setattr(limiter_module, "_memory_admission", lambda: (False, 454 * 2**20))
+    reason = limiter.wait_reason("mining")
+    assert "内存不足" in reason and "1024MiB" in reason and "454MiB" in reason
+
+    monkeypatch.setattr(limiter_module, "_memory_admission", lambda: (True, 4 * 2**30))
+    assert limiter.wait_reason("mining") == "等待其他计算任务完成…"

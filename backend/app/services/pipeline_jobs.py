@@ -444,7 +444,8 @@ class JobStore:
                 self.terminate(
                     jid,
                     f"超时自动取消: 排队等待重任务执行槽 {int(stalled_s)}s 超过阈值 {timeout_s}s — "
-                    "槽位可能被长回测或未正常退出的残留任务占用, 请稍后重试; 若持续出现请重启后端")
+                    "槽位可能被长回测或未正常退出的残留任务占用, 也可能是可用内存低于重任务准入门槛 "
+                    "(TICK_HEAVY_MIN_AVAILABLE_BYTES); 请稍后重试, 若持续出现请重启后端")
             else:
                 logger.warning(
                     "reap_stale: 强制取消卡死 job %s (进度停滞 %.0fs > 阈值 %ss, 总运行 %.0fs)",
@@ -529,7 +530,7 @@ def run_with_capacity(job_id: str, fn: Callable[[], _Result]) -> _Result:
         shared_heavy_job_limiter,
     )
 
-    job_store.progress(job_id, "init", 0, "等待其他计算任务完成…")
+    job_store.progress(job_id, "init", 0, shared_heavy_job_limiter.wait_reason("exclusive"))
     with _CANCEL_FLAGS_LOCK:
         cancel_event = _CANCEL_FLAGS.get(job_id)
     wait_s: float = DEFAULT_JOB_TIMEOUT_S
@@ -551,8 +552,9 @@ def run_with_capacity(job_id: str, fn: Callable[[], _Result]) -> _Result:
         # API 层的 except JobCancelledError 分支无需(也无法)再改写状态。
         job_store.fail(
             job_id,
-            f"排队等待重任务执行槽超时({int(wait_s)}s): 槽位可能被长回测或未正常退出的"
-            "残留任务占用, 请稍后重试; 若持续出现请重启后端")
+            f"排队等待重任务执行槽超时({int(wait_s)}s): 阻塞原因 — "
+            f"{shared_heavy_job_limiter.wait_reason('exclusive').rstrip('…')}; "
+            "请稍后重试; 若持续出现请重启后端, 内存不足可下调 TICK_HEAVY_MIN_AVAILABLE_BYTES")
         raise JobCancelledError(job_id)
 
 

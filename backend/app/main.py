@@ -5,6 +5,7 @@ import logging
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
+from types import SimpleNamespace
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware

@@ -317,8 +317,9 @@ def test_scan_table_scope_limits_families(tmp_path):
     """tables 限定扫描范围: 未纳入的族即使有缺口也不上报。"""
     _write_daily_partition(tmp_path, "kline_daily", FRIDAY, None)
     _write_daily_partition(tmp_path, "kline_etf_daily", THURSDAY, None)
-    assert scan_recent_integrity(tmp_path, today=TODAY) == [
-        IntegrityIssue(day=FRIDAY, table="kline_etf_daily", kind="missing"),
+    # 只比 (日/族/类型): reason 是自检报告用的文案, 不参与本用例的口径断言
+    assert [(i.day, i.table, i.kind) for i in scan_recent_integrity(tmp_path, today=TODAY)] == [
+        (FRIDAY, "kline_etf_daily", "missing"),
     ]
     assert scan_recent_integrity(tmp_path, today=TODAY, tables={"kline_daily"}) == []
 
@@ -404,6 +405,21 @@ def test_describe_and_issue_dataclass():
 
     assert "2026-08-21" in describe_issues(issues)
     assert "盘中快照" in describe_issues(issues)
+
+
+def test_describe_issues_identifies_assets_and_separates_missing_from_snapshot():
+    from app.services.data_integrity import describe_issues
+
+    issues = [
+        IntegrityIssue(day=FRIDAY, table="kline_daily", kind="snapshot"),
+        IntegrityIssue(day=FRIDAY, table="kline_etf_daily", kind="missing"),
+        IntegrityIssue(day=FRIDAY, table="kline_index_daily", kind="missing"),
+    ]
+    text = describe_issues(issues)
+    assert "股票日K" in text
+    assert "ETF日K" in text
+    assert "指数日K" in text
+    assert "缺失" in text and "盘中快照" in text
 
 
 # ── 开实时行情门禁 (钩子2) ──────────────────────────────────────────
@@ -588,8 +604,8 @@ def test_realtime_gate_allows_unmaintained_etf_gap(tmp_path, monkeypatch):
     real_today = datetime.now(CN_TZ).date()
     gap_day = _write_etf_tail_gap(tmp_path, real_today)
     # 扫描全部表族时确实存在 ETF 缺口 (回归前提)
-    assert scan_recent_integrity(tmp_path, today=real_today) == [
-        IntegrityIssue(day=gap_day, table="kline_etf_daily", kind="missing"),
+    assert [(i.day, i.table, i.kind) for i in scan_recent_integrity(tmp_path, today=real_today)] == [
+        (gap_day, "kline_etf_daily", "missing"),
     ]
 
     monkeypatch.setattr(preferences, "get_pipeline_pull_etf", lambda: False)
@@ -687,8 +703,8 @@ def test_boot_check_ignores_unmaintained_index_gap(tmp_path, monkeypatch):
     data_dir = tmp_path / "boot"
     _write_daily_partition(data_dir, "kline_daily", real_today, _ts_ms(real_today, time(10, 0)))
     _write_daily_partition(data_dir, "kline_index_daily", index_latest, None)
-    assert scan_recent_integrity(data_dir, today=real_today) == [
-        IntegrityIssue(day=gap_day, table="kline_index_daily", kind="missing"),
+    assert [(i.day, i.table, i.kind) for i in scan_recent_integrity(data_dir, today=real_today)] == [
+        (gap_day, "kline_index_daily", "missing"),
     ]
 
     monkeypatch.setattr(preferences, "get_pipeline_pull_etf", lambda: False)

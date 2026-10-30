@@ -1193,19 +1193,16 @@ def update_realtime_quotes(req: RealtimeQuotesPrefs, request: Request) -> dict:
             try:
                 # 只检查自动修复实际会覆盖的表族: ETF/指数拉取关闭时其尾部缺口
                 # 是预期状态, 纳入门禁会形成"永远修不好→永远 409"的死锁。
+                # active_daily_tables() 再排除当前已完全停用的族 (上游自检口径)。
                 issues = data_integrity.scan_recent_integrity(
                     repo.store.data_dir, tables=data_integrity.maintained_tables(),
                 )
+                issues = [i for i in issues if i.table in data_integrity.active_daily_tables()]
             except Exception:  # noqa: BLE001
                 issues = []
             earliest = data_integrity.earliest_issue_day(issues)
             if issues and data_integrity.within_auto_repair_window(earliest):
-                symbols = sorted({
-                    s
-                    for i in issues
-                    if i.table == "kline_daily" and i.kind == "snapshot"
-                    for s in i.symbols
-                }) or None
+                symbols = data_integrity._stock_snapshot_symbols(issues)
                 job_id, is_new = data_integrity.launch_integrity_repair(
                     request.app.state, earliest, "realtime_gate", symbols=symbols,
                 )

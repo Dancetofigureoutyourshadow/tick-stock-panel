@@ -3058,6 +3058,7 @@ export const api = {
       scanned_dates: number
       scanned_symbols: number
       complete_dates: string[]
+      inactive_symbol_days?: number
       gaps: MinuteGapRow[]
       summary_by_date: { date: string; gap_symbols: number; missing_bars: number; expected_bars: number }[]
       truncated: boolean
@@ -3534,6 +3535,11 @@ export const api = {
         ...(options?.force != null ? { force: options.force } : {}),
         ...(options?.trackProgress ? { track_progress: true } : {}),
       }),
+    }),
+  repairMinuteGaps: (symbols: string[]) =>
+    request<{ status: string; job_id: string }>('/api/kline/repair_minute_gaps', {
+      method: 'POST',
+      body: JSON.stringify({ symbols }),
     }),
   clearMinute: () =>
     request<{ status: string; removed: number }>('/api/kline/clear_minute', {

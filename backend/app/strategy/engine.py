@@ -203,6 +203,12 @@ class StrategyDef:
     lookback_days: int
     source: str  # "custom" | "ai" | "composite"
     take_profit: float | None = None
+    # 前收锚日内跌幅风险线 (模块常量 INTRADAY_DROP) 与跌停当日排单开关
+    # (QUEUE_LIMIT_DOWN_SAME_DAY / QUEUE_LIMIT_DOWN_MAX_HOLD_ONLY); 缺省关闭,
+    # 不改变既有策略结果。
+    intraday_drop: float | None = None
+    queue_limit_down_same_day: bool = False
+    queue_limit_down_max_hold_only: bool = False
     required_features: frozenset[str] = field(default_factory=frozenset)
     file_path: Path | None = None
     execution_backend: str = "polars_expr"
@@ -628,6 +634,11 @@ class StrategyEngine:
             lookback_days=int(getattr(mod, "LOOKBACK_DAYS", meta.get("lookback_days", 1)) or 1),
             source=source,
             take_profit=getattr(mod, "TAKE_PROFIT", None),
+            intraday_drop=getattr(mod, "INTRADAY_DROP", None),
+            queue_limit_down_same_day=bool(getattr(mod, "QUEUE_LIMIT_DOWN_SAME_DAY", False)),
+            queue_limit_down_max_hold_only=bool(
+                getattr(mod, "QUEUE_LIMIT_DOWN_MAX_HOLD_ONLY", False)
+            ),
             file_path=path,
             execution_backend=execution_backend,
             matrix_strategy=matrix_strategy,

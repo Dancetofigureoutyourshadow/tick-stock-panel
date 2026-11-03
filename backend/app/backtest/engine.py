@@ -40,6 +40,18 @@ def _matrix_entry_score(matrix: MarketMatrix, time_id: int, asset_id: int) -> fl
     return float(matrix.score[source_time, asset_id])
 
 
+def _previous_close(close: np.ndarray) -> np.ndarray:
+    """逐格取该标的上一有效收盘价; 停牌跨日沿用最后成交收盘, 当日无收盘处为 NaN。"""
+    finite = np.isfinite(close) & (close > 0)
+    rows = np.arange(close.shape[0], dtype=np.int32)[:, None]
+    last = np.maximum.accumulate(np.where(finite, rows, np.int32(0)), axis=0)
+    values = close[last, np.arange(close.shape[1], dtype=np.int64)[None, :]]
+    prev = np.full(values.shape, np.nan, dtype=np.float32)
+    prev[1:] = values[:-1]
+    prev[~finite] = np.nan
+    return prev
+
+
 def _apply_position_policy(
     config: MatcherConfig,
     candidates: list[tuple[str, float]],
@@ -122,6 +134,18 @@ class MatcherConfig:
     stop_loss_pct: float | None = None
     take_profit_pct: float | None = None
     trailing_stop_pct: float | None = None
+    # 日内跌幅风险线: 相对「上一有效收盘价」的当日跌幅, 盘中触及即卖出。
+    # 与 stop_loss_pct(建仓价锚)不同, 锚随每日前收滚动; 一字跌停日仍不可卖。
+    # 默认关闭 — 不设置时引擎行为与既有版本逐字一致。
+    intraday_drop_pct: float | None = None
+    # 跌停当日排单: 收盘封死但盘中开过板(非一字)的跌停日, close_t 计划出场按当日
+    # 收盘(=跌停价)成交, 不再递延; 真一字板(_one_price_limit)仍拦截。
+    # 默认关闭, 保持引擎既有保守口径。
+    queue_limit_down_same_day: bool = False
+    # 排单范围收窄: True 时仅 max_hold 到期出场可在「封死但盘中开板」的跌停日按
+    # 收盘价成交; signal/end 等计划出场仍递延。需与 queue_limit_down_same_day
+    # 同时开启; 默认 False 保持全范围语义。
+    queue_limit_down_max_hold_only: bool = False
     trailing_take_profit_activate_pct: float | None = None
     trailing_take_profit_drawdown_pct: float | None = None
     max_hold_days: int | None = None
@@ -1071,12 +1095,15 @@ class BacktestEngine:
                 return False, "buy_limit_up"
             return True, ""
 
-        def _can_sell(time_id: int, asset_id: int, override: float | None) -> tuple[bool, str]:
+        def _can_sell(
+            time_id: int, asset_id: int, override: float | None, reason: str = "",
+        ) -> tuple[bool, str]:
             if not matrix.tradable[time_id, asset_id]:
                 return False, "sell_suspended"
             price = override if override is not None else exit_prices[time_id, asset_id]
             if not _valid_price(price):
                 return False, "sell_invalid_price"
+            queued = False
             if (
                 override is None
                 and config.exit_fill == "close_t"
@@ -1086,10 +1113,22 @@ class BacktestEngine:
                 # 排不出去, 拦截并经 pending_exit 递延到下一可卖日 — 旧实现只拦
                 # 一字跌停, 尾盘封板股按跌停价"卖出"导致亏损被低估(涨停拒买的
                 # 镜像问题)。日内风控线(override)是盘中成交, 不受收盘封板影响。
-                return False, "sell_limit_down"
+                # queue_limit_down_same_day: 盘中开过板的封死日按跌停价排单成交,
+                # 一字板由下面的 _one_price_limit 继续拦截。
+                if not config.queue_limit_down_same_day:
+                    return False, "sell_limit_down"
+                if config.queue_limit_down_max_hold_only and reason != "max_hold":
+                    return False, "sell_limit_down"
+                queued = True
             if _one_price_limit(time_id, asset_id, "down"):
                 return False, "sell_limit_down"
+            if queued:
+                _count("sell_limit_down_queue_fill")
             return True, ""
+
+        prev_close = (
+            _previous_close(matrix.close) if config.intraday_drop_pct is not None else None
+        )
 
         def _risk_exit(pos: dict, time_id: int, asset_id: int) -> tuple[str | None, float | None]:
             if pos.get("pending_exit_reason") or pos["entry_time"] == time_id:
@@ -1104,6 +1143,10 @@ class BacktestEngine:
                 lines.append((entry_price * (1 - abs(config.stop_loss_pct)), "stop_loss"))
             if config.trailing_stop_pct is not None:
                 lines.append((peak_price * (1 - abs(config.trailing_stop_pct)), "trailing_stop"))
+            if config.intraday_drop_pct is not None and prev_close is not None:
+                anchor = float(prev_close[time_id, asset_id])
+                if _valid_price(anchor):
+                    lines.append((anchor * (1 - abs(config.intraday_drop_pct)), "intraday_drop"))
             activate = config.trailing_take_profit_activate_pct
             drawdown = config.trailing_take_profit_drawdown_pct
             if activate is not None and drawdown is not None and peak_price > entry_price:
@@ -1158,7 +1201,7 @@ class BacktestEngine:
                 # 期末强制记录: 已无未来数据可等, 跳过可卖性闸门按末日价格落账
                 ok, blocked = True, ""
             else:
-                ok, blocked = _can_sell(time_id, asset_id, override)
+                ok, blocked = _can_sell(time_id, asset_id, override, reason)
             if not ok:
                 if not pos.get("pending_exit_reason"):
                     pos["pending_exit_reason"] = reason
@@ -1340,6 +1383,12 @@ class BacktestEngine:
         exit_signal_ids: list[str] | None = None,
     ) -> SimResult:
         """全量候选独立执行：每个买入信号都是独立样本, 不受资金/仓位限制。"""
+        if (
+            config.intraday_drop_pct is not None
+            or config.queue_limit_down_same_day
+            or config.queue_limit_down_max_hold_only
+        ):
+            raise ValueError("intraday_drop_pct/queue_limit_down_* 仅支持矩阵路径")
         if panel.is_empty():
             return self._empty_result()
 
@@ -2095,12 +2144,15 @@ class BacktestEngine:
                 return False, "buy_limit_up"
             return True, ""
 
-        def _can_sell(time_id: int, asset_id: int, override: float | None = None) -> tuple[bool, str]:
+        def _can_sell(
+            time_id: int, asset_id: int, override: float | None = None, reason: str = "",
+        ) -> tuple[bool, str]:
             if not matrix.tradable[time_id, asset_id]:
                 return False, "sell_suspended"
             price = override if override is not None else exit_prices[time_id, asset_id]
             if not _valid_price(price):
                 return False, "sell_invalid_price"
+            queued = False
             if (
                 override is None
                 and config.exit_fill == "close_t"
@@ -2110,9 +2162,17 @@ class BacktestEngine:
                 # 排不出去, 拦截并经 pending_exit 递延到下一可卖日 — 与独立路径/
                 # legacy 路径同口径 (本路径此前只拦一字板, 尾盘封板股按跌停价
                 # "卖出"导致亏损被低估)。
-                return False, "sell_limit_down"
+                # queue_limit_down_same_day: 盘中开过板的封死日按跌停价排单成交,
+                # 一字板由下面的 _one_price_limit 继续拦截。
+                if not config.queue_limit_down_same_day:
+                    return False, "sell_limit_down"
+                if config.queue_limit_down_max_hold_only and reason != "max_hold":
+                    return False, "sell_limit_down"
+                queued = True
             if _one_price_limit(time_id, asset_id, "down"):
                 return False, "sell_limit_down"
+            if queued:
+                _count("sell_limit_down_queue_fill")
             return True, ""
 
         def _mark_pending(
@@ -2200,7 +2260,7 @@ class BacktestEngine:
                         _mark_pending(asset_id, reason, signal_date, signal_id, next_open=True)
                         _count("sell_minute_trigger_fallback")
                         return False
-            ok, blocked = _can_sell(time_id, asset_id, override)
+            ok, blocked = _can_sell(time_id, asset_id, override, reason)
             if not ok:
                 _mark_pending(
                     asset_id,
@@ -2213,6 +2273,10 @@ class BacktestEngine:
                 return False
             _sell(time_id, asset_id, reason, signal_date, sold_today, override)
             return True
+
+        prev_close = (
+            _previous_close(matrix.close) if config.intraday_drop_pct is not None else None
+        )
 
         for time_id, date_label in enumerate(matrix.timestamp_labels):
             date_text = date_label[:10]
@@ -2253,6 +2317,12 @@ class BacktestEngine:
                     risk_lines.append((entry_price * (1 - abs(config.stop_loss_pct)), "stop_loss"))
                 if config.trailing_stop_pct is not None:
                     risk_lines.append((peak_price * (1 - abs(config.trailing_stop_pct)), "trailing_stop"))
+                if config.intraday_drop_pct is not None and prev_close is not None:
+                    anchor = float(prev_close[time_id, asset_id])
+                    if _valid_price(anchor):
+                        risk_lines.append(
+                            (anchor * (1 - abs(config.intraday_drop_pct)), "intraday_drop")
+                        )
                 activate = config.trailing_take_profit_activate_pct
                 drawdown = config.trailing_take_profit_drawdown_pct
                 if activate is not None and drawdown is not None and peak_price > entry_price:
@@ -2532,6 +2602,12 @@ class BacktestEngine:
         exit_signal_ids: list[str] | None = None,
     ) -> SimResult:
         """账户级组合回测：日线信号 → 成交约束 → 仓位/现金撮合。"""
+        if (
+            config.intraday_drop_pct is not None
+            or config.queue_limit_down_same_day
+            or config.queue_limit_down_max_hold_only
+        ):
+            raise ValueError("intraday_drop_pct/queue_limit_down_* 仅支持矩阵路径")
         if panel.is_empty():
             return self._empty_result()
 

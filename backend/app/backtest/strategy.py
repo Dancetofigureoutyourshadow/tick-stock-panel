@@ -1352,6 +1352,25 @@ class StrategyBacktestService:
                 f"激活涨幅({trailing_take_profit_activate:.0%}), 请调整后再试"
             )
         max_hold_days = self._override_value(overrides, "max_hold_days", s.max_hold_days)
+        intraday_drop = self._normalize_pct(
+            self._override_value(overrides, "intraday_drop", getattr(s, "intraday_drop", None)),
+            0.01,
+            0.5,
+        )
+        queue_limit_down_same_day = bool(
+            self._override_value(
+                overrides,
+                "queue_limit_down_same_day",
+                getattr(s, "queue_limit_down_same_day", False),
+            )
+        )
+        queue_limit_down_max_hold_only = bool(
+            self._override_value(
+                overrides,
+                "queue_limit_down_max_hold_only",
+                getattr(s, "queue_limit_down_max_hold_only", False),
+            )
+        )
         score_min, score_max = self._normalize_score_range(
             overrides.get("score_min"),
             overrides.get("score_max"),
@@ -1368,6 +1387,9 @@ class StrategyBacktestService:
                 trailing_take_profit_activate=trailing_take_profit_activate,
                 trailing_take_profit_drawdown=trailing_take_profit_drawdown,
                 max_hold_days=max_hold_days,
+                intraday_drop=intraday_drop,
+                queue_limit_down_same_day=queue_limit_down_same_day,
+                queue_limit_down_max_hold_only=queue_limit_down_max_hold_only,
                 score_min=score_min,
                 score_max=score_max,
                 progress_cb=progress_cb,
@@ -1568,6 +1590,9 @@ class StrategyBacktestService:
             position_policy_params=position_policy_params,
             minute_fill=config.minute_fill,
             asset_type=config.asset_type,
+            intraday_drop_pct=intraday_drop,
+            queue_limit_down_same_day=queue_limit_down_same_day,
+            queue_limit_down_max_hold_only=queue_limit_down_max_hold_only,
         )
         t_signal = time.perf_counter()
         selection_stats: dict[str, int | bool]
@@ -2016,6 +2041,9 @@ class StrategyBacktestService:
             "trailing_take_profit_activate": trailing_take_profit_activate,
             "trailing_take_profit_drawdown": trailing_take_profit_drawdown,
             "max_hold_days": max_hold_days,
+            "intraday_drop": intraday_drop,
+            "queue_limit_down_same_day": queue_limit_down_same_day,
+            "queue_limit_down_max_hold_only": queue_limit_down_max_hold_only,
             "full_horizon_days": full_horizon_days,
             "score_min": score_min,
             "score_max": score_max,
@@ -2092,6 +2120,9 @@ class StrategyBacktestService:
         trailing_take_profit_activate,
         trailing_take_profit_drawdown,
         max_hold_days,
+        intraday_drop,
+        queue_limit_down_same_day,
+        queue_limit_down_max_hold_only,
         score_min,
         score_max,
         progress_cb,
@@ -2247,6 +2278,9 @@ class StrategyBacktestService:
             # 分钟策略的成交价由 entry_price_override 提供 (触发分钟收盘),
             # 不再叠加日线口径的分钟成交细化。
             minute_fill=False,
+            intraday_drop_pct=intraday_drop,
+            queue_limit_down_same_day=queue_limit_down_same_day,
+            queue_limit_down_max_hold_only=queue_limit_down_max_hold_only,
         )
 
         t_matrix = time.perf_counter()
@@ -2332,6 +2366,9 @@ class StrategyBacktestService:
             "trailing_take_profit_activate": trailing_take_profit_activate,
             "trailing_take_profit_drawdown": trailing_take_profit_drawdown,
             "max_hold_days": max_hold_days,
+            "intraday_drop": intraday_drop,
+            "queue_limit_down_same_day": queue_limit_down_same_day,
+            "queue_limit_down_max_hold_only": queue_limit_down_max_hold_only,
             "full_horizon_days": full_horizon_days,
             "score_min": score_min,
             "score_max": score_max,

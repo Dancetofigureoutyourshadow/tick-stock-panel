@@ -654,7 +654,9 @@ def _needed_references_limit_prices(needed: set[str]) -> bool:
             return True
     return False
 
-def compute_signals(df: pl.DataFrame, needed: set[str] | None = None) -> pl.DataFrame:
+def compute_signals(
+    df: pl.DataFrame, needed: set[str] | None = None, *, attach_extensions: bool = True,
+) -> pl.DataFrame:
     """注入自定义信号布尔列 (含迁移自内置的 signal_* 定义)。
 
     输入必须包含 compute_indicators() 产出的指标列。
@@ -667,7 +669,8 @@ def compute_signals(df: pl.DataFrame, needed: set[str] | None = None) -> pl.Data
     # 都按列存在性解析。历史多日帧仅注入时序模式 —— 快照代表"最新值",
     # 历史回看注入会引入未来数据 (CONTRIBUTING §5.3)。
     from app.factors import ext_factors
-    df = ext_factors.attach_ext_columns(df, include_snapshot=False)
+    if attach_extensions:
+        df = ext_factors.attach_ext_columns(df, include_snapshot=False)
     # 条件引用的注册表因子列先复用评分物化管线补算 (虚拟/自定义/复合均可)。
     from app.strategy import custom_signals
     exprs = _get_custom_signal_exprs()
@@ -1408,18 +1411,13 @@ _BATCH_TARGET_ROWS = 150_000          # 小内存单批目标行数 (宽表 ~60-
 _BATCH_MIN_SYMBOLS = 50
 _MERGE_DATE_CHUNKS = 15               # 最终合并按日期切 15 块流式执行
 
-_ram_bytes_cache: int | None | bool = False  # False = 未探测
-
 
 def _total_ram_bytes() -> int | None:
-    global _ram_bytes_cache
-    if _ram_bytes_cache is False:
-        try:
-            import psutil
-            _ram_bytes_cache = psutil.virtual_memory().total
-        except Exception:
-            _ram_bytes_cache = None
-    return _ram_bytes_cache  # type: ignore[return-value]
+    try:
+        from app.services.memory_budget import memory_budget
+        return memory_budget().total_bytes
+    except Exception:
+        return None
 
 
 def _adaptive_sym_batch(default_batch: int, rows_per_symbol: int) -> int:
@@ -1539,8 +1537,8 @@ def recompute_daily_symbols(
     复用正式的复权、历史股本、停牌及连板计算, 不用已有 enriched 作原始价格前缀。
     均线/MACD 等宽指标由现有读取链按新版本重新计算。
     """
-    from app.services import data_integrity, preferences
-    from app.tickflow.repository import enriched_dirname
+    from app.services import daily_health, data_integrity, preferences
+    from app.tickflow.repository import daily_dirname, enriched_dirname
 
     root = Path(repo.store.data_dir)
     files = repo.daily_repair_files(asset_type)
@@ -1564,8 +1562,17 @@ def recompute_daily_symbols(
             raw = raw_scan.filter(pl.col("symbol").is_in(batch)).sort(["symbol", "date"]).collect(engine="streaming")
             bad = data_integrity.invalid_daily_rows(raw)
             if not bad.is_empty():
-                first = bad["date"].min()
-                raise ValueError(f"所选股票在 {first} 的原始历史日K仍异常, 未发布指标")
+                issues = data_integrity.inspect_invalid_history(root, daily_dirname(asset_type), files, bad)
+                daily_health.record_issues(root, issues)
+                if issues:
+                    first = issues[0]
+                    codes = "、".join(first.symbols[:5]) or "无法定位具体标的"
+                    raise ValueError(
+                        f"{daily_health.ASSET_LABELS[asset_type]}在 {first.day} 的原始历史日K仍异常"
+                        f"（{codes}：{first.reason}）, 未发布指标。"
+                        "已加入自检报告，请到 数据→自检/修补 处理后重试"
+                    )
+                raise ValueError("原始日K未通过校验或在检查期间发生变化，请重新自检或完成当日日K同步后重试，未发布指标")
             enriched = compute_enriched(
                 raw,
                 factors=factors.filter(pl.col("symbol").is_in(batch)) if not factors.is_empty() else factors,

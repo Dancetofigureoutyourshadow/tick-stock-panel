@@ -27,6 +27,7 @@ from app.api import (
     factors,
     financials,
     guardian,
+    import_center,
     indices,
     intraday,
     kline,
@@ -143,7 +144,10 @@ async def _application_lifespan(app: FastAPI):
     from app.services.mining_manager import MiningJobManager
 
     mining_manager = MiningJobManager(store.data_dir)
-    recovered_mining_runs = mining_manager.recover_interrupted()
+    # A degraded instance must never rewrite another owner's live run manifests.
+    recovered_mining_runs = (
+        mining_manager.recover_interrupted() if app.state.mining_lock_acquired else 0
+    )
     app.state.mining_manager = mining_manager
     if recovered_mining_runs:
         logger.warning("recovered %d interrupted mining runs", recovered_mining_runs)
@@ -199,6 +203,12 @@ async def _application_lifespan(app: FastAPI):
             )
     except Exception as e:  # noqa: BLE001 — 仅日志, 失败不影响启动
         logger.warning("能力路由日志输出失败: %s", e)
+
+    # 发布完整冻结快照后再启动行情与监控线程，避免首批事件使用未完成的注册表。
+    from app.extensions.packages import start_managed_extensions
+    start_managed_extensions(
+        app, current_extension_context(data_dir=store.data_dir, repository=repo),
+    )
 
     # 二次开发升级保护: 后台常备备份用户修改的程序文件 (无清单时自动停用)
     from app.services.upgrade_guard import UpgradeGuard
@@ -467,7 +477,6 @@ async def _application_lifespan(app: FastAPI):
         current_extension_context(data_dir=store.data_dir, repository=repo),
         extension_registry,
     )
-
     try:
         yield
     finally:
@@ -673,6 +682,7 @@ app.include_router(strategy.router)
 app.include_router(signals.router)
 app.include_router(monitor_rules.router)
 app.include_router(config_backup.router)
+app.include_router(import_center.router)
 app.include_router(lots.router)
 app.include_router(alerts.router)
 app.include_router(events.router)

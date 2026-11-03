@@ -9,6 +9,10 @@
 > 无代码接入(纯 HTTP YAML 配置)请看 [custom-data-source.md](./custom-data-source.md),
 > 两种方式遵循同一套内部数据契约。
 
+## 外部安装
+
+现在可通过「设置 → 数据源 → 安装插件」上传独立源码 ZIP。外部包格式、版本管理、兼容范围和模板见 [外部数据源插件安装](external-data-source-packages.md)。现有内置目录方式继续兼容。
+
 ## 快速上手
 
 一个插件 = 一个目录 + 一个 `plugin.yaml` 清单:
@@ -64,7 +68,7 @@ TickFlow 的「先探后存」语义:
 | `python` | 纯 Python 依赖, `pip install` | akshare、tushare |
 | `none` | 无额外依赖 | 纯 HTTP API 源 |
 
-`runtime` 字段当前仅用于 UI 展示, 实际依赖检测由 `check` 函数负责。
+内置插件的 `runtime` 决定依赖安装方式，实际就绪检测由 `check` 函数负责。外部源码包只检查依赖兼容性，不执行 pip/npm 安装。
 
 ### check 函数
 
@@ -329,6 +333,8 @@ uv run --extra dev python -m ruff check app/plugins/<your_plugin>/ tests/test_<y
   - `probe.py` — 候选 Key 探测的独立子进程(原生 DLL 每进程单 Key): 分阶段进度留痕定位原生层死点; 服务端明确拒绝凭据或额度时不保存。因 TDX 会话按 IP 复用(错误 Key 在活跃会话下也能拉数), 通过探测仅代表格式与连通性检查通过, 不保证所有数据接口均有权限。
 
 TdxQuant 在 SDK 清理响应前检查服务端错误, 保留错误原因并脱敏; 明确的凭据/额度拒绝不重试, 实时分钟轮立即熔断。历史分钟请求失败会通过 `app.data_providers.base.ProviderRequestError` 传递到任务层并标记失败, 不转换成成功的 0 行或跨源重试; 其他插件也可用该异常显式声明请求失败。带时区的分钟请求窗口在插件边界归一为北京墙钟, 再与原生分钟列比较。正常停牌、休市或窗口内无数据的空结果保留原语义。
+
+除权事件也在原生 `get_cw_data` 响应上执行上述检查：SDK 1.2.2 的 `get_divid_factors` 会将服务端失败与正常无事件都转换为空 DataFrame，不能用 DataFrame 是否为空判断请求成功。插件按 SDK 的 `Date/Type/Value` 契约解析事件，保留每 10 股单位及闭区间日期筛选；正常无事件返回空列表，事件或配价请求失败则中止本轮、保留原有因子文件，并向任务层及数据源试拉返回明确错误。
 
 ## 路由机制(无需关心, 仅参考)
 

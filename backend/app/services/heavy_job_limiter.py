@@ -34,9 +34,9 @@ def _memory_admission() -> tuple[bool, int]:
     """重任务内存准入: 返回 (是否放行, 当前可用内存字节)。阈值 0 = 不限制。"""
     if _HEAVY_MIN_AVAILABLE_BYTES <= 0:
         return True, 0
-    import psutil
+    from app.services.memory_budget import memory_budget
 
-    available = psutil.virtual_memory().available
+    available = memory_budget().available_bytes
     return available >= _HEAVY_MIN_AVAILABLE_BYTES, available
 
 

@@ -2543,7 +2543,7 @@ all = [
 
 [[package]]
 name = "tickflow-stock-panel-backend"
-version = "0.3.24"
+version = "0.3.27"
 source = { editable = "." }
 dependencies = [
     { name = "apscheduler" },
@@ -2554,6 +2554,7 @@ dependencies = [
     { name = "httpx" },
     { name = "numba", marker = "platform_machine != 'x86_64' or sys_platform != 'darwin'" },
     { name = "openai" },
+    { name = "packaging" },
     { name = "pandas" },
     { name = "pillow" },
     { name = "platformdirs" },
@@ -2603,6 +2604,7 @@ requires-dist = [
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10" },
     { name = "numba", marker = "platform_machine != 'x86_64' or sys_platform != 'darwin'", specifier = ">=0.65.1" },
     { name = "openai", specifier = ">=1.66" },
+    { name = "packaging", specifier = ">=24.0" },
     { name = "pandas", specifier = ">=2.2" },
     { name = "pillow", specifier = ">=10.0" },
     { name = "platformdirs", specifier = ">=4.0" },

@@ -383,18 +383,14 @@ def _guard_minute_strategy_backtest(
         return
     if s is None or s.execution_backend != "minute_filter":
         return
-    if asset_type != "stock":
-        raise HTTPException(400, detail="分钟策略回测当前仅支持 A 股 (stock)")
-    earliest = request.app.state.repo.earliest_minute_date()
-    if earliest is None or start < earliest:
-        have = f"最早到 {earliest}, " if earliest else ""
-        raise HTTPException(
-            400,
-            detail=(
-                f"本地分钟K{have}无法覆盖回测起始日 {start}。"
-                "请先用「扩展分钟K历史」拉取更多数据, 或缩小回测区间"
-            ),
+    from app.backtest.strategy import validate_minute_backtest_coverage
+
+    try:
+        validate_minute_backtest_coverage(
+            s, request.app.state.repo, start, asset_type,
         )
+    except ValueError as exc:
+        raise HTTPException(400, detail=str(exc)) from exc
 
 
 @router.post("/strategy/run")
@@ -466,6 +462,20 @@ def _daily_data_revisions() -> dict[str, str]:
 def _stamp_daily_data(result, revisions=None) -> dict:
     payload = result if isinstance(result, dict) else asdict(result)
     return {**payload, "daily_data_revisions": revisions if revisions is not None else _daily_data_revisions()}
+
+
+@router.get("/strategy/runs/{run_id}/evidence")
+def strategy_run_evidence(run_id: str):
+    from app.backtest.evidence import load_evidence
+
+    try:
+        return load_evidence(settings.data_dir, run_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, detail="该回测没有版本记录，旧结果可重新回测生成") from exc
+    except ValueError as exc:
+        raise HTTPException(400, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(503, detail="暂时无法读取回测版本记录") from exc
 
 
 class _BacktestJob:
